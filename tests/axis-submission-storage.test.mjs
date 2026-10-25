@@ -56,6 +56,14 @@ function evidenceFor(match, missingDiscordIds = []) {
   };
 }
 
+function nameRowsFor(match, names = allPlayers(match).map(player => player.name)) {
+  return match.teams.flatMap((team, teamIndex) => team.players.map((player, index) => ({
+    id: `${teamIndex === 0 ? "left" : "right"}:${index}`,
+    side: teamIndex === 0 ? "left" : "right",
+    nickname: names[teamIndex * 5 + index],
+  })));
+}
+
 function openStore(path = ":memory:", match = makeMatch()) {
   const db = new DatabaseSync(path);
   db.exec("PRAGMA busy_timeout=5000");
@@ -266,6 +274,60 @@ if (!isMainThread && workerData?.mode === "submit") {
     assert.deepEqual(review.submissions.map(submission => submission.photoRevision).sort(), [legacy.revision, replacement.revision].sort());
     assert.equal(review.submissions.find(submission => submission.photoRevision === legacy.revision).uploadedBy, "legacy");
     assert.equal(review.submissions.find(submission => submission.photoRevision === replacement.revision).uploadedBy, "moderator");
+  });
+
+  test("name-row metadata persists across reopen and duplicate uploads supplement it without changing evidence", t => {
+    const directory = mkdtempSync(join(tmpdir(), "axis-submission-name-rows-"));
+    const dbPath = join(directory, "axis.sqlite");
+    const { db, match } = openStore(dbPath);
+    const firstPhoto = photo("a", 1);
+    const player = match.teams[0].players[0];
+    const input = [{ discordId: player.id, kda: kda(7), expected: null }];
+    const actor = { sub: "uploader", name: "Uploader" };
+    t.after(() => { try { db.close(); } catch {} finally { rmSync(directory, { recursive: true, force: true }); } });
+    const store = createAxisLeagueStore(db);
+    store.submitAxisMatch(match.number, firstPhoto, input, undefined, evidenceFor(match), actor);
+    const originalMetadata = store.readMatchPhotoMetadata(match.number);
+    const originalKda = store.readMatchKda(match.number);
+    const originalSubmission = store.readAxisMatchReview(match.number).submissions[0];
+
+    db.close();
+
+    const reopenedDb = new DatabaseSync(dbPath);
+    reopenedDb.exec("PRAGMA busy_timeout=5000");
+    const reopened = createAxisLeagueStore(reopenedDb);
+    assert.equal(reopened.readAxisMatchReview(match.number).submissions[0].nameRows, null);
+
+    const duplicateRows = nameRowsFor(match, allPlayers(match).map(player => `Renamed ${player.name}`));
+    reopened.submitAxisMatch(match.number, firstPhoto, [{ discordId: player.id, kda: kda(99), expected: null }], undefined,
+      { ...evidenceFor(match), nameRows: duplicateRows }, actor);
+    const after = reopened.readAxisMatchReview(match.number).submissions[0];
+    assert.deepEqual(after.nameRows, duplicateRows, "duplicate uploads can supplement missing metadata");
+    assert.equal(after.uploadedBy, originalSubmission.uploadedBy);
+    assert.equal(after.uploadedAt, originalSubmission.uploadedAt);
+    assert.deepEqual(reopened.readMatchPhotoMetadata(match.number), originalMetadata);
+    assert.deepEqual(reopened.readMatchKda(match.number), originalKda);
+    assert.equal(reopened.setAxisMatchSubmissionNameRows(match.number, firstPhoto.revision, nameRowsFor(match)), false);
+    assert.equal(reopened.setAxisMatchSubmissionNameRows(match.number, "f".repeat(64), nameRowsFor(match)), false);
+    reopenedDb.close();
+
+    const persistedDb = new DatabaseSync(dbPath);
+    persistedDb.exec("PRAGMA busy_timeout=5000");
+    const persisted = createAxisLeagueStore(persistedDb);
+    assert.deepEqual(persisted.readAxisMatchReview(match.number).submissions[0].nameRows, duplicateRows);
+    persistedDb.close();
+  });
+
+  test("name-row metadata trigger failure rolls back screenshot, KDA, evidence and metadata", t => {
+    const { db, store, match } = openStore();
+    t.after(() => db.close());
+    db.exec("CREATE TRIGGER fail_axis_name_rows BEFORE INSERT ON axis_match_submission_name_rows BEGIN SELECT RAISE(ABORT, 'forced name rows rollback'); END");
+    assert.throws(() => store.submitAxisMatch(match.number, photo("a"), changesFor(allPlayers(match).slice(0, 1)), undefined,
+      { ...evidenceFor(match), nameRows: nameRowsFor(match) }, { sub: "uploader", name: "Uploader" }), /forced name rows rollback/);
+    assert.equal(store.readMatchKda(match.number).size, 0);
+    assert.equal(store.readMatchPhoto(match.number), null);
+    assert.equal(store.readAxisMatchReview(match.number).submissions.length, 0);
+    assert.equal(db.prepare("SELECT COUNT(*) AS n FROM axis_match_submission_name_rows WHERE match_number=?").get(match.number).n, 0);
   });
 
   test("stale roster fingerprint rejects the submission without partial writes", t => {

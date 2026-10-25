@@ -4,6 +4,7 @@ import { axisOcrConfidencePercent, parseAxisOcrCounter } from "@/lib/axis-ocr";
 import { axisOcrContextForMatch, axisOcrRosterFingerprint, axisOcrStatsPlayerIds, validateAxisOcrNames, AxisOcrMatchMismatchError } from "@/lib/axis-server-match-validation";
 import { AxisOcrBusyError, recognizeAxisPhotoUpload } from "@/lib/server-axis-ocr";
 import { AxisPhotoInputError } from "@/lib/axis-match-photo";
+import { parseAxisOcrNameRows, recheckAxisMatchReviewNames } from "@/lib/axis-match-submission";
 
 export interface AxisSubmissionActor {
   sub: string;
@@ -130,11 +131,11 @@ export async function submitAxisScreenshot(request: AxisSubmissionRequest): Prom
     photo,
     changes,
     rounds,
-    { recognizedNames, unmatchedNames, missingDiscordIds },
+    { recognizedNames, unmatchedNames, missingDiscordIds, nameRows: parseAxisOcrNameRows(result.rows) },
     actor,
     axisOcrRosterFingerprint(match),
   );
-  const review = saved.review;
+  const review = saved.review ? recheckAxisMatchReviewNames(saved.review, context.participants) : null;
   const totalPlayers = context.participants.length;
   const recognizedPlayers = saved.players.length;
   const coveragePercent = totalPlayers === 0 ? 0 : Math.round(recognizedPlayers / totalPlayers * 100);

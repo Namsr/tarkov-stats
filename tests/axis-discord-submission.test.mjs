@@ -11,7 +11,7 @@ registerHooks({ resolve(specifier, context, nextResolve) {
   if (specifier === "@/lib/admin/mutation") return mock("export const ADMIN_NO_STORE_HEADERS = { 'Cache-Control': 'no-store' };");
   if (specifier === "@/lib/admin/axis-league-db") return mock("export async function getAxisLeagueStore() { return globalThis.axisStore; }");
   if (specifier === "@/lib/server-axis-ocr") return mock("export async function recognizeAxisPhotoUpload() { if (globalThis.axisOcrGate) await globalThis.axisOcrGate; return { photo: { revision: globalThis.axisPhotoRevision.repeat(64), width: 1, height: 1, data: new Uint8Array([1]) }, result: globalThis.axisOcrResult }; } export class AxisOcrBusyError extends Error {}");
-  if (specifier === "@/lib/arena/service") return mock("export async function getArenaProfile() { return null; }");
+  if (specifier === "@/lib/arena/service") return mock("export async function getArenaProfile(aid) { return globalThis.axisProfiles.get(aid) ?? null; }");
   if (specifier.startsWith("@/")) return { shortCircuit: true, url: pathToFileURL(resolve(specifier.slice(2) + ".ts")).href };
   return nextResolve(specifier, context);
 } });
@@ -85,6 +85,7 @@ function setup(t) {
   globalThis.axisStore = createAxisLeagueStore(db);
   globalThis.axisStore.publishArchive({ page: 1, pages: 1, total: 1, matches: [match()] });
   globalThis.axisOcrGate = null;
+  globalThis.axisProfiles = new Map();
   globalThis.axisPhotoRevision = "a";
   globalThis.axisOcrResult = {
     score: { left: 5, right: 3 }, scoreConfidence: { left: 0.99, right: 0.98 },
@@ -210,6 +211,29 @@ test("Discord response names current unmatched OCR nicknames", async t => {
     coveragePercent: 80, confidencePercent: 96, needsReview: true,
     missingPlayers: ["Player 9", "Player 10"], unmatchedNames: ["Wrong Nick"], conflictPlayers: [],
   });
+});
+
+test("Discord review status rechecks older screenshots after stored Arena names are refreshed", async t => {
+  setup(t);
+  const store = globalThis.axisStore;
+  store.publish(match().teams.flatMap(team => team.players));
+  store.setProfile("9", { aid: 1009, mode: "arena" });
+  store.setProfile("10", { aid: 1010, mode: "arena" });
+  const names = Array.from({ length: 8 }, (_, index) => `Player ${index + 1}`).concat("dn1she2_0", "M950");
+  globalThis.axisOcrResult = { ...globalThis.axisOcrResult, rows: rowsFor(names) };
+  const first = await POST(request(payload({ authorId: "500000000000000021" })));
+  assert.equal(first.status, 200);
+  assert.equal((await first.json()).needsReview, true);
+  globalThis.axisProfiles.set(1009, { nickname: "dn1she2_0" });
+  globalThis.axisProfiles.set(1010, { nickname: "M950" });
+  globalThis.axisPhotoRevision = "b";
+  const second = await POST(request(payload({ authorId: "500000000000000021" })));
+  assert.equal(second.status, 200);
+  const result = await second.json();
+  assert.equal(result.needsReview, false, "old stored mismatches do not keep a resolved match flagged");
+  assert.equal(result.recognizedPlayers, 10);
+  assert.deepEqual(result.unmatchedNames, []);
+  assert.equal(store.readAxisMatchReview(77).submissions.length, 2);
 });
 
 test("Discord OCR is bound to the archived roster", async t => {

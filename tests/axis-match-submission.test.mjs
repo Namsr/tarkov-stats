@@ -5,15 +5,21 @@ import { pathToFileURL } from "node:url";
 import test from "node:test";
 import { DatabaseSync } from "node:sqlite";
 import { createAxisLeagueStore } from "../lib/admin/axis-league-db.ts";
+import { recheckAxisMatchReviewNames } from "../lib/axis-match-submission.ts";
 
 const mock = source => ({ shortCircuit: true, url: "data:text/javascript," + encodeURIComponent(source) });
 registerHooks({ resolve(specifier, context, nextResolve) {
+  if (specifier === "next/server") return mock("export function after(work) { globalThis.axisReviewAfter.push(work); }");
   if (specifier === "@/lib/admin/axis-league-db") return mock("export async function getAxisLeagueStore() { return globalThis.axisStore; }");
   if (specifier === "@/lib/admin-auth") return mock("export async function requireAdmin() { return globalThis.axisAdminAccess; }");
   if (specifier === "@/lib/axis-access") return mock("export async function requireAxisScreenshotSubmitter() { return globalThis.axisSubmitAccess; } export async function requireAxisModerator() { return globalThis.axisReviewAccess; }");
-  if (specifier === "@/lib/server-axis-ocr") return mock("export async function recognizeAxisPhoto() { return globalThis.axisOcrResult; } export async function recognizeAxisPhotoUpload() { globalThis.axisOcrStartedResolve?.(); if (globalThis.axisOcrGate) await globalThis.axisOcrGate; return { photo: { revision: 'a'.repeat(64), width: 1, height: 1, data: new Uint8Array([1]) }, result: globalThis.axisOcrResult }; } export class AxisOcrBusyError extends Error {}");
+  if (specifier === "@/lib/server-axis-ocr") return mock("export async function recognizeAxisPhoto() { globalThis.axisLegacyOcrCalls++; if (globalThis.axisLegacyOcrError) throw new Error('OCR busy'); return globalThis.axisOcrResult; } export async function recognizeAxisPhotoUpload() { globalThis.axisOcrStartedResolve?.(); if (globalThis.axisOcrGate) await globalThis.axisOcrGate; return { photo: { revision: 'a'.repeat(64), width: 1, height: 1, data: new Uint8Array([1]) }, result: globalThis.axisOcrResult }; } export class AxisOcrBusyError extends Error {}");
   if (specifier === "@/lib/auth/google-identity") return mock("export function googleDisplayName(user) { return user.name || null; }");
-  if (specifier === "@/lib/arena/service") return mock("export async function getArenaProfile() { return null; }");
+  if (specifier === "@/lib/arena/service") return mock(`export async function getArenaProfile(aid) {
+    globalThis.axisProfileCalls.push(aid);
+    if (globalThis.axisProfileErrors.has(aid)) throw new Error("stored profile unavailable");
+    return globalThis.axisProfiles.get(aid) ?? null;
+  }`);
   if (specifier.startsWith("@/")) return { shortCircuit: true, url: pathToFileURL(resolve(specifier.slice(2) + ".ts")).href };
   return nextResolve(specifier, context);
 } });
@@ -46,7 +52,10 @@ function request(body, path = "/api/axis-league/match-submission", headers = {})
 
 function setup(t) {
   const db = new DatabaseSync(":memory:");
-  t.after(() => db.close());
+  globalThis.axisReviewAfter = [];
+  globalThis.axisLegacyOcrCalls = 0;
+  globalThis.axisLegacyOcrError = false;
+  t.after(async () => { for (const work of globalThis.axisReviewAfter.splice(0)) await work(); db.close(); });
   globalThis.axisStore = createAxisLeagueStore(db);
   globalThis.axisStore.publishArchive({ page: 1, pages: 1, total: 1, matches: [match()] });
   globalThis.axisSubmitAccess = { ok: true, user: { sub: "player", name: "Player" } };
@@ -54,6 +63,9 @@ function setup(t) {
   globalThis.axisAdminAccess = { ok: true, user: { sub: "admin", name: "Admin" } };
   globalThis.axisOcrGate = null;
   globalThis.axisOcrStartedResolve = null;
+  globalThis.axisProfiles = new Map();
+  globalThis.axisProfileErrors = new Set();
+  globalThis.axisProfileCalls = [];
   globalThis.axisOcrResult = { score: { left: 5, right: 3 }, scoreConfidence: { left: 1, right: 1 }, crop: { x: 0, y: 0, width: 1, height: 1 }, rows: rowsFor(Array.from({ length: 10 }, (_, index) => `Player ${index + 1}`)) };
   return db;
 }
@@ -188,6 +200,171 @@ test("review endpoint is moderator-only and returns only submitted matches", asy
   const response = await reviewGet(new Request("https://tarkovstats.ru/api/admin/axis-league/match-review?matches=77"));
   assert.equal(response.status, 200);
   assert.equal((await response.json()).reviews[0].submissions.length, 2);
+});
+
+test("stored Arena profile refresh clears old screenshot warnings without another upload", async t => {
+  setup(t);
+  const store = globalThis.axisStore;
+  store.publish(match().teams.flatMap(team => team.players));
+  store.setProfile("9", { aid: 1009, mode: "arena" });
+  store.setProfile("10", { aid: 1010, mode: "regular" });
+  globalThis.axisProfiles.set(1009, { nickname: "Old Nick 9" });
+  globalThis.axisProfiles.set(1010, { nickname: "Old Nick 10" });
+  const names = Array.from({ length: 8 }, (_, index) => `Player ${index + 1}`).concat("dn1she2_0", "M950");
+  globalThis.axisOcrResult = { ...globalThis.axisOcrResult, rows: rowsFor(names) };
+  assert.equal((await submitPost(request({ matchNumber: 77, photo: { expected: null, data: imageData } }))).status, 200);
+  // The moderator has already filled the two missing players, as in the report.
+  store.setMatchStats(77, ["9", "10"].map(discordId => ({ discordId, kda: { kills: 4, deaths: 5, assists: 6 }, expected: null })));
+  const beforeStats = store.readMatchKda(77);
+  const getReview = async () => (await (await reviewGet(new Request("https://tarkovstats.ru/api/admin/axis-league/match-review?matches=77"))).json()).reviews[0];
+  assert.deepEqual((await getReview()).nicknameMismatches, ["dn1she2_0", "M950"]);
+
+  globalThis.axisProfiles.set(1009, { nickname: " DN1she2_0 " });
+  globalThis.axisProfiles.set(1010, { nickname: "M950" });
+  globalThis.axisProfileCalls = [];
+  const after = await getReview();
+  assert.deepEqual(after.nicknameMismatches, []);
+  assert.deepEqual(after.unmatchedNames, []);
+  assert.deepEqual(after.missingStats, []);
+  assert.equal(after.submissions.length, 1);
+  assert.deepEqual(after.submissions[0].unmatchedNames, ["dn1she2_0", "M950"], "original OCR evidence stays intact");
+  assert.deepEqual(store.readMatchKda(77), beforeStats, "review reads do not rewrite KDA");
+  assert.deepEqual(globalThis.axisProfileCalls.sort(), [1009, 1010], "current stored Arena names are read even for a regular-mode link");
+  assert.deepEqual(store.readAxisMatchReview(77).nicknameMismatches, ["dn1she2_0", "M950"], "persisted upload evidence is not overwritten");
+});
+
+test("profile failures and missing links retain warnings and moderator access is checked first", async t => {
+  setup(t);
+  const store = globalThis.axisStore;
+  store.publish(match().teams.flatMap(team => team.players));
+  store.setProfile("9", { aid: 1009, mode: "arena" });
+  store.submitAxisMatch(77, photo("c"), [], undefined,
+    { recognizedNames: ["dn1she2_0", "M950"], unmatchedNames: ["dn1she2_0", "M950", ""] }, { sub: "player", name: "Player" });
+  globalThis.axisProfileErrors.add(1009);
+  const get = () => reviewGet(new Request("https://tarkovstats.ru/api/admin/axis-league/match-review?matches=77"));
+  globalThis.axisReviewAccess = { ok: false, status: 403 };
+  assert.equal((await get()).status, 403);
+  assert.deepEqual(globalThis.axisProfileCalls, []);
+  globalThis.axisReviewAccess = { ok: true, user: { sub: "moderator" } };
+  const response = await get();
+  assert.equal(response.status, 200);
+  const review = (await response.json()).reviews[0];
+  assert.deepEqual(review.nicknameMismatches, ["dn1she2_0", "M950"]);
+  assert.equal(review.unreadableNames, 1);
+});
+
+test("saved name rechecks retain ambiguous aliases, unreadable rows and unrelated review issues", t => {
+  setup(t);
+  const store = globalThis.axisStore;
+  store.submitAxisMatch(77, photo("c"), [], undefined,
+    { recognizedNames: ["Alias", "alias"], unmatchedNames: ["Alias", "alias", ""] }, { sub: "player", name: "Player" });
+  const review = store.readAxisMatchReview(77);
+  const participants = match().teams.flatMap((team, teamIndex) => team.players.map(player => ({
+    discordId: player.id, teamIndex, historyName: player.name, arenaNickname: player.id === "1" ? "Alias" : null,
+  })));
+  const names = Array.from({ length: 10 }, (_, index) => `Player ${index + 1}`);
+  const evidence = (first, second) => {
+    const rows = rowsFor([first, second, ...names.slice(2)]);
+    review.submissions[0].recognizedNames = rows.map(row => row.nickname).filter(Boolean);
+    review.submissions[0].unmatchedNames = [first, second];
+    review.submissions[0].nameRows = rows;
+  };
+  evidence("Alias", "alias");
+  assert.deepEqual(recheckAxisMatchReviewNames(review, participants).nicknameMismatches, ["Alias", "alias"], "duplicate screenshot names remain ambiguous");
+  evidence("Alias", "");
+  participants[1].arenaNickname = "alias";
+  assert.deepEqual(recheckAxisMatchReviewNames(review, participants).nicknameMismatches, ["Alias"], "shared player aliases remain ambiguous");
+  participants[1].arenaNickname = null;
+  evidence("Alias", "Player 1");
+  review.submissions[0].unmatchedNames = ["Alias"];
+  assert.deepEqual(recheckAxisMatchReviewNames(review, participants).nicknameMismatches, ["Alias"], "one player cannot match two screenshot rows");
+  evidence("Alias", "");
+  const result = recheckAxisMatchReviewNames(review, participants);
+  assert.deepEqual(result.nicknameMismatches, []);
+  assert.deepEqual(result.unmatchedNames, [""]);
+  assert.equal(result.unreadableNames, 1);
+  assert.deepEqual(result.missingStats, review.missingStats);
+  assert.deepEqual(result.conflicts, review.conflicts);
+  assert.deepEqual(result.roundConflict, review.roundConflict);
+  review.submissions[0].nameRows = null;
+  assert.deepEqual(recheckAxisMatchReviewNames(review, participants).nicknameMismatches, ["Alias"], "legacy names need side evidence before resolution");
+  evidence("Alias", "");
+  review.submissions[0].nameRows[0].nickname = "Different OCR";
+  assert.deepEqual(recheckAxisMatchReviewNames(review, participants).nicknameMismatches, ["Alias"], "changed legacy OCR cannot clear original warnings");
+});
+
+for (const renamedPlayer of ["2", "6"]) test(`a nickname transferred to an already matched player ${renamedPlayer} cannot clear a saved warning`, async t => {
+  setup(t);
+  const store = globalThis.axisStore;
+  store.publish(match().teams.flatMap(team => team.players));
+  store.setProfile(renamedPlayer, { aid: 1006, mode: "arena" });
+  globalThis.axisProfiles.set(1006, { nickname: "Old Arena Name" });
+  const names = Array.from({ length: 10 }, (_, index) => `Player ${index + 1}`);
+  names[0] = "dn1she2_0";
+  names[Number(renamedPlayer) - 1] = "Old Arena Name";
+  globalThis.axisOcrResult = { ...globalThis.axisOcrResult, rows: rowsFor(names) };
+  assert.equal((await submitPost(request({ matchNumber: 77, photo: { expected: null, data: imageData } }))).status, 200);
+  globalThis.axisProfiles.set(1006, { nickname: "dn1she2_0" });
+  const response = await reviewGet(new Request("https://tarkovstats.ru/api/admin/axis-league/match-review?matches=77"));
+  assert.equal(response.status, 200);
+  assert.deepEqual((await response.json()).reviews[0].nicknameMismatches, ["dn1she2_0"]);
+});
+
+test("newly matched nicknames on the wrong team sides retain both warnings", async t => {
+  setup(t);
+  const store = globalThis.axisStore;
+  store.publish(match().teams.flatMap(team => team.players));
+  store.setProfile("1", { aid: 1001, mode: "arena" });
+  store.setProfile("6", { aid: 1006, mode: "arena" });
+  const names = Array.from({ length: 10 }, (_, index) => `Player ${index + 1}`);
+  names[0] = "dn1she2_0";
+  names[5] = "M950";
+  globalThis.axisOcrResult = { ...globalThis.axisOcrResult, rows: rowsFor(names) };
+  assert.equal((await submitPost(request({ matchNumber: 77, photo: { expected: null, data: imageData } }))).status, 200);
+  globalThis.axisProfiles.set(1001, { nickname: "M950" });
+  globalThis.axisProfiles.set(1006, { nickname: "dn1she2_0" });
+  const response = await reviewGet(new Request("https://tarkovstats.ru/api/admin/axis-league/match-review?matches=77"));
+  assert.equal(response.status, 200);
+  assert.deepEqual((await response.json()).reviews[0].nicknameMismatches, ["dn1she2_0", "M950"]);
+});
+
+test("legacy side metadata is recovered once after responding without changing the upload evidence", async t => {
+  setup(t);
+  const store = globalThis.axisStore;
+  store.publish(match().teams.flatMap(team => team.players));
+  store.setProfile("9", { aid: 1009, mode: "arena" });
+  globalThis.axisProfiles.set(1009, { nickname: "dn1she2_0" });
+  const names = Array.from({ length: 10 }, (_, index) => `Player ${index + 1}`);
+  names[8] = "dn1she2_0";
+  globalThis.axisOcrResult = { ...globalThis.axisOcrResult, rows: rowsFor(names) };
+  const originalEvidence = { recognizedNames: names, unmatchedNames: ["dn1she2_0"] };
+  store.submitAxisMatch(77, photo("c"), [], undefined, originalEvidence, { sub: "player", name: "Player" });
+  const get = () => reviewGet(new Request("https://tarkovstats.ru/api/admin/axis-league/match-review?matches=77"));
+  const first = await get();
+  assert.deepEqual((await first.json()).reviews[0].nicknameMismatches, ["dn1she2_0"]);
+  assert.equal(globalThis.axisLegacyOcrCalls, 0, "response never waits for heavy OCR");
+  await get();
+  assert.equal(globalThis.axisReviewAfter.length, 1, "recovery admission is bounded across concurrent reads");
+  await globalThis.axisReviewAfter.shift()();
+  const next = await get();
+  assert.deepEqual((await next.json()).reviews[0].nicknameMismatches, []);
+  assert.equal(globalThis.axisLegacyOcrCalls, 1);
+  assert.equal(globalThis.axisReviewAfter.length, 0, "persisted metadata prevents repeated OCR");
+  assert.deepEqual(store.readAxisMatchReview(77).submissions[0].unmatchedNames, originalEvidence.unmatchedNames);
+  assert.equal(store.readMatchKda(77).size, 0);
+});
+
+test("a failed legacy OCR leaves the warnings readable and retryable", async t => {
+  setup(t);
+  globalThis.axisStore.submitAxisMatch(77, photo("c"), [], undefined,
+    { recognizedNames: ["dn1she2_0"], unmatchedNames: ["dn1she2_0"] }, { sub: "player", name: "Player" });
+  const get = () => reviewGet(new Request("https://tarkovstats.ru/api/admin/axis-league/match-review?matches=77"));
+  assert.equal((await get()).status, 200);
+  globalThis.axisLegacyOcrError = true;
+  await globalThis.axisReviewAfter.shift()();
+  const retry = await get();
+  assert.equal(retry.status, 200);
+  assert.deepEqual((await retry.json()).reviews[0].nicknameMismatches, ["dn1she2_0"]);
 });
 
 test("role endpoint accepts player and moderator assignments", async t => {
