@@ -1,0 +1,174 @@
+import assert from "node:assert/strict";
+import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
+import test from "node:test";
+import { compactStorage } from "../scripts/compact-storage.mjs";
+import { decodeStorageJsonText, encodeStorageJson } from "../lib/storage-json.ts";
+
+const largeStats = (n) => JSON.stringify({ nickname: `player-${n}`, pmcKilledPmc: n,
+  pvpStatsKnown: n % 2 === 0, lastPlayedAt: null,
+  futureField: Array.from({ length: 160 }, (_, i) => ({ name: `unknown-${i}`, value: n + i })) });
+
+async function fixture() {
+  const dir = await mkdtemp(join(tmpdir(), "compact-storage-"));
+  const source = join(dir, "source.db");
+  const output = join(dir, "compressed.db");
+  const db = new DatabaseSync(source);
+  try {
+    db.exec(`BEGIN; PRAGMA application_id = 1234; PRAGMA user_version = 57;
+      CREATE TABLE mode_players (mode TEXT, aid INTEGER, stats_json TEXT NOT NULL, PRIMARY KEY(mode, aid));
+      CREATE TABLE progression_snapshots (id INTEGER PRIMARY KEY, stats_json TEXT NOT NULL);
+      CREATE TABLE arena_mode_stats (aid INTEGER, arena_mode TEXT, raw_json TEXT, PRIMARY KEY(aid, arena_mode));
+      CREATE TABLE arena_mode_stats_history (aid INTEGER, arena_mode TEXT, version INTEGER, raw_json TEXT, PRIMARY KEY(aid, arena_mode, version));
+      CREATE TABLE changes (id INTEGER PRIMARY KEY AUTOINCREMENT, action TEXT);
+      CREATE TABLE other_data (id INTEGER PRIMARY KEY, payload BLOB, nullable TEXT);
+      CREATE TRIGGER custom_mode_change AFTER UPDATE ON MODE_PLAYERS BEGIN INSERT INTO changes(action) VALUES ('mode'); END;
+      CREATE TRIGGER custom_progression_change BEFORE UPDATE ON progression_snapshots BEGIN INSERT INTO changes(action) VALUES ('progression'); END;
+      CREATE INDEX stats_kills ON mode_players(json_extract(stats_json, '$.pmcKilledPmc'));
+      CREATE VIEW stats_view AS SELECT aid, json_extract(stats_json, '$.pvpStatsKnown') AS known FROM mode_players;`);
+    const mode = db.prepare("INSERT INTO mode_players VALUES ('arena', ?, ?)");
+    const progression = db.prepare("INSERT INTO progression_snapshots VALUES (?, ?)");
+    for (let i = 0; i < 9; i++) {
+      mode.run(i, largeStats(i)); progression.run(i, largeStats(i));
+      db.prepare("INSERT INTO arena_mode_stats VALUES (?, 'overall', ?)").run(i, largeStats(i));
+      db.prepare("INSERT INTO arena_mode_stats_history VALUES (?, 'overall', 1, ?)").run(i, largeStats(i));
+    }
+    db.prepare("INSERT INTO other_data VALUES (?, ?, NULL)").run(9007199254740993n, Buffer.from([0, 1, 0, 255]));
+    db.exec("INSERT INTO changes(action) VALUES ('existing'); DELETE FROM changes; COMMIT");
+  } finally { db.close(); }
+  return { dir, source, output };
+}
+
+test("offline compaction preserves all decoded data, SQL projections, triggers, sequences and the original file", async () => {
+  const f = await fixture();
+  try {
+    const originalFile = await readFile(f.source);
+    const result = await compactStorage({ ...f, batchSize: 2 });
+    assert.equal(result.integrityCheck, "ok");
+    assert.equal(result.schemaUnchanged, true);
+    assert.equal(result.tables.length, 4);
+    assert.equal(result.tables.every((table) => table.changed === 9 && table.textBytesAfter < table.textBytesBefore), true);
+    assert.deepEqual(await readFile(f.source), originalFile);
+    const db = new DatabaseSync(f.output);
+    try {
+      assert.equal(db.prepare("SELECT COUNT(*) AS n FROM changes").get().n, 0);
+      assert.equal(db.prepare("SELECT seq FROM sqlite_sequence WHERE name='changes'").get().seq, 1);
+      assert.equal(db.prepare("PRAGMA application_id").get().application_id, 1234);
+      assert.equal(db.prepare("PRAGMA user_version").get().user_version, 57);
+      assert.deepEqual(db.prepare("SELECT aid FROM mode_players WHERE json_extract(stats_json, '$.pmcKilledPmc')=5").all().map((row) => row.aid), [5]);
+      assert.equal(db.prepare("SELECT known FROM stats_view WHERE aid=2").get().known, 1);
+      for (const row of db.prepare("SELECT aid, stats_json FROM mode_players").all()) {
+        assert.equal(decodeStorageJsonText(row.stats_json), largeStats(row.aid));
+      }
+      for (const row of db.prepare("SELECT aid, raw_json FROM arena_mode_stats_history").all()) {
+        assert.equal(decodeStorageJsonText(row.raw_json), largeStats(row.aid));
+      }
+      db.exec("UPDATE mode_players SET stats_json=stats_json WHERE aid=2; UPDATE progression_snapshots SET stats_json=stats_json WHERE id=2");
+      assert.deepEqual(db.prepare("SELECT id, action FROM changes ORDER BY id").all().map((row) => [row.id, row.action]), [[2, "mode"], [3, "progression"]]);
+    } finally { db.close(); }
+  } finally { await rm(f.dir, { recursive: true, force: true }); }
+});
+
+test("offline decompression produces a verified legacy-compatible copy and can compact mixed rows again", async () => {
+  const f = await fixture();
+  try {
+    await compactStorage(f);
+    const rollback = join(f.dir, "legacy.db");
+    const result = await compactStorage({ source: f.output, output: rollback, decompress: true, batchSize: 3 });
+    assert.equal(result.direction, "decompress");
+    const db = new DatabaseSync(rollback, { readOnly: true });
+    try {
+      assert.equal(db.prepare("SELECT stats_json FROM mode_players WHERE aid=4").get().stats_json, largeStats(4));
+    } finally { db.close(); }
+    const mixed = new DatabaseSync(f.output);
+    try { mixed.prepare("UPDATE mode_players SET stats_json=? WHERE aid=4").run(largeStats(4)); }
+    finally { mixed.close(); }
+    const next = await compactStorage({ source: f.output, output: join(f.dir, "again.db") });
+    assert.equal(next.tables.find((table) => table.table === "mode_players").changed, 1);
+  } finally { await rm(f.dir, { recursive: true, force: true }); }
+});
+
+test("failed migration discards every staged file and leaves the source and existing output untouched", async () => {
+  const f = await fixture();
+  try {
+    await writeFile(f.output, "existing operator file");
+    await assert.rejects(compactStorage(f), /already exists/);
+    assert.equal(await readFile(f.output, "utf8"), "existing operator file");
+    await rm(f.output);
+    const db = new DatabaseSync(f.source);
+    try { db.prepare("UPDATE progression_snapshots SET stats_json=? WHERE id=6").run(Buffer.from("unexpected BLOB")); }
+    finally { db.close(); }
+    const originalFile = await readFile(f.source);
+    await assert.rejects(compactStorage({ ...f, batchSize: 2 }));
+    assert.deepEqual(await readFile(f.source), originalFile);
+    assert.deepEqual(await readdir(f.dir), ["source.db"]);
+  } finally { await rm(f.dir, { recursive: true, force: true }); }
+});
+
+test("the native SQLite copy pins a consistent WAL snapshot while another connection commits", async () => {
+  const f = await fixture();
+  const writer = new DatabaseSync(f.source);
+  try {
+    writer.exec("PRAGMA journal_mode=WAL; PRAGMA wal_autocheckpoint=0");
+    writer.prepare("INSERT INTO mode_players VALUES ('pve', ?, ?)").run(20, largeStats(20));
+    let committed = false;
+    const result = await compactStorage({ ...f, onProgress(event) {
+      if (event.phase === "copy" && !committed) {
+        writer.prepare("INSERT INTO mode_players VALUES ('pve', ?, ?)").run(21, largeStats(21));
+        committed = true;
+      }
+    } });
+    assert.equal(committed, true);
+    assert.equal(result.verifiedTables.find((table) => table.table === "mode_players").rows, 10);
+    assert.equal(writer.prepare("SELECT COUNT(*) AS n FROM mode_players").get().n, 11);
+  } finally { writer.close(); await rm(f.dir, { recursive: true, force: true }); }
+});
+
+test("corrupt encoded rows cannot be published as valid profiles", async () => {
+  const f = await fixture();
+  try {
+    const encoded = encodeStorageJson(largeStats(1));
+    const db = new DatabaseSync(f.source);
+    try { db.prepare("UPDATE mode_players SET stats_json=? WHERE aid=1").run(encoded.replace(/sha256[^,]+/, 'sha256":"invalid"')); }
+    finally { db.close(); }
+    await assert.rejects(compactStorage(f));
+    assert.deepEqual(await readdir(f.dir), ["source.db"]);
+  } finally { await rm(f.dir, { recursive: true, force: true }); }
+});
+
+test("interrupted offline conversion never publishes its partial copy", async () => {
+  const f = await fixture();
+  const controller = new AbortController();
+  try {
+    const originalFile = await readFile(f.source);
+    await assert.rejects(compactStorage({ ...f, signal: controller.signal, onProgress(event) {
+      if (event.phase === "table_done") controller.abort(new Error("operator interrupted"));
+    } }), /operator interrupted/);
+    assert.deepEqual(await readFile(f.source), originalFile);
+    assert.deepEqual(await readdir(f.dir), ["source.db"]);
+  } finally { await rm(f.dir, { recursive: true, force: true }); }
+});
+
+test("custom SQL schema readers of unprojected fields are rejected before conversion", async () => {
+  const f = await fixture();
+  try {
+    const db = new DatabaseSync(f.source);
+    try { db.exec("CREATE VIEW unsupported_reader AS SELECT json_extract(stats_json, '$.futureField') FROM mode_players"); }
+    finally { db.close(); }
+    await assert.rejects(compactStorage(f), /Unsupported JSON schema reader in unsupported_reader/);
+    assert.deepEqual(await readdir(f.dir), ["source.db"]);
+  } finally { await rm(f.dir, { recursive: true, force: true }); }
+});
+
+test("an oversized JSON row fails safely instead of filling a whole batch in memory", async () => {
+  const f = await fixture();
+  try {
+    const db = new DatabaseSync(f.source);
+    try { db.prepare("UPDATE mode_players SET stats_json=? WHERE aid=2").run(JSON.stringify({ huge: "x".repeat(13 * 1024 * 1024) })); }
+    finally { db.close(); }
+    await assert.rejects(compactStorage(f), /JSON row exceeds migration limit/);
+    assert.deepEqual(await readdir(f.dir), ["source.db"]);
+  } finally { await rm(f.dir, { recursive: true, force: true }); }
+});

@@ -37,6 +37,7 @@ async function fixture(scenario) {
   await writeFile(join(backups, 'source-before.tar.gz'), 'unrelated operator archive');
   await writeFile(join(backups, 'players-20261001-040001.db.gz'), 'former database backup');
   if (scenario === 'sqlite-fail') await writeFile(join(volume, 'progression.db'), 'invalid sqlite');
+  if (scenario === 'wal-full') await writeFile(join(volume, 'players.db-wal'), Buffer.alloc(4096));
 
   const source = await readFile('ops/backup-db.sh', 'utf8');
   const mock = `
@@ -55,6 +56,7 @@ async function fixture(scenario) {
       elif [ "$SCENARIO" = snapshot-only-space ]; then echo 'fixture 2000000 1 1048587 48% volume'
       elif [ "$SCENARIO" = below-reserve ]; then echo 'fixture 2000000 1 1048575 48% volume'
       elif [ "$SCENARIO" = estimate-full ]; then echo 'fixture 2000000 1 1048584 48% volume'
+      elif [ "$SCENARIO" = wal-full ]; then echo 'fixture 2000000 1 1048586 48% volume'
       else echo 'fixture 100000000 1 99999999 1% volume'; fi
     }
     gzip() {
@@ -98,7 +100,7 @@ async function fixture(scenario) {
   } };
 }
 
-for (const scenario of ['success', 'snapshot-only-space', 'sqlite-fail', 'gzip-fail', 'verify-fail', 'disk-full', 'below-reserve', 'estimate-full', 'compression-full', 'invalid-volume']) {
+for (const scenario of ['success', 'snapshot-only-space', 'sqlite-fail', 'gzip-fail', 'verify-fail', 'disk-full', 'below-reserve', 'estimate-full', 'wal-full', 'compression-full', 'invalid-volume']) {
   test(`backup verifies publication and retains the last good set: ${scenario}`, { timeout: 20_000 }, async () => {
     const f = await fixture(scenario);
     try {
@@ -138,6 +140,11 @@ for (const scenario of ['success', 'snapshot-only-space', 'sqlite-fail', 'gzip-f
         if (scenario === 'estimate-full') {
           assert.match(result.stdout, /archive_estimate_source=latest_completed/);
           assert.match(result.stderr, /insufficient estimated free space/);
+          assert.doesNotMatch(calls, /runner worker/);
+        }
+        if (scenario === 'wal-full') {
+          assert.match(result.stdout, /wal_bytes=4096/);
+          assert.match(result.stderr, /wal=4096/);
           assert.doesNotMatch(calls, /runner worker/);
         }
       }
@@ -191,6 +198,37 @@ test('backup age probe detects missing and stale complete sets without starting 
     assert.equal(missing.status, 1);
     assert.match(missing.stdout, /latest_completed=0/);
     assert.equal((await readdir(f.backups)).filter((name) => name.startsWith('backup-')).length, 2);
+  } finally { await rm(f.dir, { recursive: true, force: true }); }
+});
+
+test('backup age probe ignores marked sets with missing or empty archives', async () => {
+  const f = await fixture('success');
+  try {
+    const validAt = new Date(Date.now() - 60_000);
+    for (const set of ['backup-old-1', 'backup-old-2']) {
+      await utimes(join(f.backups, set, '.complete'), validAt, validAt);
+    }
+    const sourceSet = join(f.backups, 'backup-old-1');
+    const missingSet = join(f.backups, 'backup-new-missing');
+    await mkdir(missingSet);
+    for (const name of databases.slice(0, -1)) {
+      await writeFile(join(missingSet, `${name}.db.gz`), await readFile(join(sourceSet, `${name}.db.gz`)));
+    }
+    await writeFile(join(missingSet, '.complete'), '');
+    const emptySet = join(f.backups, 'backup-new-empty');
+    await mkdir(emptySet);
+    for (const name of databases) {
+      await writeFile(join(emptySet, `${name}.db.gz`), await readFile(join(sourceSet, `${name}.db.gz`)));
+    }
+    await writeFile(join(emptySet, 'progression.db.gz'), '');
+    await writeFile(join(emptySet, '.complete'), '');
+    const invalidAt = new Date(Date.now() + 7 * 24 * 60 * 60_000);
+    for (const set of ['backup-new-missing', 'backup-new-empty']) {
+      await utimes(join(f.backups, set, '.complete'), invalidAt, invalidAt);
+    }
+    const check = spawnSync(shell, [f.file, '--check-age'], { cwd: f.dir, env: f.env, encoding: 'utf8', timeout: 10_000 });
+    assert.equal(check.status, 0, check.stderr);
+    assert.match(check.stdout, new RegExp(`latest_completed=${Math.floor(validAt.getTime() / 1000)}\\b`));
   } finally { await rm(f.dir, { recursive: true, force: true }); }
 });
 

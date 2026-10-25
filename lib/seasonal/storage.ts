@@ -21,6 +21,7 @@ import type { WeaponMasteryProgress } from "@/types/tarkov";
 import { reissueEditedTriggers, sqliteTrigger } from "../sqlite-trigger-ddl.ts";
 import { seasonalPrestige } from "./prestige.ts";
 import { initializeRiskPopulationRevision } from "../risk-population-revision.ts";
+import { decodeStorageJson, encodeStorageJsonForWrite } from "../storage-json.ts";
 
 // This module intentionally uses the small synchronous node:sqlite surface that
 // the existing progression store already relies on. Keeping schema ownership in
@@ -834,8 +835,8 @@ export function profilePortraitArgs(profile: SeasonalProfile): Array<number | nu
 export function rowCounters(row: Record<string, unknown>): SeasonalCounters {
   let stored: Record<string, unknown> = {};
   try {
-    const parsed = JSON.parse(String(row.stats_json ?? "{}"));
-    if (typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)) stored = parsed;
+    const parsed = decodeStorageJson(String(row.stats_json ?? "{}"));
+    if (typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)) stored = parsed as Record<string, unknown>;
   } catch {
     stored = {};
   }
@@ -1272,7 +1273,7 @@ export function createSqliteSeasonalStore(db: SqliteDatabase): SeasonalStore {
           )) {
             const stats = profile.seasonalStats;
             const achievementSnapshot = seasonalAchievementSnapshotValue(profile);
-            const leaderboardSnapshot = seasonalLeaderboardSnapshotValue(profile);
+            const leaderboardSnapshot = encodeStorageJsonForWrite(seasonalLeaderboardSnapshotValue(profile));
             const portraitAssignments = stats === undefined ? "" : `
               total_raids = ?, survived = ?, deaths = ?, total_kills = ?, run_through = ?,
               level = ?, prestige = ?, longest_win_streak = ?,`;
@@ -1343,7 +1344,7 @@ export function createSqliteSeasonalStore(db: SqliteDatabase): SeasonalStore {
           achievementSnapshot.value,
           commonSkillsSnapshot ?? null,
           weaponMasterySnapshot ?? null,
-          seasonalLeaderboardSnapshotValue(profile));
+          encodeStorageJsonForWrite(seasonalLeaderboardSnapshotValue(profile)));
         const snapshot = toSnapshot(db.prepare("SELECT * FROM progression_snapshots WHERE id = ?").get(Number(inserted.lastInsertRowid)))!;
         let interval: ProgressionIntervalRecord | null = null;
         if (previous && changes) {

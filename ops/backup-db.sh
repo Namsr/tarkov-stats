@@ -10,10 +10,20 @@ latest=0
 latest_set=
 for marker in "$DIR"/backup-*/.complete; do
   [ -f "$marker" ] && [ ! -L "$marker" ] || continue
+  candidate=${marker%/.complete}
+  [ -d "$candidate" ] && [ ! -L "$candidate" ] || continue
+  candidate_valid=1
+  for NAME in $DATABASES; do
+    archive="$candidate/$NAME.db.gz"
+    [ -f "$archive" ] && [ ! -L "$archive" ] || { candidate_valid=0; break; }
+    archive_bytes=$(stat -c %s "$archive") || { candidate_valid=0; break; }
+    [ "$archive_bytes" -gt 0 ] || { candidate_valid=0; break; }
+  done
+  [ "$candidate_valid" -eq 1 ] || continue
   completed=$(stat -c %Y "$marker")
   if [ "$completed" -gt "$latest" ]; then
     latest=$completed
-    latest_set=${marker%/.complete}
+    latest_set=$candidate
   fi
 done
 now=$(date +%s)
@@ -78,10 +88,10 @@ for NAME in $DATABASES; do
   # deliberately advisory because compression ratio can change. The runtime
   # guard below remains authoritative and keeps the 1 GiB reserve on every
   # output chunk.
-  required_kb=$(( (database_bytes + 1023) / 1024 + (archive_estimate_bytes + 1023) / 1024 + 1048576 ))
+  required_kb=$(( (database_bytes + wal_bytes + 1023) / 1024 + (archive_estimate_bytes + 1023) / 1024 + 1048576 ))
   printf 'BACKUP_SPACE at=%s database=%s db_bytes=%s wal_bytes=%s archive_estimate_bytes=%s archive_estimate_source=%s available_kb=%s required_kb=%s reserve_kb=1048576\n' "$(date +%s)" "$NAME" "$database_bytes" "$wal_bytes" "$archive_estimate_bytes" "$archive_estimate_source" "$available_kb" "$required_kb"
   if [ "$available_kb" -lt "$required_kb" ]; then
-    echo "insufficient estimated free space for $NAME backup (snapshot=${database_bytes} archive_estimate=${archive_estimate_bytes} reserve=1073741824); retaining previous set" >&2
+    echo "insufficient estimated free space for $NAME backup (snapshot=${database_bytes} wal=${wal_bytes} archive_estimate=${archive_estimate_bytes} reserve=1073741824); retaining previous set" >&2
     exit 1
   fi
   # SQLite snapshots use the same bounded offline service, independently of HTTP.

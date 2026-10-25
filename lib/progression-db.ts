@@ -7,6 +7,7 @@ import {
 } from "@/lib/regular-progression";
 import { raidBucket } from "@/lib/seasonal/progression";
 import { retrySqliteStore } from "./sqlite-busy-retry.ts";
+import { decodeStorageJson, encodeStorageJsonForWrite } from "./storage-json.ts";
 export { seedPveProgressionBaselines, type PveProgressionSeedResult } from "./pve-progression-seed-core.ts";
 
 export type SnapshotStatus = "baseline" | "progression" | "reset" | "schema_anomaly" | "duplicate" | "stale" | "banned";
@@ -76,7 +77,7 @@ function args(
     s.prestige ?? null, s.level ?? null, s.experience, s.hoursPlayed ?? null, s.totalRaids ?? null, s.pmcRaids,
     s.scavRaids, s.survivedRaids ?? null, s.deaths ?? null, s.pmcDeaths, s.totalKills ?? null, s.killedPmc,
     s.runThrough ?? null, s.longestWinStreak ?? null, s.achievementsCount ?? null,
-    JSON.stringify(input.achievementIds), JSON.stringify(s),
+    JSON.stringify(input.achievementIds), encodeStorageJsonForWrite(s),
   ];
 }
 
@@ -97,7 +98,7 @@ interface SnapshotRow {
 function toSnapshot(row: SnapshotRow | undefined): ProgressionSnapshot | null {
   if (!row) return null;
   try {
-    const stats = JSON.parse(row.stats_json) as unknown;
+    const stats = decodeStorageJson(row.stats_json) as unknown;
     const achievementIds = JSON.parse(row.achievements) as unknown;
     if (!stats || typeof stats !== "object" || Array.isArray(stats) ||
       !Array.isArray(achievementIds) || !achievementIds.every((id) => typeof id === "string")) {
@@ -199,7 +200,7 @@ export function createSqliteProgressionStore(
           db.exec("SAVEPOINT repair_persistent_snapshot");
           try {
             db.prepare(`UPDATE progression_snapshots SET stats_json = ?, achievements = ?, captured_at = ?
-              WHERE id = ?`).run(JSON.stringify(input.stats), JSON.stringify(input.achievementIds), input.capturedAt, previousRow.id);
+              WHERE id = ?`).run(encodeStorageJsonForWrite(input.stats), JSON.stringify(input.achievementIds), input.capturedAt, previousRow.id);
             materializePersistentProgression(db, mode, input.aid, { refreshAggregates: false });
             db.exec("RELEASE repair_persistent_snapshot");
           } catch (error) {
@@ -221,7 +222,7 @@ export function createSqliteProgressionStore(
         const incomingParser = Number(input.stats.pvpStatsParserVersion) || 0;
         if (incomingParser > previousParser) {
           db.prepare(`UPDATE progression_snapshots SET stats_json = ?, achievements = ?, captured_at = ?
-            WHERE id = ?`).run(JSON.stringify(input.stats), JSON.stringify(input.achievementIds), input.capturedAt, previous.id);
+            WHERE id = ?`).run(encodeStorageJsonForWrite(input.stats), JSON.stringify(input.achievementIds), input.capturedAt, previous.id);
         }
         return {
           inserted: false, status: "duplicate", previousUpdatedAt: previous.upstreamUpdatedAt,

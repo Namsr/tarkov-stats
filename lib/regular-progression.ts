@@ -1,6 +1,7 @@
 import { refreshSqliteProgressionAggregates } from "./seasonal/daily-aggregates.ts";
 import { initializeSeasonalSchema } from "./seasonal/storage.ts";
 import { isRaidProgressionInterval } from "./seasonal/analytics.ts";
+import { decodeStorageJson } from "./storage-json.ts";
 import type { PersistentProgressionMode } from "../types/seasonal";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -29,7 +30,7 @@ const DAY_MS = 86_400_000;
 
 function parse(row: SnapshotRow): { counters: Counters | null; valid: boolean; nickname: string; hours: number } {
   try {
-    const stats = JSON.parse(row.stats_json) as Record<string, unknown>;
+    const stats = decodeStorageJson<Record<string, unknown>>(row.stats_json);
     const counters = Object.fromEntries(KEYS.map((key) => [key, Number(stats[key])])) as Counters;
     return {
       counters,

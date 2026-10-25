@@ -3,6 +3,7 @@ import type { ArenaModeKey } from "@/types/arena";
 import type { ArenaLeaderboardTab } from "@/types/leaderboard";
 import type { LeaderboardScopeConfig } from "./config";
 import type { LeaderboardSourceRow } from "./materialize";
+import { decodeStorageJson } from "@/lib/storage-json";
 
 function columns(db: any, table: string): Set<string> {
   return new Set(db.prepare(`PRAGMA table_info(${table})`).all().map((row: any) => String(row.name)));
@@ -30,7 +31,7 @@ function integerOrNull(value: unknown): number | null {
 
 function bestArpFromRaw(value: unknown): number | null {
   try {
-    const raw = JSON.parse(String(value));
+    const raw = decodeStorageJson<Record<string, any>>(String(value));
     const counters = raw?.sourceCounters?.Counters ?? raw?.sourceCounters;
     if (Array.isArray(counters?.Items)) {
       const item = counters.Items.find((entry: any) =>

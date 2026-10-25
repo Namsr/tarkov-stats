@@ -1,5 +1,6 @@
 import { initializeSeasonalSchema } from "./seasonal/storage.ts";
 import { materializePersistentProgression, PERSISTENT_CYCLE_ID } from "./regular-progression.ts";
+import { decodeStorageJson, encodeStorageJsonForWrite } from "./storage-json.ts";
 
 export interface PveProgressionSeedResult {
   scanned: number;
@@ -38,7 +39,7 @@ function seedInput(row: StoredPvePlayer): PveSeedInput | null {
       !Number.isFinite(upstreamUpdatedAt) || upstreamUpdatedAt <= 0 ||
       !Number.isFinite(capturedAt) || capturedAt <= 0) return null;
   try {
-    const stats = JSON.parse(String(row.stats_json)) as Record<string, unknown>;
+    const stats = decodeStorageJson<Record<string, unknown>>(String(row.stats_json));
     const counters = ["experience", "pmcRaids", "scavRaids", "pmcSurvived", "pmcDeaths", "pmcKills", "killedPmc"];
     if (!stats || typeof stats !== "object" || Array.isArray(stats) ||
         counters.some((field) => !Number.isFinite(Number(stats[field])) || Number(stats[field]) < 0)) return null;
@@ -64,7 +65,7 @@ function args(input: PveSeedInput): unknown[] {
     stats.experience, stats.hoursPlayed ?? null, stats.totalRaids ?? null, stats.pmcRaids,
     stats.scavRaids, stats.survivedRaids ?? null, stats.deaths ?? null, stats.pmcDeaths,
     stats.totalKills ?? null, stats.killedPmc, stats.runThrough ?? null, stats.longestWinStreak ?? null,
-    stats.achievementsCount ?? null, JSON.stringify(input.achievementIds), JSON.stringify(stats),
+    stats.achievementsCount ?? null, JSON.stringify(input.achievementIds), encodeStorageJsonForWrite(stats),
   ];
 }
 
