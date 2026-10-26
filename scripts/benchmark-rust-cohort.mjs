@@ -5,7 +5,7 @@ import { existsSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { cpus, platform, release } from "node:os";
 import { DatabaseSync } from "node:sqlite";
-import { snapshotWorkerResources, resourceDelta } from "./benchmark-worker-resources.mjs";
+import { snapshotWorkerResources, resourceDelta, snapshotContainerResources } from "./benchmark-worker-resources.mjs";
 import { createCohortFixture, rustCohortBinary, seedRouteOwners,
   syntheticCohortRows } from "../tests/fixtures/rust-cohort-data.mjs";
 
@@ -17,13 +17,16 @@ function argument(name, fallback) {
 const mode = argument("--mode", "regular");
 assert.ok(["regular", "pve"].includes(mode), "--mode must be regular or pve");
 const backendVariable = mode === "pve" ? "PVE_COHORT_BACKEND" : "REGULAR_COHORT_BACKEND";
+const backendSelection = argument("--backend", "both");
+assert.ok(["typescript", "rust", "both"].includes(backendSelection), "--backend must be typescript, rust or both");
+const backendOrder = backendSelection === "both" ? ["typescript", "rust"] : [backendSelection];
 const rows = Number(argument("--rows", 30000));
 const iterations = Number(argument("--iterations", 12));
 const output = argument("--output", null);
 assert.ok(Number.isSafeInteger(rows) && rows >= 5000 && rows <= 1_000_000, "--rows must be 5000..1000000");
 assert.ok(Number.isSafeInteger(iterations) && iterations >= 4 && iterations <= 1000, "--iterations must be 4..1000");
 const binary = rustCohortBinary();
-assert.ok(existsSync(binary), `build the native worker first: ${binary}`);
+assert.ok(!backendOrder.includes("rust") || existsSync(binary), `build the native worker first: ${binary}`);
 process.env.OBSERVABILITY_SAMPLE_RATE = "0";
 process.env.AVERAGE_PUBLICATIONS_ENABLED = "true";
 const fixture = await createCohortFixture(`rust-${mode}-cohort-benchmark-`, mode);
@@ -121,7 +124,7 @@ async function series(kind, statistic, cache, concurrency) {
 const results = [];
 const resourceResults = [];
 try {
-  for (const backend of ["typescript", "rust"]) {
+  for (const backend of backendOrder) {
     process.env[backendVariable] = backend;
     stopCohortWorkersForTests();
     clearCache();
@@ -167,16 +170,19 @@ const report = { formatVersion: 1, generatedAt: new Date().toISOString(),
   environment: { node: process.version, os: platform(), release: release(), cpu: cpus()[0]?.model,
     logicalCpus: cpus().length, sqlite: sqliteVersion },
   fixture: { mode, players: rows, owners: 8, synthetic: true, seed: "deterministic modular metric distributions v1" },
-  methodology: { iterations, warmupRequestsPerScenario: 1, backendOrder: ["typescript", "rust"],
+  methodology: { iterations, warmupRequestsPerScenario: 1, backendSelection, backendOrder,
     http: "loopback HTTP -> actual app/api/average/cohort/route.ts GET -> stored progression snapshot -> cache -> worker -> SQLite -> JSON",
     misses: "memory and durable statistics response cache cleared before each sequential request or distinct-owner concurrent batch",
     hits: "all four owners cached before timing; worker job count must be zero",
     cold: "fresh worker process; route modules, fixture and analytics schema already initialized; OS page cache not flushed",
     phases: "queue and worker diagnostics rounded to whole milliseconds by production code",
     resources: "OS process snapshots outside timed requests, after cold request and after backend series; CPU delta includes warmups and cache hits but excludes cold startup and fixture creation; child lifetime peak RSS is not the simultaneous peak of all processes",
-    excluded: "production Next.js server routing, TLS/CDN/proxy, network to user, browser rendering, external Tarkov API, production data and VPS resource limits",
-    limitations: "local synthetic run; small p95 sample; backends measured sequentially with warm OS file cache; no performance threshold asserted" },
-  results, resourceResults };
+    containerResources: "Current cgroup lifetime counters sampled after worker stop and HTTP/fixture-handle cleanup, before JSON encoding/output and process termination; includes fixture creation, cold request, warmups, timed API calls and resource sampling subprocesses. Container CPU scope differs from warm-worker CPU delta; cgroup memory.peak includes charged page cache and is not process RSS.",
+    excluded: "production Next.js server routing, TLS/CDN/proxy, network to user, browser rendering, external Tarkov API and production data; actual CPU/memory limits, if present, are recorded from the current cgroup",
+    limitations: backendOrder.length > 1
+      ? "local synthetic run; small p95 sample; backends measured sequentially in one process with warm OS file cache; parent lifetime peak RSS and whole-cgroup peaks cannot be compared between these backends; no performance threshold asserted"
+      : "local synthetic single-backend process; small p95 sample; OS file cache not flushed; compare whole-cgroup peaks only across separate isolated containers, not warm-worker CPU scopes; no performance threshold asserted" },
+  results, resourceResults, containerResources: snapshotContainerResources() };
 const serialized = `${JSON.stringify(report, null, 2)}\n`;
 if (output) writeFileSync(output, serialized);
 process.stdout.write(serialized);
