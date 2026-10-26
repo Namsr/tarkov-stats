@@ -66,9 +66,9 @@ required independently when its selector is native. Native health is checked
 if either actual running-container selector uses port 3001.
 
 Install a capable image with routing off before any coordinated opt-in. Source
-merges do not activate routes or prove production improvements. Current VPS
-maintenance coordination forbids server operations until separate clearance;
-`tarkovstats-deploy.timer` must remain disabled.
+merges do not activate routes or prove production improvements. Coordinate any server operations with the maintenance owner before activation.
+`tarkovstats-deploy.timer` must remain disabled; source approval and CI do not
+enable routing or deploy the image.
 
 ## Validation and performance limits
 
