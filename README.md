@@ -73,3 +73,16 @@ for an isolated synthetic API comparison. The benchmark does not access producti
 data. Add `--mode pve` to benchmark PvE. See [Regular measurement notes](docs/rust-cohort-performance.md)
 and [PvE measurement notes](docs/rust-pve-cohort-performance.md) for methodology and
 limits. `npm test` builds Rust and runs both native and TypeScript regression tests.
+
+For a Linux comparison using the built production image without production data:
+
+```bash
+bash scripts/benchmark-rust-container.sh tarkovstats-web:REVISION /tmp/new-benchmark-results
+```
+
+This requires a local Linux Docker default context and an output directory that
+does not exist. It never pulls images or uses production volumes/credentials.
+CI runs the same command, preserves JSON/logs as a 14-day artifact, and writes a
+step summary. See [Linux benchmark methodology](docs/rust-linux-cohort-performance.md).
+`--backend typescript|rust|both` selects one implementation in the underlying
+Node benchmark; the default remains `both`.

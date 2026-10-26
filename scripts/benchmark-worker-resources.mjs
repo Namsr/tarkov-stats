@@ -65,3 +65,67 @@ export function resourceDelta(before, after) {
     parentLifetimePeakRssBytes: after.parent.peakRssBytes,
     scope: "Worker CPU delta covers warmup+miss+hit workloads after the cold request; child peak RSS is lifetime since spawn. Parent lifetime high-water values are cumulative across backends and not directly comparable. Sampling subprocess time is excluded from API latency samples." };
 }
+
+/** Cgroup v2 counters for the current process's group; never the host root by fallback. */
+export function snapshotContainerResources() {
+  const unavailable = (reason) => ({ available: false, reason, version: null, path: null,
+    sampledAt: new Date().toISOString(), memory: null, cpu: null, memoryEvents: null });
+  if (process.platform !== "linux") return unavailable("unsupported_platform");
+  try {
+    const membership = readFileSync("/proc/self/cgroup", "utf8").split("\n")
+      .find((line) => line.startsWith("0::"));
+    if (!membership) return unavailable("cgroup_v2_unavailable");
+    const group = membership.slice(3).trim();
+    const unescape = (value) => value.replace(/\\([0-7]{3})/g, (_, octal) => String.fromCharCode(parseInt(octal, 8)));
+    const mounts = readFileSync("/proc/self/mountinfo", "utf8").split("\n").flatMap((line) => {
+      const [left, right] = line.split(" - ");
+      if (!right?.startsWith("cgroup2 ")) return [];
+      const fields = left.split(" ");
+      const root = unescape(fields[3]);
+      const mount = unescape(fields[4]);
+      return group === root || group.startsWith(root === "/" ? "/" : `${root}/`)
+        ? [{ root, mount }] : [];
+    }).sort((a, b) => b.root.length - a.root.length);
+    if (!mounts.length) return unavailable("cgroup_v2_mount_unavailable");
+    const { root, mount } = mounts[0];
+    // Both paths come from procfs. Reject namespace-relative '..' instead of
+    // walking outside the mounted hierarchy and accidentally reading a host group.
+    if (!group.startsWith("/") || group.split("/").includes("..")) return unavailable("cgroup_path_unavailable");
+    const suffix = root === "/" ? group.slice(1) : group.slice(root.length).replace(/^\//, "");
+    const directory = join(mount, suffix);
+    const missing = [];
+    const text = (file) => {
+      try { return readFileSync(join(directory, file), "utf8").trim(); }
+      catch { missing.push(file); return null; }
+    };
+    const counter = (value, name) => {
+      if (value !== null && /^\d+$/.test(value) && Number.isSafeInteger(Number(value))) return Number(value);
+      if (!missing.includes(name)) missing.push(name);
+      return null;
+    };
+    const entries = (value) => new Map((value ?? "").split("\n").filter(Boolean).map((line) => line.trim().split(/\s+/)));
+    const current = counter(text("memory.current"), "memory.current");
+    const peak = counter(text("memory.peak"), "memory.peak");
+    const maximum = text("memory.max");
+    const maxBytes = maximum === "max" ? null : counter(maximum, "memory.max");
+    const swapMaximum = text("memory.swap.max");
+    const swapMaxBytes = swapMaximum === "max" ? null : counter(swapMaximum, "memory.swap.max");
+    const stats = entries(text("cpu.stat"));
+    const cpuMax = text("cpu.max")?.split(/\s+/) ?? [];
+    const events = entries(text("memory.events"));
+    const memory = { currentBytes: current, peakBytes: peak, maxBytes,
+      maxUnlimited: maximum === null ? null : maximum === "max", swapMaxBytes,
+      swapUnlimited: swapMaximum === null ? null : swapMaximum === "max" };
+    const cpu = { usageUs: counter(stats.get("usage_usec") ?? null, "cpu.stat.usage_usec"),
+      userUs: counter(stats.get("user_usec") ?? null, "cpu.stat.user_usec"),
+      systemUs: counter(stats.get("system_usec") ?? null, "cpu.stat.system_usec"),
+      quotaUs: cpuMax[0] === "max" ? null : counter(cpuMax[0] ?? null, "cpu.max.quota"),
+      periodUs: counter(cpuMax[1] ?? null, "cpu.max.period"),
+      unlimited: cpuMax.length === 0 ? null : cpuMax[0] === "max" };
+    const memoryEvents = { oomKill: counter(events.get("oom_kill") ?? null, "memory.events.oom_kill") };
+    return { available: missing.length === 0, reason: missing.length ? "cgroup_counters_unavailable" : null,
+      version: 2, path: directory, sampledAt: new Date().toISOString(), unavailableCounters: missing,
+      memory, cpu, memoryEvents,
+      scope: "Current cgroup lifetime counters, including all its processes and setup/cold/warm workloads. memory.peak is total charged cgroup memory, including page cache, not process RSS. CPU counters cover lifetime through this snapshot, not only timed API calls." };
+  } catch (error) { return unavailable(error.code || "cgroup_resource_read_failed"); }
+}

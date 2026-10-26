@@ -118,6 +118,20 @@ jobs:
               nice -n 19 node --experimental-strip-types --experimental-sqlite scripts/materialize-progression-population.mjs &&
               nice -n 19 node --experimental-strip-types --experimental-sqlite scripts/materialize-achievement-tempo.mjs
             '
+      - name: Benchmark isolated TypeScript and Rust API workloads
+        timeout-minutes: 10
+        run: bash scripts/benchmark-rust-container.sh "tarkovstats-web:$GITHUB_SHA" "$RUNNER_TEMP/rust-linux-benchmark"
+      - name: Save synthetic Linux benchmark evidence
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: rust-linux-benchmark-${{ github.sha }}
+          path: |
+            ${{ runner.temp }}/rust-linux-benchmark/*.json
+            ${{ runner.temp }}/rust-linux-benchmark/*.log
+            ${{ runner.temp }}/rust-linux-benchmark/summary.md
+          if-no-files-found: warn
+          retention-days: 14
       - name: Publish a revision-specific image
         if: github.event_name != 'pull_request'
         run: |
