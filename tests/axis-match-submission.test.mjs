@@ -396,3 +396,68 @@ test("role endpoint accepts player and moderator assignments", async t => {
     { subject: "moderator", name: null, role: "moderator" }, { subject: "player", name: null, role: "player" },
   ]);
 });
+
+
+test("legacy Moiyannry warning resolves only for the sole originally missing player without rewriting evidence or KDA", async t => {
+  setup(t);
+  const store = globalThis.axisStore;
+  store.publish(match().teams.flatMap(team => team.players));
+  const names = Array.from({ length: 10 }, (_, i) => "Player " + (i + 1));
+  names[1] = "Moiyannry";
+  const nameRows = rowsFor(names);
+  store.submitAxisMatch(77, photo("c"), [], undefined, {
+    recognizedNames: names, unmatchedNames: ["Moiyannry"], missingDiscordIds: ["2"], nameRows,
+  }, { sub: "player", name: "Player" });
+  store.setMatchStats(77, match().teams.flatMap(team => team.players).map(player => ({
+    discordId: player.id, kda: { kills: 16, deaths: 16, assists: 6 }, expected: null,
+  })));
+  store.setProfile("2", { aid: 15069462, mode: "arena" });
+  globalThis.axisProfiles.set(15069462, { nickname: "Moiyannry" });
+  const before = store.readAxisMatchReview(77), stats = store.readMatchKda(77);
+  assert.deepEqual(before.missingStats, [], "manual statistics were already entered");
+  const response = await reviewGet(new Request("https://tarkovstats.ru/api/admin/axis-league/match-review?matches=77"));
+  assert.equal(response.status, 200);
+  assert.deepEqual((await response.json()).reviews[0].nicknameMismatches, []);
+  assert.deepEqual(store.readAxisMatchReview(77), before, "stored upload evidence stays unchanged");
+  assert.deepEqual(store.readMatchKda(77), stats);
+
+  const participants = match().teams.flatMap((team, teamIndex) => team.players.map(player => ({
+    discordId: player.id, teamIndex, historyName: player.name, arenaNickname: player.id === "2" ? "Moiyannry" : null,
+  })));
+  const rejected = (change, label) => {
+    const review = structuredClone(before), roster = structuredClone(participants);
+    change(review.submissions[0], roster);
+    assert.deepEqual(recheckAxisMatchReviewNames(review, roster).nicknameMismatches, ["Moiyannry"], label);
+  };
+  rejected((submission) => { submission.missingDiscordIds = ["1"]; }, "current match must be the originally missing ID");
+  rejected((submission) => { submission.missingDiscordIds = ["1", "2"]; }, "two original missing players cannot be reconstructed");
+  rejected((submission) => { submission.missingDiscordIds = []; }, "current missing KDA cannot replace original missing IDs");
+  rejected((submission) => { submission.nameRows[0].matchedDiscordId = "1"; }, "partial legacy identity metadata abstains");
+  rejected((submission) => { submission.nameRows[0].matchedDiscordId = null; }, "explicit null is not legacy metadata");
+  rejected((submission) => {
+    submission.nameRows[0].nickname = ""; submission.recognizedNames = names.slice(1);
+  }, "an unreadable supporting row cannot prove complete coverage");
+  rejected((_submission, roster) => {
+    roster[0].historyName = "Player 6"; roster[5].historyName = "Player 1";
+  }, "mixed team sides retain the warning");
+  rejected((_submission, roster) => { roster[0].arenaNickname = "Moiyannry"; }, "duplicate aliases retain the warning");
+});
+
+test("Porvan underscore OCR warning clears while preserving other unmatched names and original assignments", t => {
+  setup(t);
+  const store = globalThis.axisStore;
+  const names = ["Porvan____2z", ...Array.from({ length: 8 }, (_, i) => "Player " + (i + 2)), "Warm9nin"];
+  store.submitAxisMatch(77, photo("c"), [], undefined, {
+    recognizedNames: names, unmatchedNames: ["Porvan____2z", "Warm9nin"], missingDiscordIds: ["1", "10"],
+    nameRows: rowsFor(names).map((row, i) => ({ ...row, matchedDiscordId: i === 0 || i === 9 ? null : String(i + 1) })),
+  }, { sub: "player", name: "Player" });
+  const before = store.readAxisMatchReview(77);
+  const roster = match().teams.flatMap((team, teamIndex) => team.players.map(player => ({
+    discordId: player.id, teamIndex, historyName: player.name, arenaNickname: player.id === "1" ? "Porvan_____2z" : null,
+  })));
+  assert.deepEqual(recheckAxisMatchReviewNames(before, roster).nicknameMismatches, ["Warm9nin"]);
+  assert.deepEqual(store.readAxisMatchReview(77), before);
+  roster[1].historyName = "Player 3"; roster[2].historyName = "Player 2";
+  assert.deepEqual(recheckAxisMatchReviewNames(before, roster).nicknameMismatches, ["Porvan____2z", "Warm9nin"],
+    "original assigned identities must still match even on the same team");
+});
