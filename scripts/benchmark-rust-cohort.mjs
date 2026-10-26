@@ -201,7 +201,7 @@ versionDb.close();
 const report = { formatVersion: 1, generatedAt: new Date().toISOString(),
   environment: { node: process.version, os: platform(), release: release(), cpu: cpus()[0]?.model,
     logicalCpus: cpus().length, sqlite: sqliteVersion },
-  fixture: { mode, players: rows, owners: 8, synthetic: true, seed: "deterministic modular metric distributions v1" },
+  fixture: { mode, players: rows, peerAccounts: rows, normalizedPeerRows: mode === "arena" ? 2 * rows : rows, owners: 8, synthetic: true, seed: "deterministic modular metric distributions v1" },
   methodology: { iterations, warmupRequestsPerScenario: 1, backendSelection, backendOrder,
     http: `loopback HTTP -> actual ${mode === "seasonal" ? "app/api/seasonal/cohort/route.ts" : "app/api/average/cohort/route.ts"} GET -> cache -> worker -> SQLite -> JSON`,
     server: mode === "seasonal" ? "request_timing_v1.total_ms; route has no Server-Timing header" : "Server-Timing total",

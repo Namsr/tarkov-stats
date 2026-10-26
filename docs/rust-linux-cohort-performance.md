@@ -20,7 +20,10 @@ backend. The second repetition reverses backend order. Each container receives
 its own fixture, process tree, response cache and cgroup, avoiding cumulative
 parent high-water marks between backend runs. OS page caches are not flushed.
 
-Defaults are 30,000 deterministic peer rows and 20 requests per scenario.
+Defaults are 30,000 deterministic peer accounts and 20 requests per scenario.
+Arena seeds two normalized rows per peer account (`lastHero` and `overall`);
+the other modes seed one. Eight additional owners are recorded separately.
+Reports distinguish peer accounts from normalized peer rows.
 `BENCHMARK_ROWS`, `BENCHMARK_ITERATIONS`, and `BENCHMARK_ROUNDS` can change these
 for deliberate experiments; the Node benchmark validates rows/iterations and
 the wrapper restricts repetitions to 1-3. No output or source file is overwritten.
