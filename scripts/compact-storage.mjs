@@ -150,6 +150,12 @@ function syncFile(path) {
   try { fsyncSync(fd); } finally { closeSync(fd); }
 }
 
+function setJournalMode(db, mode) {
+  const actual = String(db.prepare(`PRAGMA journal_mode = ${mode.toUpperCase()}`).all()[0].journal_mode).toLowerCase();
+  if (actual !== mode) throw new Error(`Could not set SQLite journal mode ${mode}: got ${actual}`);
+  return actual;
+}
+
 /** Create a verified offline copy. Never modifies/replaces the source or an
  * existing destination. An incomplete staging file is discarded on failure. */
 export async function compactStorage({ source, output, decompress = false, batchSize = 128, onProgress = () => {}, signal }) {
@@ -172,6 +178,8 @@ export async function compactStorage({ source, output, decompress = false, batch
     sourceDb.exec("PRAGMA busy_timeout = 5000; BEGIN");
     const pageSize = sourceDb.prepare("PRAGMA page_size").get().page_size;
     const pageCount = sourceDb.prepare("PRAGMA page_count").get().page_count;
+    const sourceJournalMode = String(sourceDb.prepare("PRAGMA journal_mode").get().journal_mode).toLowerCase();
+    if (!["delete", "wal"].includes(sourceJournalMode)) throw new Error(`Unsupported source journal mode: ${sourceJournalMode}`);
     const bytesBefore = pageSize * pageCount;
     const space = statfsSync(parent, { bigint: true });
     // The copy, its rollback journal and VACUUM may coexist. Deliberately require
@@ -191,7 +199,8 @@ export async function compactStorage({ source, output, decompress = false, batch
     await backup(sourceDb, stage, { rate: 256 });
     signal?.throwIfAborted();
     targetDb = new DatabaseSync(stage);
-    targetDb.exec("PRAGMA journal_mode = DELETE; PRAGMA synchronous = FULL; PRAGMA temp_store = FILE; PRAGMA cache_size = -8192");
+    setJournalMode(targetDb, "delete");
+    targetDb.exec("PRAGMA synchronous = FULL; PRAGMA temp_store = FILE; PRAGMA cache_size = -8192");
     const targets = schema.filter((item) => item.type === "table" && TARGETS.has(item.name.toLowerCase())).map((item) => item.name);
     if (!targets.length) throw new Error("No supported JSON storage tables found");
     const triggers = schema.filter((item) => item.type === "trigger" && TARGETS.has(item.tbl_name.toLowerCase()));
@@ -302,8 +311,28 @@ export async function compactStorage({ source, output, decompress = false, batch
     const chunkStorage = targetDb.prepare("SELECT 1 FROM sqlite_schema WHERE type='table' AND lower(name)=?").get(ARENA_HISTORY_PAYLOAD_TABLE)
       ? targetDb.prepare(`SELECT COUNT(*) AS chunks, COALESCE(SUM(length(payload)),0) AS compressedBytes FROM ${quote(ARENA_HISTORY_PAYLOAD_TABLE)}`).get()
       : { chunks: 0, compressedBytes: 0 };
+    // DELETE bounds temporary rewrite/VACUUM storage, but it must not change
+    // the source's persistent reader/writer concurrency contract on publication.
+    // Close verification statements before checkpointing: outstanding readers
+    // on the same connection can otherwise make wal_checkpoint return LOCKED.
+    targetDb.close(); targetDb = undefined;
+    targetDb = new DatabaseSync(stage);
+    targetDb.exec("PRAGMA synchronous = FULL");
+    const outputJournalMode = setJournalMode(targetDb, sourceJournalMode);
+    if (outputJournalMode === "wal") {
+      const checkpoint = targetDb.prepare("PRAGMA wal_checkpoint(TRUNCATE)").all()[0];
+      if (checkpoint.busy !== 0 || checkpoint.log !== 0 || checkpoint.checkpointed !== 0) {
+        throw new Error("Compacted database WAL checkpoint did not finish");
+      }
+    }
     targetDb.close(); targetDb = undefined;
     sourceDb.exec("ROLLBACK"); sourceDb.close(); sourceDb = undefined;
+    if (existsSync(`${stage}-wal`) && statSync(`${stage}-wal`).size !== 0) {
+      throw new Error("Compacted database still depends on a WAL sidecar");
+    }
+    for (const sidecar of [`${stage}-wal`, `${stage}-shm`]) {
+      if (existsSync(sidecar)) unlinkSync(sidecar);
+    }
     signal?.throwIfAborted();
     syncFile(stage);
     // A hard link on the same filesystem publishes atomically without the
@@ -312,6 +341,7 @@ export async function compactStorage({ source, output, decompress = false, batch
     unlinkSync(stage); ownsStage = false;
     return { version: 1, direction: decompress ? "decompress" : "compress", source: input, output: destination,
       bytesBefore, bytesAfter: statSync(destination).size, elapsedMs: Date.now() - started,
+      sourceJournalMode, outputJournalMode,
       integrityCheck: "ok", schemaUnchanged: JSON.stringify(finalSchema) === JSON.stringify(schema),
       coreSchemaUnchanged: true, arenaHistoryStorage: chunkStorage, tables, verifiedTables: after };
   } finally {

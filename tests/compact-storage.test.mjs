@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { copyFile, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -47,6 +47,8 @@ test("offline compaction preserves all decoded data, SQL projections, triggers, 
   try {
     const originalFile = await readFile(f.source);
     const result = await compactStorage({ ...f, batchSize: 2 });
+    assert.equal(result.sourceJournalMode, "delete");
+    assert.equal(result.outputJournalMode, "delete");
     assert.equal(result.integrityCheck, "ok");
     assert.equal(result.coreSchemaUnchanged, true);
     assert.ok(result.arenaHistoryStorage.chunks > 0);
@@ -55,6 +57,7 @@ test("offline compaction preserves all decoded data, SQL projections, triggers, 
     assert.deepEqual(await readFile(f.source), originalFile);
     const db = new DatabaseSync(f.output);
     try {
+      assert.equal(db.prepare("PRAGMA journal_mode").get().journal_mode, "delete");
       assert.equal(db.prepare("SELECT COUNT(*) AS n FROM changes").get().n, 0);
       assert.equal(db.prepare("SELECT seq FROM sqlite_sequence WHERE name='changes'").get().seq, 1);
       assert.equal(db.prepare("PRAGMA application_id").get().application_id, 1234);
@@ -71,6 +74,56 @@ test("offline compaction preserves all decoded data, SQL projections, triggers, 
       db.exec("UPDATE mode_players SET stats_json=stats_json WHERE aid=2; UPDATE progression_snapshots SET stats_json=stats_json WHERE id=2");
       assert.deepEqual(db.prepare("SELECT id, action FROM changes ORDER BY id").all().map((row) => [row.id, row.action]), [[2, "mode"], [3, "progression"]]);
     } finally { db.close(); }
+  } finally { await rm(f.dir, { recursive: true, force: true }); }
+});
+
+test("WAL compression and decompression publish self-contained copies with concurrent readers and writers", async () => {
+  const f = await fixture();
+  try {
+    const source = new DatabaseSync(f.source);
+    try { source.exec("PRAGMA journal_mode=WAL"); } finally { source.close(); }
+    const originalFile = await readFile(f.source);
+    const compressed = await compactStorage(f);
+    const isolated = join(f.dir, "file-only-copies");
+    await mkdir(isolated);
+    const copyPublishedFile = async (name, path) => {
+      const publishedFiles = await readdir(f.dir);
+      assert.equal(publishedFiles.includes(`${name}-wal`), false);
+      assert.equal(publishedFiles.includes(`${name}-shm`), false);
+      const copy = join(isolated, name);
+      await copyFile(path, copy); // Transfer only the published .db, never sidecars.
+      return copy;
+    };
+    const compressedCopy = await copyPublishedFile("compressed.db", f.output);
+    const legacy = join(f.dir, "legacy.db");
+    const decompressed = await compactStorage({ source: f.output, output: legacy, decompress: true });
+    const legacyCopy = await copyPublishedFile("legacy.db", legacy);
+    assert.deepEqual(await readFile(f.source), originalFile);
+    for (const [copy, report] of [[compressedCopy, compressed], [legacyCopy, decompressed]]) {
+      assert.equal(report.sourceJournalMode, "wal");
+      assert.equal(report.outputJournalMode, "wal");
+      const readonly = new DatabaseSync(copy, { readOnly: true });
+      try {
+        assert.equal(readonly.prepare("PRAGMA quick_check").get().quick_check, "ok");
+        assert.equal(decodeStorageJsonText(readonly.prepare("SELECT stats_json FROM mode_players WHERE aid=4").get().stats_json), largeStats(4));
+      } finally { readonly.close(); }
+      const reader = new DatabaseSync(copy);
+      const writer = new DatabaseSync(copy);
+      try {
+        writer.exec("PRAGMA busy_timeout=0");
+        reader.exec("BEGIN");
+        assert.equal(reader.prepare("SELECT COUNT(*) AS n FROM mode_players").get().n, 9);
+        // DELETE mode used to make this commit fail with SQLITE_BUSY while
+        // the HTTP reader retained its snapshot. Do not set WAL in the test.
+        writer.prepare("INSERT INTO mode_players VALUES ('pve', ?, ?)").run(100, largeStats(100));
+        assert.equal(writer.prepare("SELECT COUNT(*) AS n FROM mode_players").get().n, 10);
+        assert.equal(reader.prepare("SELECT COUNT(*) AS n FROM mode_players").get().n, 9);
+        reader.exec("ROLLBACK");
+        assert.equal(reader.prepare("SELECT COUNT(*) AS n FROM mode_players").get().n, 10);
+        assert.equal(writer.prepare("PRAGMA journal_mode").get().journal_mode, "wal");
+      } finally { reader.close(); writer.close(); }
+    }
+    assert.equal((await readdir(f.dir)).some((name) => name.startsWith(".storage-compact-")), false);
   } finally { await rm(f.dir, { recursive: true, force: true }); }
 });
 
