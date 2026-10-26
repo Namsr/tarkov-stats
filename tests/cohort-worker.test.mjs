@@ -261,8 +261,9 @@ test("cohort diagnostics identify the job kind and timing without leaking accoun
   const event = logs.find((row) => row.event === "cohort_job_v1");
   assert.ok(event);
   assert.equal(event.kind, "persistent");
+  assert.ok(["typescript", "rust"].includes(event.backend));
   assert.equal(event.outcome, "success");
   assert.ok(event.queue_ms >= 0 && event.worker_ms >= 0 && event.elapsed_ms >= 0);
-  assert.deepEqual(Object.keys(event).sort(), ["at", "elapsed_ms", "event", "kind", "outcome", "queue_ms", "worker_ms"]);
+  assert.deepEqual(Object.keys(event).sort(), ["at", "backend", "elapsed_ms", "event", "kind", "outcome", "queue_ms", "worker_ms"]);
   assert.doesNotMatch(JSON.stringify(event), /987654321|regular|args|aid/);
 });

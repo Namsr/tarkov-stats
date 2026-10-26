@@ -127,3 +127,8 @@ next-env.d.ts
 /backups/
 *.bak
 *.bak.*
+
+# Native Rust build output; Cargo.lock remains versioned.
+/rust/*/target/
+!/docs/rust-cohort-performance.md
+!/docs/rust-cohort-benchmark.json

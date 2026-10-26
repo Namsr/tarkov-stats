@@ -25,6 +25,12 @@ jobs:
         with:
           node-version: 22
           cache: npm
+      - name: Install the Rust pilot toolchain
+        run: |
+          rustup toolchain install 1.98.1 --profile minimal --component rustfmt --component clippy
+          rustup default 1.98.1
+      - run: cargo fmt --manifest-path rust/cohort-worker/Cargo.toml -- --check
+      - run: cargo clippy --locked --all-targets --manifest-path rust/cohort-worker/Cargo.toml -- -D warnings
       - run: npm ci
       - run: npm run i18n:check
       - run: npm run lint
@@ -72,6 +78,7 @@ jobs:
         run: |
           test "$(docker image inspect --format '{{index .Config.Labels "org.opencontainers.image.revision"}}' "tarkovstats-web:$GITHUB_SHA")" = "$GITHUB_SHA"
           docker run --rm --network none --entrypoint node "tarkovstats-web:$GITHUB_SHA" --experimental-strip-types --experimental-sqlite -e "require('node:sqlite'); require('discord.js'); require('node:fs').accessSync('/app/server.js'); require('node:fs').accessSync('/app/scripts/axis-discord-bot.mjs')"
+          docker run --rm --network none --entrypoint /app/rust/cohort-worker/target/release/tarkov-cohort-worker "tarkovstats-web:$GITHUB_SHA" < /dev/null
           docker network create image-smoke
           trap 'docker logs image-smoke; docker rm --force image-smoke; docker network rm image-smoke' EXIT
           docker run --detach --network image-smoke --network-alias web --memory 896m --memory-swap 1152m --env WEB_BACKGROUND_WORKERS=false --name image-smoke "tarkovstats-web:$GITHUB_SHA"

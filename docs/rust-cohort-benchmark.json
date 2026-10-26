@@ -1,0 +1,899 @@
+{
+  "formatVersion": 1,
+  "generatedAt": "2026-10-26T05:48:13.632Z",
+  "environment": {
+    "node": "v24.19.0",
+    "os": "win32",
+    "release": "10.0.26200",
+    "cpu": "AMD Ryzen 7 5800X3D 8-Core Processor           ",
+    "logicalCpus": 16,
+    "sqlite": "3.53.3"
+  },
+  "fixture": {
+    "players": 30000,
+    "owners": 8,
+    "synthetic": true,
+    "seed": "deterministic modular metric distributions v1"
+  },
+  "methodology": {
+    "iterations": 12,
+    "warmupRequestsPerScenario": 1,
+    "backendOrder": [
+      "typescript",
+      "rust"
+    ],
+    "http": "loopback HTTP -> actual app/api/average/cohort/route.ts GET -> stored progression snapshot -> cache -> worker -> SQLite -> JSON",
+    "misses": "memory and durable statistics response cache cleared before each sequential request or distinct-owner concurrent batch",
+    "hits": "all four owners cached before timing; worker job count must be zero",
+    "cold": "fresh worker process; route modules, fixture and analytics schema already initialized; OS page cache not flushed",
+    "phases": "queue and worker diagnostics rounded to whole milliseconds by production code",
+    "excluded": "production Next.js server routing, TLS/CDN/proxy, network to user, browser rendering, external Tarkov API, production data and VPS resource limits",
+    "limitations": "local synthetic run; small p95 sample; backends measured sequentially with warm OS file cache; no performance threshold asserted"
+  },
+  "results": [
+    {
+      "backend": "typescript",
+      "scenario": "first_request_fresh_worker",
+      "coldHttpMs": 775.942,
+      "phases": {
+        "storeopen": 5,
+        "cohort": 236,
+        "queue": 5,
+        "worker": 231,
+        "total": 757
+      }
+    },
+    {
+      "backend": "typescript",
+      "scenario": "matched",
+      "statistic": "median",
+      "cache": "miss",
+      "concurrency": 1,
+      "errors": [],
+      "http": {
+        "samples": 12,
+        "p50Ms": 273.001,
+        "p95Ms": 485.261,
+        "maxMs": 485.261
+      },
+      "server": {
+        "samples": 12,
+        "p50Ms": 269,
+        "p95Ms": 477,
+        "maxMs": 477
+      },
+      "queue": {
+        "samples": 12,
+        "p50Ms": 0,
+        "p95Ms": 0,
+        "maxMs": 0
+      },
+      "worker": {
+        "samples": 12,
+        "p50Ms": 7,
+        "p95Ms": 10,
+        "maxMs": 10
+      },
+      "workerJobs": 12,
+      "cacheHits": 0,
+      "responseBytes": 1703
+    },
+    {
+      "backend": "typescript",
+      "scenario": "matched",
+      "statistic": "median",
+      "cache": "miss",
+      "concurrency": 4,
+      "errors": [],
+      "http": {
+        "samples": 12,
+        "p50Ms": 757.005,
+        "p95Ms": 1273.36,
+        "maxMs": 1273.36
+      },
+      "server": {
+        "samples": 12,
+        "p50Ms": 738,
+        "p95Ms": 1242,
+        "maxMs": 1242
+      },
+      "queue": {
+        "samples": 12,
+        "p50Ms": 14,
+        "p95Ms": 721,
+        "maxMs": 721
+      },
+      "worker": {
+        "samples": 12,
+        "p50Ms": 258,
+        "p95Ms": 391,
+        "maxMs": 391
+      },
+      "workerJobs": 12,
+      "cacheHits": 0,
+      "responseBytes": 1703
+    },
+    {
+      "backend": "typescript",
+      "scenario": "matched",
+      "statistic": "median",
+      "cache": "hit",
+      "concurrency": 4,
+      "errors": [],
+      "http": {
+        "samples": 12,
+        "p50Ms": 624.938,
+        "p95Ms": 733.317,
+        "maxMs": 733.317
+      },
+      "server": {
+        "samples": 12,
+        "p50Ms": 149,
+        "p95Ms": 223,
+        "maxMs": 223
+      },
+      "queue": {
+        "samples": 0,
+        "p50Ms": null,
+        "p95Ms": null,
+        "maxMs": null
+      },
+      "worker": {
+        "samples": 0,
+        "p50Ms": null,
+        "p95Ms": null,
+        "maxMs": null
+      },
+      "workerJobs": 0,
+      "cacheHits": 12,
+      "responseBytes": 1703
+    },
+    {
+      "backend": "typescript",
+      "scenario": "matched",
+      "statistic": "trimmed_mean",
+      "cache": "miss",
+      "concurrency": 1,
+      "errors": [],
+      "http": {
+        "samples": 12,
+        "p50Ms": 260.143,
+        "p95Ms": 335.044,
+        "maxMs": 335.044
+      },
+      "server": {
+        "samples": 12,
+        "p50Ms": 257,
+        "p95Ms": 329,
+        "maxMs": 329
+      },
+      "queue": {
+        "samples": 12,
+        "p50Ms": 0,
+        "p95Ms": 0,
+        "maxMs": 0
+      },
+      "worker": {
+        "samples": 12,
+        "p50Ms": 7,
+        "p95Ms": 10,
+        "maxMs": 10
+      },
+      "workerJobs": 12,
+      "cacheHits": 0,
+      "responseBytes": 1742
+    },
+    {
+      "backend": "typescript",
+      "scenario": "matched",
+      "statistic": "trimmed_mean",
+      "cache": "miss",
+      "concurrency": 4,
+      "errors": [],
+      "http": {
+        "samples": 12,
+        "p50Ms": 627.093,
+        "p95Ms": 1175.976,
+        "maxMs": 1175.976
+      },
+      "server": {
+        "samples": 12,
+        "p50Ms": 619,
+        "p95Ms": 1138,
+        "maxMs": 1138
+      },
+      "queue": {
+        "samples": 12,
+        "p50Ms": 12,
+        "p95Ms": 583,
+        "maxMs": 583
+      },
+      "worker": {
+        "samples": 12,
+        "p50Ms": 271,
+        "p95Ms": 338,
+        "maxMs": 338
+      },
+      "workerJobs": 12,
+      "cacheHits": 0,
+      "responseBytes": 1742
+    },
+    {
+      "backend": "typescript",
+      "scenario": "matched",
+      "statistic": "trimmed_mean",
+      "cache": "hit",
+      "concurrency": 4,
+      "errors": [],
+      "http": {
+        "samples": 12,
+        "p50Ms": 1191.066,
+        "p95Ms": 1319.803,
+        "maxMs": 1319.803
+      },
+      "server": {
+        "samples": 12,
+        "p50Ms": 218,
+        "p95Ms": 437,
+        "maxMs": 437
+      },
+      "queue": {
+        "samples": 0,
+        "p50Ms": null,
+        "p95Ms": null,
+        "maxMs": null
+      },
+      "worker": {
+        "samples": 0,
+        "p50Ms": null,
+        "p95Ms": null,
+        "maxMs": null
+      },
+      "workerJobs": 0,
+      "cacheHits": 12,
+      "responseBytes": 1742
+    },
+    {
+      "backend": "typescript",
+      "scenario": "population",
+      "statistic": "median",
+      "cache": "miss",
+      "concurrency": 1,
+      "errors": [],
+      "http": {
+        "samples": 12,
+        "p50Ms": 384.648,
+        "p95Ms": 459.437,
+        "maxMs": 459.437
+      },
+      "server": {
+        "samples": 12,
+        "p50Ms": 383,
+        "p95Ms": 448,
+        "maxMs": 448
+      },
+      "queue": {
+        "samples": 12,
+        "p50Ms": 0,
+        "p95Ms": 0,
+        "maxMs": 0
+      },
+      "worker": {
+        "samples": 12,
+        "p50Ms": 152,
+        "p95Ms": 185,
+        "maxMs": 185
+      },
+      "workerJobs": 12,
+      "cacheHits": 0,
+      "responseBytes": 1877
+    },
+    {
+      "backend": "typescript",
+      "scenario": "population",
+      "statistic": "median",
+      "cache": "miss",
+      "concurrency": 4,
+      "errors": [],
+      "http": {
+        "samples": 12,
+        "p50Ms": 666.115,
+        "p95Ms": 1117.7,
+        "maxMs": 1117.7
+      },
+      "server": {
+        "samples": 12,
+        "p50Ms": 657,
+        "p95Ms": 1094,
+        "maxMs": 1094
+      },
+      "queue": {
+        "samples": 12,
+        "p50Ms": 170,
+        "p95Ms": 640,
+        "maxMs": 640
+      },
+      "worker": {
+        "samples": 12,
+        "p50Ms": 192,
+        "p95Ms": 279,
+        "maxMs": 279
+      },
+      "workerJobs": 12,
+      "cacheHits": 0,
+      "responseBytes": 1877
+    },
+    {
+      "backend": "typescript",
+      "scenario": "population",
+      "statistic": "median",
+      "cache": "hit",
+      "concurrency": 4,
+      "errors": [],
+      "http": {
+        "samples": 12,
+        "p50Ms": 732.626,
+        "p95Ms": 773.457,
+        "maxMs": 773.457
+      },
+      "server": {
+        "samples": 12,
+        "p50Ms": 183,
+        "p95Ms": 233,
+        "maxMs": 233
+      },
+      "queue": {
+        "samples": 0,
+        "p50Ms": null,
+        "p95Ms": null,
+        "maxMs": null
+      },
+      "worker": {
+        "samples": 0,
+        "p50Ms": null,
+        "p95Ms": null,
+        "maxMs": null
+      },
+      "workerJobs": 0,
+      "cacheHits": 12,
+      "responseBytes": 1877
+    },
+    {
+      "backend": "typescript",
+      "scenario": "population",
+      "statistic": "trimmed_mean",
+      "cache": "miss",
+      "concurrency": 1,
+      "errors": [],
+      "http": {
+        "samples": 12,
+        "p50Ms": 401.207,
+        "p95Ms": 526.25,
+        "maxMs": 526.25
+      },
+      "server": {
+        "samples": 12,
+        "p50Ms": 395,
+        "p95Ms": 521,
+        "maxMs": 521
+      },
+      "queue": {
+        "samples": 12,
+        "p50Ms": 0,
+        "p95Ms": 0,
+        "maxMs": 0
+      },
+      "worker": {
+        "samples": 12,
+        "p50Ms": 144,
+        "p95Ms": 211,
+        "maxMs": 211
+      },
+      "workerJobs": 12,
+      "cacheHits": 0,
+      "responseBytes": 1928
+    },
+    {
+      "backend": "typescript",
+      "scenario": "population",
+      "statistic": "trimmed_mean",
+      "cache": "miss",
+      "concurrency": 4,
+      "errors": [],
+      "http": {
+        "samples": 12,
+        "p50Ms": 759.025,
+        "p95Ms": 1578.804,
+        "maxMs": 1578.804
+      },
+      "server": {
+        "samples": 12,
+        "p50Ms": 752,
+        "p95Ms": 1561,
+        "maxMs": 1561
+      },
+      "queue": {
+        "samples": 12,
+        "p50Ms": 175,
+        "p95Ms": 736,
+        "maxMs": 736
+      },
+      "worker": {
+        "samples": 12,
+        "p50Ms": 259,
+        "p95Ms": 620,
+        "maxMs": 620
+      },
+      "workerJobs": 12,
+      "cacheHits": 0,
+      "responseBytes": 1928
+    },
+    {
+      "backend": "typescript",
+      "scenario": "population",
+      "statistic": "trimmed_mean",
+      "cache": "hit",
+      "concurrency": 4,
+      "errors": [],
+      "http": {
+        "samples": 12,
+        "p50Ms": 766.487,
+        "p95Ms": 774.817,
+        "maxMs": 774.817
+      },
+      "server": {
+        "samples": 12,
+        "p50Ms": 199,
+        "p95Ms": 232,
+        "maxMs": 232
+      },
+      "queue": {
+        "samples": 0,
+        "p50Ms": null,
+        "p95Ms": null,
+        "maxMs": null
+      },
+      "worker": {
+        "samples": 0,
+        "p50Ms": null,
+        "p95Ms": null,
+        "maxMs": null
+      },
+      "workerJobs": 0,
+      "cacheHits": 12,
+      "responseBytes": 1928
+    },
+    {
+      "backend": "rust",
+      "scenario": "first_request_fresh_worker",
+      "coldHttpMs": 284.496,
+      "phases": {
+        "storeopen": 7,
+        "cohort": 13,
+        "queue": 3,
+        "worker": 9,
+        "total": 270
+      }
+    },
+    {
+      "backend": "rust",
+      "scenario": "matched",
+      "statistic": "median",
+      "cache": "miss",
+      "concurrency": 1,
+      "errors": [],
+      "http": {
+        "samples": 12,
+        "p50Ms": 259.515,
+        "p95Ms": 350.909,
+        "maxMs": 350.909
+      },
+      "server": {
+        "samples": 12,
+        "p50Ms": 248,
+        "p95Ms": 343,
+        "maxMs": 343
+      },
+      "queue": {
+        "samples": 12,
+        "p50Ms": 0,
+        "p95Ms": 0,
+        "maxMs": 0
+      },
+      "worker": {
+        "samples": 12,
+        "p50Ms": 4,
+        "p95Ms": 6,
+        "maxMs": 6
+      },
+      "workerJobs": 12,
+      "cacheHits": 0,
+      "responseBytes": 1703
+    },
+    {
+      "backend": "rust",
+      "scenario": "matched",
+      "statistic": "median",
+      "cache": "miss",
+      "concurrency": 4,
+      "errors": [],
+      "http": {
+        "samples": 12,
+        "p50Ms": 559.563,
+        "p95Ms": 1067.401,
+        "maxMs": 1067.401
+      },
+      "server": {
+        "samples": 12,
+        "p50Ms": 544,
+        "p95Ms": 1048,
+        "maxMs": 1048
+      },
+      "queue": {
+        "samples": 12,
+        "p50Ms": 12,
+        "p95Ms": 528,
+        "maxMs": 528
+      },
+      "worker": {
+        "samples": 12,
+        "p50Ms": 234,
+        "p95Ms": 292,
+        "maxMs": 292
+      },
+      "workerJobs": 12,
+      "cacheHits": 0,
+      "responseBytes": 1703
+    },
+    {
+      "backend": "rust",
+      "scenario": "matched",
+      "statistic": "median",
+      "cache": "hit",
+      "concurrency": 4,
+      "errors": [],
+      "http": {
+        "samples": 12,
+        "p50Ms": 891.73,
+        "p95Ms": 1041.88,
+        "maxMs": 1041.88
+      },
+      "server": {
+        "samples": 12,
+        "p50Ms": 206,
+        "p95Ms": 415,
+        "maxMs": 415
+      },
+      "queue": {
+        "samples": 0,
+        "p50Ms": null,
+        "p95Ms": null,
+        "maxMs": null
+      },
+      "worker": {
+        "samples": 0,
+        "p50Ms": null,
+        "p95Ms": null,
+        "maxMs": null
+      },
+      "workerJobs": 0,
+      "cacheHits": 12,
+      "responseBytes": 1703
+    },
+    {
+      "backend": "rust",
+      "scenario": "matched",
+      "statistic": "trimmed_mean",
+      "cache": "miss",
+      "concurrency": 1,
+      "errors": [],
+      "http": {
+        "samples": 12,
+        "p50Ms": 268.023,
+        "p95Ms": 610.334,
+        "maxMs": 610.334
+      },
+      "server": {
+        "samples": 12,
+        "p50Ms": 260,
+        "p95Ms": 600,
+        "maxMs": 600
+      },
+      "queue": {
+        "samples": 12,
+        "p50Ms": 0,
+        "p95Ms": 0,
+        "maxMs": 0
+      },
+      "worker": {
+        "samples": 12,
+        "p50Ms": 4,
+        "p95Ms": 5,
+        "maxMs": 5
+      },
+      "workerJobs": 12,
+      "cacheHits": 0,
+      "responseBytes": 1742
+    },
+    {
+      "backend": "rust",
+      "scenario": "matched",
+      "statistic": "trimmed_mean",
+      "cache": "miss",
+      "concurrency": 4,
+      "errors": [],
+      "http": {
+        "samples": 12,
+        "p50Ms": 543.774,
+        "p95Ms": 1284.496,
+        "maxMs": 1284.496
+      },
+      "server": {
+        "samples": 12,
+        "p50Ms": 529,
+        "p95Ms": 1264,
+        "maxMs": 1264
+      },
+      "queue": {
+        "samples": 12,
+        "p50Ms": 11,
+        "p95Ms": 512,
+        "maxMs": 512
+      },
+      "worker": {
+        "samples": 12,
+        "p50Ms": 251,
+        "p95Ms": 441,
+        "maxMs": 441
+      },
+      "workerJobs": 12,
+      "cacheHits": 0,
+      "responseBytes": 1742
+    },
+    {
+      "backend": "rust",
+      "scenario": "matched",
+      "statistic": "trimmed_mean",
+      "cache": "hit",
+      "concurrency": 4,
+      "errors": [],
+      "http": {
+        "samples": 12,
+        "p50Ms": 633.506,
+        "p95Ms": 1024.695,
+        "maxMs": 1024.695
+      },
+      "server": {
+        "samples": 12,
+        "p50Ms": 174,
+        "p95Ms": 373,
+        "maxMs": 373
+      },
+      "queue": {
+        "samples": 0,
+        "p50Ms": null,
+        "p95Ms": null,
+        "maxMs": null
+      },
+      "worker": {
+        "samples": 0,
+        "p50Ms": null,
+        "p95Ms": null,
+        "maxMs": null
+      },
+      "workerJobs": 0,
+      "cacheHits": 12,
+      "responseBytes": 1742
+    },
+    {
+      "backend": "rust",
+      "scenario": "population",
+      "statistic": "median",
+      "cache": "miss",
+      "concurrency": 1,
+      "errors": [],
+      "http": {
+        "samples": 12,
+        "p50Ms": 276.496,
+        "p95Ms": 302.768,
+        "maxMs": 302.768
+      },
+      "server": {
+        "samples": 12,
+        "p50Ms": 275,
+        "p95Ms": 300,
+        "maxMs": 300
+      },
+      "queue": {
+        "samples": 12,
+        "p50Ms": 0,
+        "p95Ms": 0,
+        "maxMs": 0
+      },
+      "worker": {
+        "samples": 12,
+        "p50Ms": 19,
+        "p95Ms": 33,
+        "maxMs": 33
+      },
+      "workerJobs": 12,
+      "cacheHits": 0,
+      "responseBytes": 1877
+    },
+    {
+      "backend": "rust",
+      "scenario": "population",
+      "statistic": "median",
+      "cache": "miss",
+      "concurrency": 4,
+      "errors": [],
+      "http": {
+        "samples": 12,
+        "p50Ms": 534.848,
+        "p95Ms": 1342.637,
+        "maxMs": 1342.637
+      },
+      "server": {
+        "samples": 12,
+        "p50Ms": 527,
+        "p95Ms": 1323,
+        "maxMs": 1323
+      },
+      "queue": {
+        "samples": 12,
+        "p50Ms": 21,
+        "p95Ms": 510,
+        "maxMs": 510
+      },
+      "worker": {
+        "samples": 12,
+        "p50Ms": 233,
+        "p95Ms": 623,
+        "maxMs": 623
+      },
+      "workerJobs": 12,
+      "cacheHits": 0,
+      "responseBytes": 1877
+    },
+    {
+      "backend": "rust",
+      "scenario": "population",
+      "statistic": "median",
+      "cache": "hit",
+      "concurrency": 4,
+      "errors": [],
+      "http": {
+        "samples": 12,
+        "p50Ms": 808.923,
+        "p95Ms": 1024.832,
+        "maxMs": 1024.832
+      },
+      "server": {
+        "samples": 12,
+        "p50Ms": 214,
+        "p95Ms": 357,
+        "maxMs": 357
+      },
+      "queue": {
+        "samples": 0,
+        "p50Ms": null,
+        "p95Ms": null,
+        "maxMs": null
+      },
+      "worker": {
+        "samples": 0,
+        "p50Ms": null,
+        "p95Ms": null,
+        "maxMs": null
+      },
+      "workerJobs": 0,
+      "cacheHits": 12,
+      "responseBytes": 1877
+    },
+    {
+      "backend": "rust",
+      "scenario": "population",
+      "statistic": "trimmed_mean",
+      "cache": "miss",
+      "concurrency": 1,
+      "errors": [],
+      "http": {
+        "samples": 12,
+        "p50Ms": 284.313,
+        "p95Ms": 368.2,
+        "maxMs": 368.2
+      },
+      "server": {
+        "samples": 12,
+        "p50Ms": 275,
+        "p95Ms": 355,
+        "maxMs": 355
+      },
+      "queue": {
+        "samples": 12,
+        "p50Ms": 0,
+        "p95Ms": 0,
+        "maxMs": 0
+      },
+      "worker": {
+        "samples": 12,
+        "p50Ms": 19,
+        "p95Ms": 30,
+        "maxMs": 30
+      },
+      "workerJobs": 12,
+      "cacheHits": 0,
+      "responseBytes": 1928
+    },
+    {
+      "backend": "rust",
+      "scenario": "population",
+      "statistic": "trimmed_mean",
+      "cache": "miss",
+      "concurrency": 4,
+      "errors": [],
+      "http": {
+        "samples": 12,
+        "p50Ms": 522.197,
+        "p95Ms": 959.292,
+        "maxMs": 959.292
+      },
+      "server": {
+        "samples": 12,
+        "p50Ms": 496,
+        "p95Ms": 933,
+        "maxMs": 933
+      },
+      "queue": {
+        "samples": 12,
+        "p50Ms": 21,
+        "p95Ms": 510,
+        "maxMs": 510
+      },
+      "worker": {
+        "samples": 12,
+        "p50Ms": 167,
+        "p95Ms": 254,
+        "maxMs": 254
+      },
+      "workerJobs": 12,
+      "cacheHits": 0,
+      "responseBytes": 1928
+    },
+    {
+      "backend": "rust",
+      "scenario": "population",
+      "statistic": "trimmed_mean",
+      "cache": "hit",
+      "concurrency": 4,
+      "errors": [],
+      "http": {
+        "samples": 12,
+        "p50Ms": 1091.437,
+        "p95Ms": 1130.189,
+        "maxMs": 1130.189
+      },
+      "server": {
+        "samples": 12,
+        "p50Ms": 208,
+        "p95Ms": 520,
+        "maxMs": 520
+      },
+      "queue": {
+        "samples": 0,
+        "p50Ms": null,
+        "p95Ms": null,
+        "maxMs": null
+      },
+      "worker": {
+        "samples": 0,
+        "p50Ms": null,
+        "p95Ms": null,
+        "maxMs": null
+      },
+      "workerJobs": 0,
+      "cacheHits": 12,
+      "responseBytes": 1928
+    }
+  ]
+}
