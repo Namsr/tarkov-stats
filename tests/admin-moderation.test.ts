@@ -14,6 +14,31 @@ import { createSqliteBanStore } from "../lib/ban-db.ts";
 import { createSqliteSeasonalStore } from "../lib/seasonal/storage.ts";
 import { materializeRegularProgression } from "../lib/regular-progression.ts";
 
+test("cold moderation storage reports contention without blocking HTTP for thirty seconds", () => {
+  const directory = mkdtempSync(join(tmpdir(), "moderation-busy-"));
+  const file = join(directory, "admin.db");
+  const setup = new DatabaseSync(file);
+  createSqliteModerationStore(setup, { attachExternal: false }); setup.close();
+  const locker = new DatabaseSync(file);
+  locker.exec("BEGIN EXCLUSIVE");
+  try {
+    const output = execFileSync(process.execPath, [
+      "--experimental-strip-types", "--experimental-sqlite", "--input-type=module", "-e",
+      `const { getModerationStore } = await import('./lib/admin/moderation-db.ts');
+       const started = performance.now();
+       try { await getModerationStore(); console.log(JSON.stringify({ busy: false })); }
+       catch (error) { console.log(JSON.stringify({ busy: /database (?:is )?(?:locked|busy)/i.test(error.message), elapsedMs: performance.now() - started })); }`,
+    ], { cwd: process.cwd(), encoding: "utf8", timeout: 8_000,
+      env: { ...process.env, NODE_NO_WARNINGS: "1", ADMIN_ANALYTICS_SQLITE_PATH: file } });
+    const report = JSON.parse(output.trim());
+    assert.equal(report.busy, true);
+    assert.ok(report.elapsedMs < 1_500, `moderation blocked for ${report.elapsedMs}ms`);
+  } finally {
+    locker.exec("ROLLBACK"); locker.close();
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
 test("cold public risk read does not wait for moderation migration writes", () => {
   const directory = mkdtempSync(join(tmpdir(), "risk-read-"));
   const file = join(directory, "admin.db");

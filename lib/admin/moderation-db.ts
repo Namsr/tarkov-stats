@@ -651,7 +651,10 @@ async function openModerationDb(): Promise<SqliteDatabase> {
   const sqlite = (await import("node:sqlite" as string)) as any;
   const opened = new sqlite.DatabaseSync(file);
   try {
-    opened.exec("PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 30000;");
+    // Public search and risk writes share this synchronous connection with
+    // admin mutations. Fail busy operations promptly; their callers already
+    // report failure, and transaction rollback preserves mutation atomicity.
+    opened.exec("PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 250;");
   } catch (error) {
     try { opened.close(); } catch { /* already closed */ }
     throw error;
