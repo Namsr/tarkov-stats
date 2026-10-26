@@ -3,6 +3,8 @@ mod cache;
 mod compute;
 mod config;
 mod http;
+mod persistent;
+mod progression;
 mod showcase;
 mod storage;
 mod ui;
@@ -46,8 +48,11 @@ async fn serve() -> Result<(), Box<dyn std::error::Error>> {
     let storage = storage::Storage::start();
     let config = config::Config::from_env();
     let showcase = showcase::Showcase::start(config.clone());
+    let progression = progression::ProgressionService::new(storage.clone(), config.clone());
     let cache = cache::Cache::new(storage.clone(), worker.clone());
     let arena = arena::ArenaService::new(cache.clone(), storage.clone());
+    let persistent =
+        persistent::PersistentService::new(cache.clone(), storage.clone(), arena.clone());
     let arena_ui = if ui_enabled {
         Some(ui::Ui::start(arena.clone(), &config).map_err(std::io::Error::other)?)
     } else {
@@ -75,12 +80,19 @@ async fn serve() -> Result<(), Box<dyn std::error::Error>> {
             Router::new()
                 .route(
                     "/api/average",
-                    get(arena::get)
+                    get(persistent::average_get)
                         .options(http::options)
                         .fallback(http::method_not_allowed),
                 )
                 .route("/api/average/", any(http::trailing))
-                .with_state(arena),
+                .route(
+                    "/api/average/metrics",
+                    get(persistent::metrics_get)
+                        .options(http::options)
+                        .fallback(http::method_not_allowed),
+                )
+                .route("/api/average/metrics/", any(http::trailing))
+                .with_state(persistent),
         )
         .merge(
             Router::new()
@@ -92,6 +104,17 @@ async fn serve() -> Result<(), Box<dyn std::error::Error>> {
                 )
                 .route("/api/home/showcase/", any(http::trailing))
                 .with_state(showcase),
+        )
+        .merge(
+            Router::new()
+                .route(
+                    "/api/progression/average",
+                    get(progression::get)
+                        .options(http::options)
+                        .fallback(http::method_not_allowed),
+                )
+                .route("/api/progression/average/", any(http::trailing))
+                .with_state(progression),
         );
     let app = if let Some(state) = arena_ui {
         app.merge(

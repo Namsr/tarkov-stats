@@ -9,7 +9,33 @@ enum Command {
     Write(String, Value, i64, oneshot::Sender<()>),
     Event(Value),
     ArenaVersion(oneshot::Sender<u64>),
-    Publication(String, i64, oneshot::Sender<Option<Publication>>),
+    Publication(
+        PublicationScope,
+        String,
+        i64,
+        oneshot::Sender<Option<Publication>>,
+    ),
+    Progression(
+        String,
+        String,
+        i64,
+        oneshot::Sender<Option<crate::progression::Published>>,
+    ),
+}
+#[derive(Clone, Copy, Debug)]
+pub enum PublicationScope {
+    Regular,
+    Pve,
+    Arena,
+}
+impl PublicationScope {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Regular => "regular",
+            Self::Pve => "pve",
+            Self::Arena => "arena",
+        }
+    }
 }
 #[derive(Clone, Debug)]
 pub struct Publication {
@@ -134,9 +160,14 @@ impl State {
             .filter(|n| *n >= 0.0 && *n <= 9007199254740991.0 && n.fract() == 0.0)
             .map_or(0, |n| n as u64)
     }
-    fn publication(&mut self, variant: &str, now: i64) -> Option<Publication> {
+    fn publication(
+        &mut self,
+        scope: PublicationScope,
+        variant: &str,
+        now: i64,
+    ) -> Option<Publication> {
         let db = self.cache(false).ok()?;
-        let row=db.prepare_cached("SELECT p.generation,p.generated_at,p.payload_json,s.last_error FROM average_publication_current c JOIN average_publication_payloads p ON p.scope=c.scope AND p.generation=c.generation LEFT JOIN average_publication_state s ON s.scope=c.scope WHERE c.scope='arena' AND p.variant=? AND length(CAST(p.payload_json AS BLOB))<=1048576").ok()?.query_row([variant],|row|{
+        let row=db.prepare_cached("SELECT p.generation,p.generated_at,p.payload_json,s.last_error FROM average_publication_current c JOIN average_publication_payloads p ON p.scope=c.scope AND p.generation=c.generation LEFT JOIN average_publication_state s ON s.scope=c.scope WHERE c.scope=? AND p.variant=? AND length(CAST(p.payload_json AS BLOB))<=1048576").ok()?.query_row([scope.as_str(),variant],|row|{
             // node:sqlite's default decoder rejects unsafe INTEGERs even in
             // selected columns which the caller later ignores (last_error).
             for index in 0..4 {
@@ -201,8 +232,11 @@ impl Storage {
                         Command::ArenaVersion(reply) => {
                             let _ = reply.send(state.arena_version());
                         }
-                        Command::Publication(variant, now, reply) => {
-                            let _ = reply.send(state.publication(&variant, now));
+                        Command::Publication(scope, variant, now, reply) => {
+                            let _ = reply.send(state.publication(scope, &variant, now));
+                        }
+                        Command::Progression(mode, cycle, now, reply) => {
+                            let _ = reply.send(crate::progression::read(&mode, &cycle, now));
                         }
                         Command::Event(event) => {
                             if std::time::Instant::now() >= retry_analytics
@@ -242,9 +276,30 @@ impl Storage {
         answer.await.unwrap_or(0)
     }
     pub async fn publication(&self, variant: String, now: i64) -> Option<Publication> {
+        self.scoped_publication(PublicationScope::Arena, variant, now)
+            .await
+    }
+    pub async fn scoped_publication(
+        &self,
+        scope: PublicationScope,
+        variant: String,
+        now: i64,
+    ) -> Option<Publication> {
         let (reply, answer) = oneshot::channel();
         self.sender
-            .try_send(Command::Publication(variant, now, reply))
+            .try_send(Command::Publication(scope, variant, now, reply))
+            .ok()?;
+        answer.await.ok().flatten()
+    }
+    pub async fn progression(
+        &self,
+        mode: String,
+        cycle: String,
+        now: i64,
+    ) -> Option<crate::progression::Published> {
+        let (reply, answer) = oneshot::channel();
+        self.sender
+            .try_send(Command::Progression(mode, cycle, now, reply))
             .ok()?;
         answer.await.ok().flatten()
     }
@@ -404,13 +459,21 @@ mod arena_tests {
         state.reader = Some(db);
         assert!(
             !state
-                .publication("standard:teamFight:median", 23_400_010)
+                .publication(
+                    PublicationScope::Arena,
+                    "standard:teamFight:median",
+                    23_400_010
+                )
                 .unwrap()
                 .stale
         );
         assert!(
             state
-                .publication("standard:teamFight:median", 23_400_011)
+                .publication(
+                    PublicationScope::Arena,
+                    "standard:teamFight:median",
+                    23_400_011
+                )
                 .unwrap()
                 .stale
         );
@@ -425,18 +488,26 @@ mod arena_tests {
             .unwrap();
         assert!(
             state
-                .publication("standard:teamFight:median", 11)
+                .publication(PublicationScope::Arena, "standard:teamFight:median", 11)
                 .unwrap()
                 .stale
         );
-        assert!(state.publication("missing", 11).is_none());
+        assert!(
+            state
+                .publication(PublicationScope::Arena, "missing", 11)
+                .is_none()
+        );
         let db = state.reader.as_mut().unwrap();
         db.execute(
             "UPDATE average_publication_payloads SET generated_at=9007199254740993",
             [],
         )
         .unwrap();
-        assert!(state.publication("standard:teamFight:median", 11).is_none());
+        assert!(
+            state
+                .publication(PublicationScope::Arena, "standard:teamFight:median", 11)
+                .is_none()
+        );
         state
             .reader
             .as_mut()
@@ -455,7 +526,11 @@ mod arena_tests {
                 [],
             )
             .unwrap();
-        assert!(state.publication("standard:teamFight:median", 11).is_none());
+        assert!(
+            state
+                .publication(PublicationScope::Arena, "standard:teamFight:median", 11)
+                .is_none()
+        );
         state
             .reader
             .as_mut()
@@ -465,8 +540,43 @@ mod arena_tests {
                 [],
             )
             .unwrap();
-        assert!(state.publication("standard:teamFight:median", 11).is_some());
+        assert!(
+            state
+                .publication(PublicationScope::Arena, "standard:teamFight:median", 11)
+                .is_some()
+        );
         state.reader.as_mut().unwrap().execute_batch("UPDATE average_publication_current SET generation=9007199254740993;UPDATE average_publication_payloads SET generation=9007199254740993").unwrap();
-        assert!(state.publication("standard:teamFight:median", 11).is_none());
+        assert!(
+            state
+                .publication(PublicationScope::Arena, "standard:teamFight:median", 11)
+                .is_none()
+        );
+    }
+    #[test]
+    fn publication_scopes_do_not_mix_equal_generations_and_variants() {
+        let db = Connection::open_in_memory().unwrap();
+        db.execute_batch("CREATE TABLE average_publication_current(scope TEXT,generation INTEGER);CREATE TABLE average_publication_payloads(scope TEXT,generation INTEGER,variant TEXT,generated_at INTEGER,payload_json TEXT);CREATE TABLE average_publication_state(scope TEXT,last_error);").unwrap();
+        for (scope, count) in [("regular", 10), ("pve", 20), ("arena", 30)] {
+            db.execute(
+                "INSERT INTO average_publication_current VALUES(?,1)",
+                [scope],
+            )
+            .unwrap();
+            db.execute(
+                "INSERT INTO average_publication_payloads VALUES(?,1,'standard:median:all',10,?)",
+                params![scope, format!("{{\"count\":{count}}}")],
+            )
+            .unwrap();
+        }
+        let mut state = State::from_env();
+        state.reader = Some(db);
+        for (scope, count) in [
+            (PublicationScope::Regular, 10),
+            (PublicationScope::Pve, 20),
+            (PublicationScope::Arena, 30),
+        ] {
+            let value = state.publication(scope, "standard:median:all", 11).unwrap();
+            assert_eq!(value.payload["count"], count);
+        }
     }
 }

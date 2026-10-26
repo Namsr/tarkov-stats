@@ -63,12 +63,16 @@ pub fn valid_lookup(value: &Value, input: &Value) -> bool {
 pub enum Kind {
     Seasonal,
     ArenaPopulation,
+    PersistentAverage,
+    PersistentMetrics,
 }
 impl Kind {
     pub fn from_job(job: &Value) -> Option<Self> {
         match job.get("kind")?.as_str()? {
             "seasonal" => Some(Self::Seasonal),
             "arena_population" => Some(Self::ArenaPopulation),
+            "persistent_average" => Some(Self::PersistentAverage),
+            "persistent_metrics" => Some(Self::PersistentMetrics),
             _ => None,
         }
     }
@@ -76,12 +80,20 @@ impl Kind {
         match self {
             Self::Seasonal => "seasonal",
             Self::ArenaPopulation => "arena_population",
+            Self::PersistentAverage => "persistent_average",
+            Self::PersistentMetrics => "persistent_metrics",
         }
     }
     pub fn ttl_ms(self) -> f64 {
         match self {
             Self::Seasonal => 300000.0,
-            Self::ArenaPopulation => 900000.0,
+            Self::ArenaPopulation | Self::PersistentAverage | Self::PersistentMetrics => 900000.0,
+        }
+    }
+    fn deadline_ms(self) -> u64 {
+        match self {
+            Self::PersistentAverage => 30_000,
+            _ => 15_000,
         }
     }
     pub fn valid(self, value: &Value, job: &Value) -> bool {
@@ -91,6 +103,8 @@ impl Kind {
         match self {
             Self::Seasonal => valid_lookup(value, input),
             Self::ArenaPopulation => value.is_null() || crate::arena::valid_result(value, input),
+            Self::PersistentAverage => crate::persistent::valid_average(value, job),
+            Self::PersistentMetrics => crate::persistent::valid_metrics(value, job),
         }
     }
     pub fn accepted(self, value: &Value) -> bool {
@@ -99,7 +113,10 @@ impl Kind {
                 value.get("available").and_then(Value::as_bool) == Some(true)
                     && value.get("result").is_some_and(|value| !value.is_null())
             }
-            Self::ArenaPopulation => !value.is_null(),
+            Self::ArenaPopulation | Self::PersistentMetrics => !value.is_null(),
+            Self::PersistentAverage => {
+                value.get("storage").and_then(Value::as_str) == Some("sqlite")
+            }
         }
     }
 }
@@ -222,7 +239,7 @@ async fn read_frame(reader: &mut (impl AsyncBufRead + Unpin)) -> Result<Vec<u8>,
 pub struct Worker {
     sender: mpsc::Sender<Job>,
     slots: Arc<Semaphore>,
-    timeout: Duration,
+    timeout: Option<Duration>,
     shutdown: watch::Sender<bool>,
     task: Arc<Mutex<Option<tokio::task::JoinHandle<()>>>>,
 }
@@ -243,8 +260,7 @@ impl Worker {
             .ok()
             .and_then(|v| v.parse::<u64>().ok())
             .filter(|v| *v > 0)
-            .unwrap_or(15000)
-            .min(15000);
+            .map(|v| Duration::from_millis(v.min(30_000)));
         let (sender, mut receiver) = mpsc::channel::<Job>(8);
         let (shutdown, mut stopped) = watch::channel(false);
         let task = tokio::spawn(async move {
@@ -304,7 +320,7 @@ impl Worker {
         Ok(Self {
             sender,
             slots: Arc::new(Semaphore::new(8)),
-            timeout: Duration::from_millis(timeout),
+            timeout,
             shutdown,
             task: Arc::new(Mutex::new(Some(task))),
         })
@@ -316,7 +332,10 @@ impl Worker {
             .try_acquire_owned()
             .map_err(|_| Failure::new("queue_full", "Cohort queue is full"))?;
         let queued = Instant::now();
-        let deadline = queued + self.timeout;
+        let default =
+            Duration::from_millis(Kind::from_job(&args).map_or(15_000, Kind::deadline_ms));
+        let budget = self.timeout.map_or(default, |limit| default.min(limit));
+        let deadline = queued + budget;
         let (reply, answer) = oneshot::channel();
         self.sender
             .try_send(Job {
