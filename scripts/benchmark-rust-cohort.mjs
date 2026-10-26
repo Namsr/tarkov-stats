@@ -5,6 +5,7 @@ import { existsSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { cpus, platform, release } from "node:os";
 import { DatabaseSync } from "node:sqlite";
+import { snapshotWorkerResources, resourceDelta } from "./benchmark-worker-resources.mjs";
 import { createCohortFixture, rustCohortBinary, seedRouteOwners,
   syntheticCohortRows } from "../tests/fixtures/rust-cohort-data.mjs";
 
@@ -13,6 +14,9 @@ function argument(name, fallback) {
   const index = args.indexOf(name);
   return index < 0 ? fallback : args[index + 1];
 }
+const mode = argument("--mode", "regular");
+assert.ok(["regular", "pve"].includes(mode), "--mode must be regular or pve");
+const backendVariable = mode === "pve" ? "PVE_COHORT_BACKEND" : "REGULAR_COHORT_BACKEND";
 const rows = Number(argument("--rows", 30000));
 const iterations = Number(argument("--iterations", 12));
 const output = argument("--output", null);
@@ -22,9 +26,9 @@ const binary = rustCohortBinary();
 assert.ok(existsSync(binary), `build the native worker first: ${binary}`);
 process.env.OBSERVABILITY_SAMPLE_RATE = "0";
 process.env.AVERAGE_PUBLICATIONS_ENABLED = "true";
-const fixture = await createCohortFixture("rust-cohort-benchmark-");
+const fixture = await createCohortFixture(`rust-${mode}-cohort-benchmark-`, mode);
 fixture.seed(syntheticCohortRows(rows));
-const owners = await seedRouteOwners(rows + 1);
+const owners = await seedRouteOwners(rows + 1, 4, mode);
 process.env.RUST_COHORT_BIN = binary;
 const { GET } = await import("../app/api/average/cohort/route.ts");
 const { NextRequest } = await import("next/server");
@@ -83,7 +87,7 @@ function distribution(values) {
 async function request(kind, statistic, index = 0) {
   const aid = owners[kind][index % owners[kind].length];
   const started = performance.now();
-  const result = await realFetch(`${base}/api/average/cohort?mode=regular&aid=${aid}&statistic=${statistic}&period=all&dimension=hours`);
+  const result = await realFetch(`${base}/api/average/cohort?mode=${mode}&aid=${aid}&statistic=${statistic}&period=all&dimension=hours`);
   const body = await result.json();
   const totalMs = performance.now() - started;
   const phases = {};
@@ -92,7 +96,7 @@ async function request(kind, statistic, index = 0) {
     if (match) phases[match[1]] = Number(match[2]);
   }
   return { totalMs, phases, status: result.status, body,
-    valid: result.status === 200 && body.strategy === kind && body.n > 0 };
+    valid: result.status === 200 && body.mode === mode && body.identity?.mode === mode && body.strategy === kind && body.n > 0 };
 }
 async function series(kind, statistic, cache, concurrency) {
   const samples = [];
@@ -111,19 +115,21 @@ async function series(kind, statistic, cache, concurrency) {
     server: distribution(samples.flatMap((sample) => sample.phases.total == null ? [] : [sample.phases.total])),
     queue: distribution(jobs.map((event) => event.queue_ms)),
     worker: distribution(jobs.map((event) => event.worker_ms)),
-    workerJobs: jobs.length, cacheHits: requests.filter((event) => event.cache === "hit").length,
+    workerJobs: jobs.length, workerBackends: [...new Set(jobs.map((event) => event.backend))], cacheHits: requests.filter((event) => event.cache === "hit").length,
     responseBytes: Buffer.byteLength(JSON.stringify(samples[0].body)) };
 }
 const results = [];
+const resourceResults = [];
 try {
   for (const backend of ["typescript", "rust"]) {
-    process.env.REGULAR_COHORT_BACKEND = backend;
+    process.env[backendVariable] = backend;
     stopCohortWorkersForTests();
     clearCache();
     const cold = await request("matched", "median");
     assert.ok(cold.valid, `cold ${backend} request failed: ${JSON.stringify(cold.body)}`);
     results.push({ backend, scenario: "first_request_fresh_worker", coldHttpMs: Number(cold.totalMs.toFixed(3)),
       phases: cold.phases });
+    const resourceBefore = snapshotWorkerResources();
     for (const kind of ["matched", "population"]) for (const statistic of ["median", "trimmed_mean"]) {
       clearCache();
       assert.ok((await request(kind, statistic)).valid, "warmup must return the expected group strategy");
@@ -131,6 +137,7 @@ try {
         const measurement = await series(kind, statistic, "miss", concurrency);
         assert.equal(measurement.errors.length, 0, JSON.stringify(measurement.errors));
         assert.equal(measurement.workerJobs, iterations, "every miss must compute; durable cache and request deduplication must not hide work");
+        assert.deepEqual(measurement.workerBackends, [backend], "the selected backend must actually execute every cache miss");
         results.push({ backend, scenario: kind, statistic, ...measurement });
       }
       clearCache();
@@ -141,6 +148,7 @@ try {
       assert.equal(cached.cacheHits, iterations);
       results.push({ backend, scenario: kind, statistic, ...cached });
     }
+    resourceResults.push({ backend, ...resourceDelta(resourceBefore, snapshotWorkerResources()) });
     stopCohortWorkersForTests();
   }
 } finally {
@@ -158,16 +166,17 @@ versionDb.close();
 const report = { formatVersion: 1, generatedAt: new Date().toISOString(),
   environment: { node: process.version, os: platform(), release: release(), cpu: cpus()[0]?.model,
     logicalCpus: cpus().length, sqlite: sqliteVersion },
-  fixture: { players: rows, owners: 8, synthetic: true, seed: "deterministic modular metric distributions v1" },
+  fixture: { mode, players: rows, owners: 8, synthetic: true, seed: "deterministic modular metric distributions v1" },
   methodology: { iterations, warmupRequestsPerScenario: 1, backendOrder: ["typescript", "rust"],
     http: "loopback HTTP -> actual app/api/average/cohort/route.ts GET -> stored progression snapshot -> cache -> worker -> SQLite -> JSON",
     misses: "memory and durable statistics response cache cleared before each sequential request or distinct-owner concurrent batch",
     hits: "all four owners cached before timing; worker job count must be zero",
     cold: "fresh worker process; route modules, fixture and analytics schema already initialized; OS page cache not flushed",
     phases: "queue and worker diagnostics rounded to whole milliseconds by production code",
+    resources: "OS process snapshots outside timed requests, after cold request and after backend series; CPU delta includes warmups and cache hits but excludes cold startup and fixture creation; child lifetime peak RSS is not the simultaneous peak of all processes",
     excluded: "production Next.js server routing, TLS/CDN/proxy, network to user, browser rendering, external Tarkov API, production data and VPS resource limits",
     limitations: "local synthetic run; small p95 sample; backends measured sequentially with warm OS file cache; no performance threshold asserted" },
-  results };
+  results, resourceResults };
 const serialized = `${JSON.stringify(report, null, 2)}\n`;
 if (output) writeFileSync(output, serialized);
 process.stdout.write(serialized);

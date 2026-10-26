@@ -132,3 +132,5 @@ next-env.d.ts
 /rust/*/target/
 !/docs/rust-cohort-performance.md
 !/docs/rust-cohort-benchmark.json
+!/docs/rust-pve-cohort-performance.md
+!/docs/rust-pve-cohort-benchmark.json

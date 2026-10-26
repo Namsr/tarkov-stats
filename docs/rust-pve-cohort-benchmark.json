@@ -1,0 +1,993 @@
+{
+  "formatVersion": 1,
+  "generatedAt": "2026-10-26T06:31:24.481Z",
+  "environment": {
+    "node": "v24.19.0",
+    "os": "win32",
+    "release": "10.0.26200",
+    "cpu": "AMD Ryzen 7 5800X3D 8-Core Processor           ",
+    "logicalCpus": 16,
+    "sqlite": "3.53.3"
+  },
+  "fixture": {
+    "mode": "pve",
+    "players": 30000,
+    "owners": 8,
+    "synthetic": true,
+    "seed": "deterministic modular metric distributions v1"
+  },
+  "methodology": {
+    "iterations": 20,
+    "warmupRequestsPerScenario": 1,
+    "backendOrder": [
+      "typescript",
+      "rust"
+    ],
+    "http": "loopback HTTP -> actual app/api/average/cohort/route.ts GET -> stored progression snapshot -> cache -> worker -> SQLite -> JSON",
+    "misses": "memory and durable statistics response cache cleared before each sequential request or distinct-owner concurrent batch",
+    "hits": "all four owners cached before timing; worker job count must be zero",
+    "cold": "fresh worker process; route modules, fixture and analytics schema already initialized; OS page cache not flushed",
+    "phases": "queue and worker diagnostics rounded to whole milliseconds by production code",
+    "resources": "OS process snapshots outside timed requests, after cold request and after backend series; CPU delta includes warmups and cache hits but excludes cold startup and fixture creation; child lifetime peak RSS is not the simultaneous peak of all processes",
+    "excluded": "production Next.js server routing, TLS/CDN/proxy, network to user, browser rendering, external Tarkov API, production data and VPS resource limits",
+    "limitations": "local synthetic run; small p95 sample; backends measured sequentially with warm OS file cache; no performance threshold asserted"
+  },
+  "results": [
+    {
+      "backend": "typescript",
+      "scenario": "first_request_fresh_worker",
+      "coldHttpMs": 587.961,
+      "phases": {
+        "storeopen": 8,
+        "cohort": 245,
+        "queue": 5,
+        "worker": 240,
+        "total": 561
+      }
+    },
+    {
+      "backend": "typescript",
+      "scenario": "matched",
+      "statistic": "median",
+      "cache": "miss",
+      "concurrency": 1,
+      "errors": [],
+      "http": {
+        "samples": 20,
+        "p50Ms": 287.744,
+        "p95Ms": 342.795,
+        "maxMs": 371.177
+      },
+      "server": {
+        "samples": 20,
+        "p50Ms": 283,
+        "p95Ms": 338,
+        "maxMs": 358
+      },
+      "queue": {
+        "samples": 20,
+        "p50Ms": 0,
+        "p95Ms": 0,
+        "maxMs": 0
+      },
+      "worker": {
+        "samples": 20,
+        "p50Ms": 4,
+        "p95Ms": 6,
+        "maxMs": 7
+      },
+      "workerJobs": 20,
+      "workerBackends": [
+        "typescript"
+      ],
+      "cacheHits": 0,
+      "responseBytes": 1708
+    },
+    {
+      "backend": "typescript",
+      "scenario": "matched",
+      "statistic": "median",
+      "cache": "miss",
+      "concurrency": 4,
+      "errors": [],
+      "http": {
+        "samples": 20,
+        "p50Ms": 653.985,
+        "p95Ms": 1120.77,
+        "maxMs": 1148.45
+      },
+      "server": {
+        "samples": 20,
+        "p50Ms": 629,
+        "p95Ms": 1083,
+        "maxMs": 1128
+      },
+      "queue": {
+        "samples": 20,
+        "p50Ms": 13,
+        "p95Ms": 522,
+        "maxMs": 612
+      },
+      "worker": {
+        "samples": 20,
+        "p50Ms": 224,
+        "p95Ms": 357,
+        "maxMs": 378
+      },
+      "workerJobs": 20,
+      "workerBackends": [
+        "typescript"
+      ],
+      "cacheHits": 0,
+      "responseBytes": 1708
+    },
+    {
+      "backend": "typescript",
+      "scenario": "matched",
+      "statistic": "median",
+      "cache": "hit",
+      "concurrency": 4,
+      "errors": [],
+      "http": {
+        "samples": 20,
+        "p50Ms": 582.482,
+        "p95Ms": 839.565,
+        "maxMs": 839.992
+      },
+      "server": {
+        "samples": 20,
+        "p50Ms": 141,
+        "p95Ms": 249,
+        "maxMs": 255
+      },
+      "queue": {
+        "samples": 0,
+        "p50Ms": null,
+        "p95Ms": null,
+        "maxMs": null
+      },
+      "worker": {
+        "samples": 0,
+        "p50Ms": null,
+        "p95Ms": null,
+        "maxMs": null
+      },
+      "workerJobs": 0,
+      "workerBackends": [],
+      "cacheHits": 20,
+      "responseBytes": 1708
+    },
+    {
+      "backend": "typescript",
+      "scenario": "matched",
+      "statistic": "trimmed_mean",
+      "cache": "miss",
+      "concurrency": 1,
+      "errors": [],
+      "http": {
+        "samples": 20,
+        "p50Ms": 242.599,
+        "p95Ms": 306.27,
+        "maxMs": 331.088
+      },
+      "server": {
+        "samples": 20,
+        "p50Ms": 230,
+        "p95Ms": 302,
+        "maxMs": 316
+      },
+      "queue": {
+        "samples": 20,
+        "p50Ms": 0,
+        "p95Ms": 0,
+        "maxMs": 0
+      },
+      "worker": {
+        "samples": 20,
+        "p50Ms": 4,
+        "p95Ms": 7,
+        "maxMs": 7
+      },
+      "workerJobs": 20,
+      "workerBackends": [
+        "typescript"
+      ],
+      "cacheHits": 0,
+      "responseBytes": 1757
+    },
+    {
+      "backend": "typescript",
+      "scenario": "matched",
+      "statistic": "trimmed_mean",
+      "cache": "miss",
+      "concurrency": 4,
+      "errors": [],
+      "http": {
+        "samples": 20,
+        "p50Ms": 805.706,
+        "p95Ms": 1388.815,
+        "maxMs": 1589.637
+      },
+      "server": {
+        "samples": 20,
+        "p50Ms": 783,
+        "p95Ms": 1354,
+        "maxMs": 1566
+      },
+      "queue": {
+        "samples": 20,
+        "p50Ms": 14,
+        "p95Ms": 644,
+        "maxMs": 766
+      },
+      "worker": {
+        "samples": 20,
+        "p50Ms": 267,
+        "p95Ms": 449,
+        "maxMs": 629
+      },
+      "workerJobs": 20,
+      "workerBackends": [
+        "typescript"
+      ],
+      "cacheHits": 0,
+      "responseBytes": 1757
+    },
+    {
+      "backend": "typescript",
+      "scenario": "matched",
+      "statistic": "trimmed_mean",
+      "cache": "hit",
+      "concurrency": 4,
+      "errors": [],
+      "http": {
+        "samples": 20,
+        "p50Ms": 891.788,
+        "p95Ms": 940.749,
+        "maxMs": 940.865
+      },
+      "server": {
+        "samples": 20,
+        "p50Ms": 208,
+        "p95Ms": 291,
+        "maxMs": 308
+      },
+      "queue": {
+        "samples": 0,
+        "p50Ms": null,
+        "p95Ms": null,
+        "maxMs": null
+      },
+      "worker": {
+        "samples": 0,
+        "p50Ms": null,
+        "p95Ms": null,
+        "maxMs": null
+      },
+      "workerJobs": 0,
+      "workerBackends": [],
+      "cacheHits": 20,
+      "responseBytes": 1757
+    },
+    {
+      "backend": "typescript",
+      "scenario": "population",
+      "statistic": "median",
+      "cache": "miss",
+      "concurrency": 1,
+      "errors": [],
+      "http": {
+        "samples": 20,
+        "p50Ms": 381.877,
+        "p95Ms": 536.801,
+        "maxMs": 791.394
+      },
+      "server": {
+        "samples": 20,
+        "p50Ms": 376,
+        "p95Ms": 520,
+        "maxMs": 790
+      },
+      "queue": {
+        "samples": 20,
+        "p50Ms": 0,
+        "p95Ms": 0,
+        "maxMs": 0
+      },
+      "worker": {
+        "samples": 20,
+        "p50Ms": 141,
+        "p95Ms": 201,
+        "maxMs": 204
+      },
+      "workerJobs": 20,
+      "workerBackends": [
+        "typescript"
+      ],
+      "cacheHits": 0,
+      "responseBytes": 1870
+    },
+    {
+      "backend": "typescript",
+      "scenario": "population",
+      "statistic": "median",
+      "cache": "miss",
+      "concurrency": 4,
+      "errors": [],
+      "http": {
+        "samples": 20,
+        "p50Ms": 941.244,
+        "p95Ms": 1570.939,
+        "maxMs": 1829.294
+      },
+      "server": {
+        "samples": 20,
+        "p50Ms": 922,
+        "p95Ms": 1550,
+        "maxMs": 1801
+      },
+      "queue": {
+        "samples": 20,
+        "p50Ms": 199,
+        "p95Ms": 719,
+        "maxMs": 1066
+      },
+      "worker": {
+        "samples": 20,
+        "p50Ms": 251,
+        "p95Ms": 470,
+        "maxMs": 663
+      },
+      "workerJobs": 20,
+      "workerBackends": [
+        "typescript"
+      ],
+      "cacheHits": 0,
+      "responseBytes": 1870
+    },
+    {
+      "backend": "typescript",
+      "scenario": "population",
+      "statistic": "median",
+      "cache": "hit",
+      "concurrency": 4,
+      "errors": [],
+      "http": {
+        "samples": 20,
+        "p50Ms": 1008.08,
+        "p95Ms": 1133.19,
+        "maxMs": 1133.316
+      },
+      "server": {
+        "samples": 20,
+        "p50Ms": 241,
+        "p95Ms": 349,
+        "maxMs": 367
+      },
+      "queue": {
+        "samples": 0,
+        "p50Ms": null,
+        "p95Ms": null,
+        "maxMs": null
+      },
+      "worker": {
+        "samples": 0,
+        "p50Ms": null,
+        "p95Ms": null,
+        "maxMs": null
+      },
+      "workerJobs": 0,
+      "workerBackends": [],
+      "cacheHits": 20,
+      "responseBytes": 1870
+    },
+    {
+      "backend": "typescript",
+      "scenario": "population",
+      "statistic": "trimmed_mean",
+      "cache": "miss",
+      "concurrency": 1,
+      "errors": [],
+      "http": {
+        "samples": 20,
+        "p50Ms": 442.366,
+        "p95Ms": 583.423,
+        "maxMs": 892.648
+      },
+      "server": {
+        "samples": 20,
+        "p50Ms": 439,
+        "p95Ms": 570,
+        "maxMs": 890
+      },
+      "queue": {
+        "samples": 20,
+        "p50Ms": 0,
+        "p95Ms": 0,
+        "maxMs": 0
+      },
+      "worker": {
+        "samples": 20,
+        "p50Ms": 153,
+        "p95Ms": 202,
+        "maxMs": 231
+      },
+      "workerJobs": 20,
+      "workerBackends": [
+        "typescript"
+      ],
+      "cacheHits": 0,
+      "responseBytes": 1922
+    },
+    {
+      "backend": "typescript",
+      "scenario": "population",
+      "statistic": "trimmed_mean",
+      "cache": "miss",
+      "concurrency": 4,
+      "errors": [],
+      "http": {
+        "samples": 20,
+        "p50Ms": 911.577,
+        "p95Ms": 1416.284,
+        "maxMs": 1720.23
+      },
+      "server": {
+        "samples": 20,
+        "p50Ms": 903,
+        "p95Ms": 1391,
+        "maxMs": 1693
+      },
+      "queue": {
+        "samples": 20,
+        "p50Ms": 140,
+        "p95Ms": 888,
+        "maxMs": 1015
+      },
+      "worker": {
+        "samples": 20,
+        "p50Ms": 266,
+        "p95Ms": 451,
+        "maxMs": 555
+      },
+      "workerJobs": 20,
+      "workerBackends": [
+        "typescript"
+      ],
+      "cacheHits": 0,
+      "responseBytes": 1922
+    },
+    {
+      "backend": "typescript",
+      "scenario": "population",
+      "statistic": "trimmed_mean",
+      "cache": "hit",
+      "concurrency": 4,
+      "errors": [],
+      "http": {
+        "samples": 20,
+        "p50Ms": 815.965,
+        "p95Ms": 908.718,
+        "maxMs": 908.787
+      },
+      "server": {
+        "samples": 20,
+        "p50Ms": 183,
+        "p95Ms": 308,
+        "maxMs": 346
+      },
+      "queue": {
+        "samples": 0,
+        "p50Ms": null,
+        "p95Ms": null,
+        "maxMs": null
+      },
+      "worker": {
+        "samples": 0,
+        "p50Ms": null,
+        "p95Ms": null,
+        "maxMs": null
+      },
+      "workerJobs": 0,
+      "workerBackends": [],
+      "cacheHits": 20,
+      "responseBytes": 1922
+    },
+    {
+      "backend": "rust",
+      "scenario": "first_request_fresh_worker",
+      "coldHttpMs": 191.843,
+      "phases": {
+        "storeopen": 8,
+        "cohort": 11,
+        "queue": 4,
+        "worker": 7,
+        "total": 186
+      }
+    },
+    {
+      "backend": "rust",
+      "scenario": "matched",
+      "statistic": "median",
+      "cache": "miss",
+      "concurrency": 1,
+      "errors": [],
+      "http": {
+        "samples": 20,
+        "p50Ms": 225.41,
+        "p95Ms": 309.347,
+        "maxMs": 326.341
+      },
+      "server": {
+        "samples": 20,
+        "p50Ms": 216,
+        "p95Ms": 300,
+        "maxMs": 324
+      },
+      "queue": {
+        "samples": 20,
+        "p50Ms": 0,
+        "p95Ms": 0,
+        "maxMs": 0
+      },
+      "worker": {
+        "samples": 20,
+        "p50Ms": 2,
+        "p95Ms": 3,
+        "maxMs": 3
+      },
+      "workerJobs": 20,
+      "workerBackends": [
+        "rust"
+      ],
+      "cacheHits": 0,
+      "responseBytes": 1708
+    },
+    {
+      "backend": "rust",
+      "scenario": "matched",
+      "statistic": "median",
+      "cache": "miss",
+      "concurrency": 4,
+      "errors": [],
+      "http": {
+        "samples": 20,
+        "p50Ms": 483.81,
+        "p95Ms": 999.993,
+        "maxMs": 1169.338
+      },
+      "server": {
+        "samples": 20,
+        "p50Ms": 468,
+        "p95Ms": 982,
+        "maxMs": 1149
+      },
+      "queue": {
+        "samples": 20,
+        "p50Ms": 13,
+        "p95Ms": 439,
+        "maxMs": 460
+      },
+      "worker": {
+        "samples": 20,
+        "p50Ms": 195,
+        "p95Ms": 283,
+        "maxMs": 325
+      },
+      "workerJobs": 20,
+      "workerBackends": [
+        "rust"
+      ],
+      "cacheHits": 0,
+      "responseBytes": 1708
+    },
+    {
+      "backend": "rust",
+      "scenario": "matched",
+      "statistic": "median",
+      "cache": "hit",
+      "concurrency": 4,
+      "errors": [],
+      "http": {
+        "samples": 20,
+        "p50Ms": 808.13,
+        "p95Ms": 874.856,
+        "maxMs": 874.954
+      },
+      "server": {
+        "samples": 20,
+        "p50Ms": 204,
+        "p95Ms": 283,
+        "maxMs": 328
+      },
+      "queue": {
+        "samples": 0,
+        "p50Ms": null,
+        "p95Ms": null,
+        "maxMs": null
+      },
+      "worker": {
+        "samples": 0,
+        "p50Ms": null,
+        "p95Ms": null,
+        "maxMs": null
+      },
+      "workerJobs": 0,
+      "workerBackends": [],
+      "cacheHits": 20,
+      "responseBytes": 1708
+    },
+    {
+      "backend": "rust",
+      "scenario": "matched",
+      "statistic": "trimmed_mean",
+      "cache": "miss",
+      "concurrency": 1,
+      "errors": [],
+      "http": {
+        "samples": 20,
+        "p50Ms": 267.22,
+        "p95Ms": 308.997,
+        "maxMs": 309.497
+      },
+      "server": {
+        "samples": 20,
+        "p50Ms": 254,
+        "p95Ms": 300,
+        "maxMs": 308
+      },
+      "queue": {
+        "samples": 20,
+        "p50Ms": 0,
+        "p95Ms": 0,
+        "maxMs": 0
+      },
+      "worker": {
+        "samples": 20,
+        "p50Ms": 2,
+        "p95Ms": 2,
+        "maxMs": 2
+      },
+      "workerJobs": 20,
+      "workerBackends": [
+        "rust"
+      ],
+      "cacheHits": 0,
+      "responseBytes": 1757
+    },
+    {
+      "backend": "rust",
+      "scenario": "matched",
+      "statistic": "trimmed_mean",
+      "cache": "miss",
+      "concurrency": 4,
+      "errors": [],
+      "http": {
+        "samples": 20,
+        "p50Ms": 642.165,
+        "p95Ms": 1350.334,
+        "maxMs": 1694.957
+      },
+      "server": {
+        "samples": 20,
+        "p50Ms": 629,
+        "p95Ms": 1001,
+        "maxMs": 1111
+      },
+      "queue": {
+        "samples": 20,
+        "p50Ms": 10,
+        "p95Ms": 524,
+        "maxMs": 564
+      },
+      "worker": {
+        "samples": 20,
+        "p50Ms": 192,
+        "p95Ms": 406,
+        "maxMs": 701
+      },
+      "workerJobs": 20,
+      "workerBackends": [
+        "rust"
+      ],
+      "cacheHits": 0,
+      "responseBytes": 1757
+    },
+    {
+      "backend": "rust",
+      "scenario": "matched",
+      "statistic": "trimmed_mean",
+      "cache": "hit",
+      "concurrency": 4,
+      "errors": [],
+      "http": {
+        "samples": 20,
+        "p50Ms": 632.737,
+        "p95Ms": 742.523,
+        "maxMs": 742.623
+      },
+      "server": {
+        "samples": 20,
+        "p50Ms": 142,
+        "p95Ms": 216,
+        "maxMs": 239
+      },
+      "queue": {
+        "samples": 0,
+        "p50Ms": null,
+        "p95Ms": null,
+        "maxMs": null
+      },
+      "worker": {
+        "samples": 0,
+        "p50Ms": null,
+        "p95Ms": null,
+        "maxMs": null
+      },
+      "workerJobs": 0,
+      "workerBackends": [],
+      "cacheHits": 20,
+      "responseBytes": 1757
+    },
+    {
+      "backend": "rust",
+      "scenario": "population",
+      "statistic": "median",
+      "cache": "miss",
+      "concurrency": 1,
+      "errors": [],
+      "http": {
+        "samples": 20,
+        "p50Ms": 260.083,
+        "p95Ms": 350.68,
+        "maxMs": 392.872
+      },
+      "server": {
+        "samples": 20,
+        "p50Ms": 254,
+        "p95Ms": 339,
+        "maxMs": 381
+      },
+      "queue": {
+        "samples": 20,
+        "p50Ms": 0,
+        "p95Ms": 0,
+        "maxMs": 0
+      },
+      "worker": {
+        "samples": 20,
+        "p50Ms": 19,
+        "p95Ms": 23,
+        "maxMs": 26
+      },
+      "workerJobs": 20,
+      "workerBackends": [
+        "rust"
+      ],
+      "cacheHits": 0,
+      "responseBytes": 1870
+    },
+    {
+      "backend": "rust",
+      "scenario": "population",
+      "statistic": "median",
+      "cache": "miss",
+      "concurrency": 4,
+      "errors": [],
+      "http": {
+        "samples": 20,
+        "p50Ms": 600.727,
+        "p95Ms": 1292.473,
+        "maxMs": 1559.038
+      },
+      "server": {
+        "samples": 20,
+        "p50Ms": 582,
+        "p95Ms": 1267,
+        "maxMs": 1528
+      },
+      "queue": {
+        "samples": 20,
+        "p50Ms": 28,
+        "p95Ms": 473,
+        "maxMs": 565
+      },
+      "worker": {
+        "samples": 20,
+        "p50Ms": 192,
+        "p95Ms": 391,
+        "maxMs": 692
+      },
+      "workerJobs": 20,
+      "workerBackends": [
+        "rust"
+      ],
+      "cacheHits": 0,
+      "responseBytes": 1870
+    },
+    {
+      "backend": "rust",
+      "scenario": "population",
+      "statistic": "median",
+      "cache": "hit",
+      "concurrency": 4,
+      "errors": [],
+      "http": {
+        "samples": 20,
+        "p50Ms": 974.227,
+        "p95Ms": 999.55,
+        "maxMs": 999.569
+      },
+      "server": {
+        "samples": 20,
+        "p50Ms": 226,
+        "p95Ms": 308,
+        "maxMs": 314
+      },
+      "queue": {
+        "samples": 0,
+        "p50Ms": null,
+        "p95Ms": null,
+        "maxMs": null
+      },
+      "worker": {
+        "samples": 0,
+        "p50Ms": null,
+        "p95Ms": null,
+        "maxMs": null
+      },
+      "workerJobs": 0,
+      "workerBackends": [],
+      "cacheHits": 20,
+      "responseBytes": 1870
+    },
+    {
+      "backend": "rust",
+      "scenario": "population",
+      "statistic": "trimmed_mean",
+      "cache": "miss",
+      "concurrency": 1,
+      "errors": [],
+      "http": {
+        "samples": 20,
+        "p50Ms": 300.861,
+        "p95Ms": 392.818,
+        "maxMs": 467.841
+      },
+      "server": {
+        "samples": 20,
+        "p50Ms": 292,
+        "p95Ms": 379,
+        "maxMs": 463
+      },
+      "queue": {
+        "samples": 20,
+        "p50Ms": 0,
+        "p95Ms": 0,
+        "maxMs": 0
+      },
+      "worker": {
+        "samples": 20,
+        "p50Ms": 24,
+        "p95Ms": 35,
+        "maxMs": 36
+      },
+      "workerJobs": 20,
+      "workerBackends": [
+        "rust"
+      ],
+      "cacheHits": 0,
+      "responseBytes": 1922
+    },
+    {
+      "backend": "rust",
+      "scenario": "population",
+      "statistic": "trimmed_mean",
+      "cache": "miss",
+      "concurrency": 4,
+      "errors": [],
+      "http": {
+        "samples": 20,
+        "p50Ms": 900.091,
+        "p95Ms": 1316.798,
+        "maxMs": 1542.282
+      },
+      "server": {
+        "samples": 20,
+        "p50Ms": 884,
+        "p95Ms": 1287,
+        "maxMs": 1517
+      },
+      "queue": {
+        "samples": 20,
+        "p50Ms": 24,
+        "p95Ms": 706,
+        "maxMs": 944
+      },
+      "worker": {
+        "samples": 20,
+        "p50Ms": 266,
+        "p95Ms": 400,
+        "maxMs": 642
+      },
+      "workerJobs": 20,
+      "workerBackends": [
+        "rust"
+      ],
+      "cacheHits": 0,
+      "responseBytes": 1922
+    },
+    {
+      "backend": "rust",
+      "scenario": "population",
+      "statistic": "trimmed_mean",
+      "cache": "hit",
+      "concurrency": 4,
+      "errors": [],
+      "http": {
+        "samples": 20,
+        "p50Ms": 889.166,
+        "p95Ms": 916.445,
+        "maxMs": 916.606
+      },
+      "server": {
+        "samples": 20,
+        "p50Ms": 223,
+        "p95Ms": 241,
+        "maxMs": 248
+      },
+      "queue": {
+        "samples": 0,
+        "p50Ms": null,
+        "p95Ms": null,
+        "maxMs": null
+      },
+      "worker": {
+        "samples": 0,
+        "p50Ms": null,
+        "p95Ms": null,
+        "maxMs": null
+      },
+      "workerJobs": 0,
+      "workerBackends": [],
+      "cacheHits": 20,
+      "responseBytes": 1922
+    }
+  ],
+  "resourceResults": [
+    {
+      "backend": "typescript",
+      "available": true,
+      "reason": null,
+      "workerCpuMs": 14531.25,
+      "workers": [
+        {
+          "name": "node",
+          "workingSetBytes": 102227968,
+          "peakWorkingSetBytes": 110141440
+        }
+      ],
+      "parentCpuMs": 2579,
+      "parentWorkingSetBytes": 105000960,
+      "parentLifetimePeakRssBytes": 119595008,
+      "scope": "Worker CPU delta covers warmup+miss+hit workloads after the cold request; child peak RSS is lifetime since spawn. Parent lifetime high-water values are cumulative across backends and not directly comparable. Sampling subprocess time is excluded from API latency samples."
+    },
+    {
+      "backend": "rust",
+      "available": true,
+      "reason": null,
+      "workerCpuMs": 2187.5,
+      "workers": [
+        {
+          "name": "tarkov-cohort-worker",
+          "workingSetBytes": 8658944,
+          "peakWorkingSetBytes": 10981376
+        }
+      ],
+      "parentCpuMs": 2266,
+      "parentWorkingSetBytes": 108208128,
+      "parentLifetimePeakRssBytes": 119595008,
+      "scope": "Worker CPU delta covers warmup+miss+hit workloads after the cold request; child peak RSS is lifetime since spawn. Parent lifetime high-water values are cumulative across backends and not directly comparable. Sampling subprocess time is excluded from API latency samples."
+    }
+  ]
+}

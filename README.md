@@ -56,9 +56,10 @@ affiliated with Battlestate Games or Tarkov.dev.
 ## Rust cohort pilot
 
 `npm run rust:build` builds the release executable. Set
-`REGULAR_COHORT_BACKEND=rust` to use it for Regular player comparison cohorts.
-`typescript` (the default) restores the existing worker. Other modes and jobs
-keep their TypeScript implementation. Both use the same queue and deadline policy;
+`REGULAR_COHORT_BACKEND=rust` to use it for Regular player comparison cohorts,
+or `PVE_COHORT_BACKEND=rust` for PvE comparisons. Each mode has its own switch;
+`typescript` (the default) restores the existing worker. Arena, Seasonal and other
+jobs keep their TypeScript implementation. Both use the same queue and deadline policy;
 Rust calculation failures surface through the existing retryable API error path.
 There is no automatic retry on the other backend that could double the work.
 
@@ -69,5 +70,6 @@ it and sets the path. Build with the installed host toolchain for local use.
 
 Run `npm run benchmark:rust-cohort -- --rows 30000 --iterations 20 --output result.json`
 for an isolated synthetic API comparison. The benchmark does not access production
-data. See [measurement notes](docs/rust-cohort-performance.md) for methodology and
+data. Add `--mode pve` to benchmark PvE. See [Regular measurement notes](docs/rust-cohort-performance.md)
+and [PvE measurement notes](docs/rust-pve-cohort-performance.md) for methodology and
 limits. `npm test` builds Rust and runs both native and TypeScript regression tests.
