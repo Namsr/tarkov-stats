@@ -833,10 +833,125 @@ test("match attribution renders Google names safely in both languages and hides 
     const t = (key, vars = {}) => dictionary.exports.dict[lang][key].replace(/\{(\w+)\}/g, (_, name) => vars[name] ?? `{${name}}`);
     new Function("require", "module", "exports", component)((name) => name === "@/lib/i18n/context" ? { useI18n: () => ({ lang, t }) } : require(name), attributionModule, attributionModule.exports);
     const Attribution = attributionModule.exports.default;
-    assert.equal(renderToStaticMarkup(Attribution({ edited: null })), "");
-    const html = renderToStaticMarkup(Attribution({ edited: { name: "<b>Google Name</b>", at: 1000 } }));
+    assert.equal(renderToStaticMarkup(Attribution({ edited: null, canView: true })), "");
+    for (const canView of [undefined, false]) {
+      assert.equal(renderToStaticMarkup(Attribution({ edited: { name: "Namsr", at: 1000 }, canView })), "",
+        "anonymous users and non-moderators never see editor attribution");
+    }
+    const html = renderToStaticMarkup(Attribution({ edited: { name: "<b>Google Name</b>", at: 1000 }, canView: true }));
     assert.match(html, /&lt;b&gt;Google Name&lt;\/b&gt;/); assert.match(html, /dateTime="1970-01-01T00:00:01.000Z"/i);
     assert.match(html, lang === "ru" ? /Матч отредактирован:/ : /Match edited by/);
-    assert.match(renderToStaticMarkup(Attribution({ edited: { name: null, at: 1000 } })), lang === "ru" ? /редактор/ : /editor/);
+    assert.match(renderToStaticMarkup(Attribution({ edited: { name: null, at: 1000 }, canView: true })), lang === "ru" ? /редактор/ : /editor/);
   }
+});
+
+
+test("editing loads all ten Arena nicknames in one local roster request and ignores aborted results", async t => {
+  const require = createRequire(import.meta.url), React = require("react"), ts = require("typescript");
+  const { renderToStaticMarkup } = require("react-dom/server");
+  const { dict } = await import("../lib/i18n/dictionary.ts");
+  const code = ts.transpileModule(await readFile("components/AxisPlayerIdentity.tsx", "utf8"), {
+    compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS, jsx: ts.JsxEmit.ReactJSX, esModuleInterop: true },
+  }).outputText;
+  let nicknameState, effects = [];
+  const identityModule = { exports: {} };
+  new Function("require", "module", "exports", code)(name => {
+    if (name === "react") return { ...React,
+      useState: () => [nicknameState, next => { nicknameState = next; }],
+      useEffect: (effect, deps) => { effects.push({ effect, deps }); },
+    };
+    if (name === "next/image") return () => null;
+    if (name === "@/components/LeaderboardPreview") return {
+      LeaderboardPreviewProvider: ({ children }) => children,
+      LeaderboardPreviewLink: ({ children }) => React.createElement("span", null, children),
+    };
+    if (name === "@/lib/i18n/context") return { useI18n: () => ({ lang: "ru", t: (key, vars = {}) =>
+      dict.ru[key].replace(/\{(\w+)\}/g, (_, name) => vars[name] ?? `{${name}}`) }) };
+    if (name === "@/lib/axis-league") return { axisKdaRatio, axisMatchHref };
+    if (name === "@/lib/axis-player-profile") return { axisPlayerHref };
+    return require(name);
+  }, identityModule, identityModule.exports);
+  const body = { matchNumber: 5772, participants: Array.from({ length: 10 }, (_, i) => ({
+    discordId: String(i), teamIndex: i < 5 ? 0 : 1, historyName: "Player " + i,
+    arenaNickname: i === 7 ? "BushMasterTTV" : i === 9 ? null : "Arena" + i,
+  })) };
+  const render = (active = true, matchNumber = 5772, revision = "initial") => {
+    effects = [];
+    const html = renderToStaticMarkup(React.createElement(identityModule.exports.AxisArenaNicknames, { matchNumber, active, revision },
+      body.participants.map((p, i) => React.createElement(identityModule.exports.default, {
+        key: p.discordId, player: { id: p.discordId, name: p.historyName, profile: { aid: i + 1, mode: "arena" } },
+        mmr: null, showArenaNickname: active,
+      }))));
+    return { html, effect: effects[0].effect, deps: effects[0].deps };
+  };
+  const savedGlobals = { fetch: globalThis.fetch, window: globalThis.window, document: globalThis.document };
+  t.after(() => Object.assign(globalThis, savedGlobals));
+  const events = new Map();
+  const eventTarget = { addEventListener(name, listener) { events.set(name, listener); }, removeEventListener(name) { events.delete(name); } };
+  globalThis.window = eventTarget;
+  globalThis.document = { ...eventTarget, visibilityState: "visible" };
+  const requests = [];
+  let respond;
+  globalThis.fetch = (url, options) => {
+    requests.push({ url, options });
+    return new Promise(resolve => { respond = resolve; });
+  };
+  render(false).effect();
+  assert.equal(requests.length, 0, "viewing public statistics does not request protected roster data");
+  const first = render();
+  assert.equal((first.html.match(/Загрузка/g) ?? []).length, 10);
+  const cleanup = first.effect();
+  assert.equal(requests.length, 1, "ten nickname labels share one request");
+  assert.equal(requests[0].url, "/api/admin/axis-league/ocr-context?match=5772");
+  assert.equal(requests[0].options.cache, "no-store");
+  respond({ ok: true, json: async () => body });
+  await new Promise(resolve => setImmediate(resolve));
+  const ready = render().html;
+  assert.match(ready, /BushMasterTTV/);
+  assert.equal((ready.match(/Ник Arena недоступен/g) ?? []).length, 1, "only the missing stored nickname is unavailable");
+  assert.notDeepEqual(first.deps, render(true, 5772, "new-link").deps, "new profile links invalidate the nickname read");
+  events.get("focus")();
+  events.get("visibilitychange")();
+  assert.equal(requests.length, 2, "focus and visibility share one in-flight refresh");
+  const renamed = structuredClone(body);
+  renamed.participants[7].arenaNickname = "NewBushMaster";
+  respond({ ok: true, json: async () => renamed });
+  await new Promise(resolve => setImmediate(resolve));
+  const refreshed = render().html;
+  assert.match(refreshed, /NewBushMaster/);
+  assert.doesNotMatch(refreshed, /BushMasterTTV/);
+  globalThis.document.visibilityState = "hidden";
+  events.get("focus")(); events.get("visibilitychange")();
+  assert.equal(requests.length, 2, "hidden matches do not poll nicknames");
+  globalThis.document.visibilityState = "visible";
+  events.get("visibilitychange")();
+  assert.equal(requests.length, 3);
+  respond({ ok: true, json: async () => body });
+  await new Promise(resolve => setImmediate(resolve));
+  cleanup();
+  const lateCleanup = render(true, 5773).effect();
+  lateCleanup();
+  assert.equal(requests.at(-1).options.signal.aborted, true);
+  respond({ ok: true, json: async () => ({ ...body, matchNumber: 5773 }) });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(nicknameState, undefined, "a cancelled request cannot populate another editor session");
+
+  for (const invalid of [
+    { ok: false, json: async () => body },
+    { ok: true, json: async () => ({ ...body, matchNumber: 5773 }) },
+    { ok: true, json: async () => ({ ...body, participants: body.participants.slice(1) }) },
+    { ok: true, json: async () => ({ ...body, participants: body.participants.map((p, i) => i === 9 ? body.participants[0] : p) }) },
+  ]) {
+    const stop = render().effect();
+    respond(invalid);
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(nicknameState, null, "failed or mismatched roster data is rejected");
+    assert.equal((render().html.match(/Ник Arena недоступен/g) ?? []).length, 10);
+    stop();
+  }
+  const retryCleanup = render().effect();
+  respond({ ok: true, json: async () => body });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.match(render().html, /BushMasterTTV/, "opening editing again recovers after a failed request");
+  retryCleanup();
 });

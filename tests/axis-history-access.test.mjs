@@ -48,9 +48,11 @@ test("the first expanded match exposes uploads without an initial toggle event",
 });
 
 test("public history never asks for moderation; refreshes with unchanged archive time still refresh moderator review", async t => {
-  const saved = { fetch: globalThis.fetch, document: globalThis.document, setTimeout: globalThis.setTimeout, clearTimeout: globalThis.clearTimeout };
+  const saved = { fetch: globalThis.fetch, window: globalThis.window, document: globalThis.document, setTimeout: globalThis.setTimeout, clearTimeout: globalThis.clearTimeout };
   t.after(() => Object.assign(globalThis, saved));
   const requests = [];
+  const events = new Map();
+  globalThis.window = { addEventListener(name, listener) { events.set(name, listener); }, removeEventListener(name) { events.delete(name); } };
   globalThis.document = { visibilityState: "visible", addEventListener() {}, removeEventListener() {} };
   globalThis.setTimeout = () => 0; globalThis.clearTimeout = () => {};
   globalThis.fetch = async url => {
@@ -74,6 +76,14 @@ test("public history never asks for moderation; refreshes with unchanged archive
   await new Promise(resolve => setImmediate(resolve));
   assert.equal(requests.filter(url => url.includes("match-review")).length, 2);
   assert.equal(requests.filter(url => url.includes("/api/axis-league/history")).length, 1);
+  const linked = harness.render({ canEditKda: true, players: [{ id: "1", profile: { aid: 1001, mode: "arena" } }] });
+  assert.notDeepEqual(linked.effects[0].deps, refreshed.effects[0].deps, "a changed profile link invalidates old OCR warnings immediately");
+  events.get("focus")(); events.get("focus")();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(requests.filter(url => url.includes("match-review")).length, 3, "returning from a profile refresh rechecks warnings without overlapping requests");
+  globalThis.document.visibilityState = "hidden";
+  events.get("focus")();
+  assert.equal(requests.filter(url => url.includes("match-review")).length, 3);
   cleanupHistory(); cleanupRefreshed();
 });
 

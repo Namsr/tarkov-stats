@@ -1,7 +1,7 @@
 "use client";
 
 import { AXIS_REFRESH_MS, type AxisPlayer } from "@/lib/axis-league";
-import AxisPlayerIdentity from "@/components/AxisPlayerIdentity";
+import AxisPlayerIdentity, { AxisArenaNicknames } from "@/components/AxisPlayerIdentity";
 import AxisMatchAttribution from "@/components/AxisMatchAttribution";
 import AxisMatchProbability from "@/components/AxisMatchProbability";
 import AxisMatchStatsEditor from "@/components/AxisMatchStatsEditor";
@@ -34,10 +34,14 @@ export default function AxisMatchHistory({ active = true, canEditKda = false, ca
   const [historyRevision, setHistoryRevision] = useState(0);
   const current = data?.page === page && data?.season === season && data?.map === selectedMap && data?.matchNumber === focusedMatch ? data : cachedPages.find((entry) => entry.page === page && entry.season === season && entry.map === selectedMap && entry.matchNumber === focusedMatch) ?? null;
   const reviewMatchNumbers = current?.matches.map(match => match.number).join(",") ?? "";
+  const profileLinks = (players ?? []).map(player => `${player.id}:${player.profile?.mode ?? ""}:${player.profile?.aid ?? ""}`).sort().join("|");
   useEffect(() => {
     if (!canEditKda || !active || !reviewMatchNumbers) return;
     const controller = new AbortController();
+    let running = false;
     async function load() {
+      if (running || document.visibilityState === "hidden" || controller.signal.aborted) return;
+      running = true;
       try {
         const response = await fetch('/api/admin/axis-league/match-review?matches=' + reviewMatchNumbers, {
           cache: "no-store", signal: AbortSignal.any([controller.signal, AbortSignal.timeout(15_000)]),
@@ -46,10 +50,14 @@ export default function AxisMatchHistory({ active = true, canEditKda = false, ca
         if (!response.ok || !Array.isArray(body.reviews)) throw new Error("Review unavailable");
         if (!controller.signal.aborted) { setReviews(Object.fromEntries(body.reviews.filter((entry: AxisMatchReviewView | null) => entry !== null).map((entry: AxisMatchReviewView) => [entry.matchNumber, entry]))); setReviewFailed(false); }
       } catch { if (!controller.signal.aborted) { setReviews({}); setReviewFailed(true); } }
+      finally { running = false; }
     }
-    void load();
-    return () => controller.abort();
-  }, [canEditKda, active, reviewMatchNumbers, historyRevision]);
+    const refresh = () => { void load(); };
+    refresh();
+    window.addEventListener("focus", refresh);
+    document.addEventListener("visibilitychange", refresh);
+    return () => { controller.abort(); window.removeEventListener("focus", refresh); document.removeEventListener("visibilitychange", refresh); };
+  }, [canEditKda, active, reviewMatchNumbers, historyRevision, profileLinks]);
   const summary = current?.summary ?? (data?.season === season && data?.matchNumber === focusedMatch ? data.summary : undefined);
   const totalWins = summary ? summary.winsA + summary.winsB : 0;
   const averageProbabilityA = summary?.averageWinProbability ? Math.round(summary.averageWinProbability.a * 1000) / 1000 : null;
@@ -251,7 +259,7 @@ export default function AxisMatchHistory({ active = true, canEditKda = false, ca
             <span data-winner={match.winner ?? undefined} className={`axis-match-result${match.winner != null && match.winner >= 0 ? " axis-match-result--winner" : ""}`}>{result(match)}</span>
           </summary>
           <AxisMatchProbability match={match} />
-          <AxisMatchAttribution edited={match.edited} />
+          <AxisMatchAttribution edited={match.edited} canView={canEditKda} />
           {canEditKda && reviews[match.number] && <AxisMatchReview review={reviews[match.number]} roundsMissing={match.rounds == null} />}
           {canSubmitScreenshot && (openMatches[match.number] ?? index === 0) && <AxisMatchSubmission matchNumber={match.number} onSaved={() => { setCachedPages([]); setRetry(value => value + 1); }} />}
           <AxisMatchStatsEditor match={match} canEdit={canEditKda} onConflict={() => { setCachedPages([]); setRetry((value) => value + 1); }} onSaved={(players, rounds, edited) => {
@@ -262,7 +270,7 @@ export default function AxisMatchHistory({ active = true, canEditKda = false, ca
               edited: edited ?? entry.edited,
               teams: entry.teams.map((team) => ({ ...team, players: team.players.map((player) => saved.has(player.id) ? { ...player, kda: saved.get(player.id)! } : player) })) }) } : previous; });
             setRetry((value) => value + 1);
-          }}>{({ teams, renderInputs, rounds, editing }) => <>
+          }}>{({ teams, renderInputs, rounds, editing }) => <AxisArenaNicknames matchNumber={match.number} active={active && editing} revision={`${historyRevision}:${profileLinks}`}>
             {rounds}
           {teams.length === 0 ? <p className="axis-empty">{t("axis.history.noTeams")}</p> : <div className="axis-match-teams">{teams.map((team, teamIndex) => <section key={teamIndex} className={`axis-match-team${match.winner === teamIndex ? " axis-match-team--winner" : ""}`}>
             <div className="axis-match-team-heading"><h3>{teamName(match, teamIndex)}</h3>{match.winner === teamIndex && <span>{t("axis.history.won")}</span>}</div>
@@ -281,7 +289,7 @@ export default function AxisMatchHistory({ active = true, canEditKda = false, ca
               </div>
             </li>)}</ul>
           </section>)}</div>}
-          </>}</AxisMatchStatsEditor>
+          </AxisArenaNicknames>}</AxisMatchStatsEditor>
         </details>)}</div>}
     </>}
   </section>;
