@@ -55,24 +55,36 @@ affiliated with Battlestate Games or Tarkov.dev.
 
 ## Rust cohort pilot
 
-`npm run rust:build` builds the release executable. Set
-`REGULAR_COHORT_BACKEND=rust` to use it for Regular player comparison cohorts,
-or `PVE_COHORT_BACKEND=rust` for PvE comparisons. Each mode has its own switch;
-`typescript` (the default) restores the existing worker. Arena, Seasonal and other
-jobs keep their TypeScript implementation. Both use the same queue and deadline policy;
-Rust calculation failures surface through the existing retryable API error path.
-There is no automatic retry on the other backend that could double the work.
+`npm run rust:build` builds the release executable. Each comparison mode has
+its own opt-in switch: `REGULAR_COHORT_BACKEND`, `PVE_COHORT_BACKEND`,
+`ARENA_COHORT_BACKEND`, and `SEASONAL_COHORT_BACKEND`. Set a switch to `rust`
+to use native computation, or `typescript` (the default) to use the existing
+worker. Arena includes both player cohorts and dynamic population averages;
+Seasonal includes player cohorts. Seasonal average publication, baselines and
+other jobs retain their TypeScript implementation. All jobs share the same
+bounded FIFO and deadline policy. Calculation failures use the existing
+retryable API error path; there is no automatic retry on the other backend.
 
-The worker reads the existing `SQLITE_PATH` database without schema changes or
-upstream requests. Start the normal application/storage initialization first.
+The worker reads the existing `SQLITE_PATH` players database and, for Seasonal,
+`PROGRESSION_SQLITE_PATH` / `PROGRESSION_DB_PATH` (default `/data/progression.db`).
+Both databases and their current schemas must be initialized through the normal
+TypeScript storage path before native activation. Rust is strictly read-only:
+it neither creates a missing database nor migrates an old schema. Unlike
+TypeScript's first-ever lazy bootstrap, uninitialized Arena/Seasonal storage
+reports unavailable through the existing API error path. Failed readiness is
+retried on a later job, so external initialization does not require a worker
+restart. Normal startup behavior is preserved by the TypeScript defaults.
+
 `RUST_COHORT_BIN` can override the native executable; the production image includes
 it and sets the path. Build with the installed host toolchain for local use.
 
-Run `npm run benchmark:rust-cohort -- --rows 30000 --iterations 20 --output result.json`
-for an isolated synthetic API comparison. The benchmark does not access production
-data. Add `--mode pve` to benchmark PvE. See [Regular measurement notes](docs/rust-cohort-performance.md)
-and [PvE measurement notes](docs/rust-pve-cohort-performance.md) for methodology and
-limits. `npm test` builds Rust and runs both native and TypeScript regression tests.
+Run `npm run benchmark:rust-cohort -- --mode arena --rows 30000 --iterations 20 --output result.json`
+for an isolated synthetic API comparison. `--mode` accepts `regular`, `pve`,
+`arena`, or `seasonal`; the benchmark does not access production data.
+See [Regular measurement notes](docs/rust-cohort-performance.md) and
+[PvE measurement notes](docs/rust-pve-cohort-performance.md) for the earlier local
+experiments and their limits. `npm test` builds Rust and runs native/TypeScript
+compatibility and regression tests.
 
 For a Linux comparison using the built production image without production data:
 

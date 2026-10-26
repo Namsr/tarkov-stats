@@ -1,3 +1,6 @@
+mod arena;
+mod seasonal;
+
 use rusqlite::{Connection, OpenFlags};
 use serde::Deserialize;
 use serde_json::{Map, Value, json};
@@ -33,6 +36,7 @@ struct Request {
 #[serde(deny_unknown_fields)]
 struct Job {
     kind: String,
+    #[serde(default)]
     mode: String,
     args: Vec<Value>,
 }
@@ -499,11 +503,7 @@ fn compute(db: &mut Connection, input: &Input) -> Result<Value, String> {
     ))
 }
 
-fn open_database() -> Result<Connection, String> {
-    let path = env::var("SQLITE_PATH")
-        .ok()
-        .filter(|p| !p.is_empty())
-        .unwrap_or_else(|| "/data/players.db".into());
+fn open_path(path: String) -> Result<Connection, String> {
     let db = Connection::open_with_flags(
         path,
         OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
@@ -514,7 +514,56 @@ fn open_database() -> Result<Connection, String> {
     Ok(db)
 }
 
-fn handle(frame: &[u8], database: &mut Option<Connection>) -> Value {
+#[derive(Default)]
+struct Databases {
+    arena_ready: bool,
+    players: Option<Connection>,
+    progression: Option<Connection>,
+}
+
+impl Databases {
+    fn players(&mut self) -> Result<&mut Connection, String> {
+        if self.players.is_none() {
+            self.players = Some(open_path(
+                env::var("SQLITE_PATH")
+                    .ok()
+                    .filter(|path| !path.is_empty())
+                    .unwrap_or_else(|| "/data/players.db".into()),
+            )?);
+        }
+        Ok(self.players.as_mut().unwrap())
+    }
+    fn arena(&mut self) -> Result<&mut Connection, String> {
+        if !self.arena_ready {
+            if !arena::ready(self.players()?) {
+                self.players = None;
+                return Err("Arena storage schema is unavailable".into());
+            }
+            self.arena_ready = true;
+        }
+        self.players()
+    }
+    fn progression(&mut self) -> Result<&mut Connection, String> {
+        if self.progression.is_none() {
+            let path = env::var("PROGRESSION_SQLITE_PATH")
+                .ok()
+                .filter(|p| !p.is_empty())
+                .or_else(|| {
+                    env::var("PROGRESSION_DB_PATH")
+                        .ok()
+                        .filter(|p| !p.is_empty())
+                })
+                .unwrap_or_else(|| "/data/progression.db".into());
+            let db = open_path(path)?;
+            if !seasonal::ready(&db) {
+                return Err("Seasonal storage schema is unavailable".into());
+            }
+            self.progression = Some(db);
+        }
+        Ok(self.progression.as_mut().unwrap())
+    }
+}
+fn handle(frame: &[u8], databases: &mut Databases) -> Value {
     let raw: Value = match serde_json::from_slice(frame) {
         Ok(value) => value,
         Err(_) => return json!({ "id": null, "error": "Invalid JSON request" }),
@@ -526,11 +575,35 @@ fn handle(frame: &[u8], database: &mut Option<Connection>) -> Value {
         if request.version != 1 || request.id == 0 || request.id > 9_007_199_254_740_991 {
             return Err("Unsupported protocol version or request ID".into());
         }
-        let input = Input::parse(&request.args[0])?;
-        if database.is_none() {
-            *database = Some(open_database()?);
+        let job = &request.args[0];
+        match job.kind.as_str() {
+            "persistent" => {
+                let input = Input::parse(job)?;
+                compute(databases.players()?, &input)
+            }
+            "arena" => {
+                let input = arena::parse_cohort(&job.args)?;
+                let Ok(db) = databases.arena() else {
+                    return Ok(Value::Null);
+                };
+                arena::cohort(db, &input)
+            }
+            "arena_population" => {
+                let input = arena::parse_average(&job.args)?;
+                let Ok(db) = databases.arena() else {
+                    return Ok(Value::Null);
+                };
+                arena::average(db, &input)
+            }
+            "seasonal" => {
+                let input = seasonal::parse(&job.args)?;
+                let Ok(db) = databases.progression() else {
+                    return Ok(json!({"available":false,"result":null}));
+                };
+                seasonal::compute(db, &input)
+            }
+            _ => Err("Unsupported cohort job".into()),
         }
-        compute(database.as_mut().unwrap(), &input)
     };
     match execute() {
         Ok(value) => json!({ "id": id, "result": value }),
@@ -539,7 +612,7 @@ fn handle(frame: &[u8], database: &mut Option<Connection>) -> Value {
 }
 
 fn serve(reader: &mut impl BufRead, writer: &mut impl Write) -> io::Result<()> {
-    let mut database = None;
+    let mut database = Databases::default();
     let mut frame = Vec::with_capacity(4096);
     let mut oversized = false;
     loop {
@@ -849,5 +922,28 @@ mod tests {
         assert!(!input.recent);
         assert_eq!(input.dimension, "hours");
         assert!(!input.median);
+    }
+    #[test]
+    fn failed_arena_readiness_is_uncached_but_later_query_errors_propagate() {
+        let mut databases = Databases {
+            players: Some(Connection::open_in_memory().unwrap()),
+            ..Databases::default()
+        };
+        assert!(databases.arena().is_err());
+        assert!(databases.players.is_none());
+        assert!(!databases.arena_ready);
+        let db = Connection::open_in_memory().unwrap();
+        db.execute_batch("CREATE TABLE arena_mode_stats(aid INTEGER,arena_mode TEXT,hours REAL,games_count INTEGER,kd_ratio REAL,win_rate REAL,headshot_rate REAL,kills_per_match REAL,damage_per_match REAL,parser_version INTEGER);CREATE TABLE excluded_players(aid INTEGER);").unwrap();
+        databases.players = Some(db);
+        assert!(databases.arena().is_ok());
+        assert!(databases.arena_ready);
+        databases
+            .players
+            .as_mut()
+            .unwrap()
+            .execute_batch("DROP TABLE arena_mode_stats")
+            .unwrap();
+        let input = arena::parse_cohort(&[json!(1), json!("overall")]).unwrap();
+        assert!(arena::cohort(databases.arena().unwrap(), &input).is_err());
     }
 }

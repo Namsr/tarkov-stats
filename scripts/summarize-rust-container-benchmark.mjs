@@ -3,15 +3,15 @@ import { appendFileSync, readFileSync, readdirSync, writeFileSync } from "node:f
 import { join, resolve } from "node:path";
 
 const directory = resolve(process.argv[2] || ".");
-const paths = readdirSync(directory).filter((file) => /^(regular|pve)-round[1-3]-(typescript|rust)\.json$/.test(file)).sort();
+const paths = readdirSync(directory).filter((file) => /^(regular|pve|arena|seasonal)-round[1-3]-(typescript|rust)\.json$/.test(file)).sort();
 const rounds = Number(process.argv[3] || 2);
 assert.ok(Number.isSafeInteger(rounds) && rounds >= 1 && rounds <= 3);
-assert.equal(paths.length, 4 * rounds, "every requested repetition must have all four mode/backend reports");
+assert.equal(paths.length, 8 * rounds, "every requested repetition must have all eight mode/backend reports");
 const summaries = [];
 const lines = ["# Isolated Linux cohort benchmark", "", "Synthetic API handler, fresh container per mode/backend/repetition. Limits: 0.5 CPU, 384 MiB, no additional swap. These are CI runner results, not production VPS or browser latency.", "",
   "| Mode / repetition | Backend | Group / statistic | Concurrent | Cache | HTTP p50 ms | HTTP p95 ms |", "| --- | --- | --- | ---: | --- | ---: | ---: |"];
 for (const file of paths) {
-  const [, mode, round, backend] = file.match(/^(regular|pve)-round([1-3])-(typescript|rust)\.json$/);
+  const [, mode, round, backend] = file.match(/^(regular|pve|arena|seasonal)-round([1-3])-(typescript|rust)\.json$/);
   const report = JSON.parse(readFileSync(join(directory, file), "utf8"));
   const inspect = JSON.parse(readFileSync(join(directory, file.replace(/\.json$/, ".inspect.json")), "utf8"));
   assert.equal(inspect.exitCode, 0); assert.equal(inspect.oomKilled, false);
@@ -41,6 +41,9 @@ for (const file of paths) {
   for (const result of results) {
     assert.equal(result.backend, backend); assert.deepEqual(result.errors, []);
     assert.equal(result.http.samples, report.methodology.iterations);
+    assert.equal(result.server.samples, report.methodology.iterations);
+    assert.ok(Number.isFinite(result.server.p50Ms) && result.server.p50Ms >= 0);
+    assert.ok(Number.isFinite(result.server.p95Ms) && result.server.p95Ms >= result.server.p50Ms);
     assert.ok(Number.isFinite(result.http.p50Ms) && result.http.p50Ms >= 0);
     assert.ok(Number.isFinite(result.http.p95Ms) && result.http.p95Ms >= result.http.p50Ms);
     assert.equal(result.cacheHits, result.cache === "hit" ? report.methodology.iterations : 0);
@@ -51,7 +54,7 @@ for (const file of paths) {
   summaries.push({ mode, round: Number(round), backend, environment: report.environment, fixture: report.fixture,
     methodology: report.methodology, results: report.results, resourceResults: report.resourceResults, containerResources: container });
 }
-for (const mode of ["regular", "pve"]) {
+for (const mode of ["regular", "pve", "arena", "seasonal"]) {
   const observedRounds = [...new Set(summaries.filter((row) => row.mode === mode).map((row) => row.round))].sort();
   assert.deepEqual(observedRounds, Array.from({ length: rounds }, (_, index) => index + 1));
   for (const round of observedRounds) assert.deepEqual(summaries.filter((row) => row.mode === mode && row.round === round).map((row) => row.backend).sort(), ["rust", "typescript"]);

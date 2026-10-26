@@ -17,11 +17,20 @@ export class CohortComputeWorker extends ComputeWorker<[CohortJob], CohortResult
   }
 }
 
-/** Persistent comparisons opt in independently; other jobs keep their existing worker. */
-export function cohortComputeBackend(job: CohortJob, backend = job.kind === "persistent" && job.mode === "pve"
-  ? process.env.PVE_COHORT_BACKEND : process.env.REGULAR_COHORT_BACKEND): "rust" | "typescript" {
-  return backend === "rust" && job.kind === "persistent" && (job.mode === "regular" || job.mode === "pve")
-    ? "rust" : "typescript";
+/** Comparison backends opt in independently; unrelated jobs retain their worker. */
+export function cohortComputeBackend(job: CohortJob, backend?: string): "rust" | "typescript" {
+  let configured: string | undefined;
+  switch (job.kind) {
+    case "persistent":
+      if (job.mode !== "regular" && job.mode !== "pve") return "typescript";
+      configured = job.mode === "pve" ? process.env.PVE_COHORT_BACKEND : process.env.REGULAR_COHORT_BACKEND;
+      break;
+    case "arena":
+    case "arena_population": configured = process.env.ARENA_COHORT_BACKEND; break;
+    case "seasonal": configured = process.env.SEASONAL_COHORT_BACKEND; break;
+    default: return "typescript";
+  }
+  return (backend ?? configured) === "rust" ? "rust" : "typescript";
 }
 
 const worker = new CohortComputeWorker({

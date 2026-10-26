@@ -119,7 +119,7 @@ jobs:
               nice -n 19 node --experimental-strip-types --experimental-sqlite scripts/materialize-achievement-tempo.mjs
             '
       - name: Benchmark isolated TypeScript and Rust API workloads
-        timeout-minutes: 10
+        timeout-minutes: 20
         run: bash scripts/benchmark-rust-container.sh "tarkovstats-web:$GITHUB_SHA" "$RUNNER_TEMP/rust-linux-benchmark"
       - name: Save synthetic Linux benchmark evidence
         if: always()
