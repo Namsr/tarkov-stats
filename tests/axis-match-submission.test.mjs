@@ -215,7 +215,7 @@ test("review endpoint is moderator-only and returns only submitted matches", asy
   assert.equal((await response.json()).reviews[0].submissions.length, 2);
 });
 
-test("stored Arena profile refresh clears old screenshot warnings without another upload", async t => {
+for (const change of ["nickname", "profile link"]) test(`stored Arena ${change} refresh clears old screenshot warnings without another upload`, async t => {
   setup(t);
   const store = globalThis.axisStore;
   store.publish(match().teams.flatMap(team => team.players));
@@ -232,7 +232,9 @@ test("stored Arena profile refresh clears old screenshot warnings without anothe
   const getReview = async () => (await (await reviewGet(new Request("https://tarkovstats.ru/api/admin/axis-league/match-review?matches=77"))).json()).reviews[0];
   assert.deepEqual((await getReview()).nicknameMismatches, ["dn1she2_0", "M950"]);
 
-  globalThis.axisProfiles.set(1009, { nickname: " DN1she2_0 " });
+  const newAid = change === "profile link" ? 2009 : 1009;
+  if (change === "profile link") store.setProfile("9", { aid: newAid, mode: "arena" });
+  globalThis.axisProfiles.set(newAid, { nickname: " DN1she2_0 " });
   globalThis.axisProfiles.set(1010, { nickname: "M950" });
   globalThis.axisProfileCalls = [];
   const after = await getReview();
@@ -242,7 +244,7 @@ test("stored Arena profile refresh clears old screenshot warnings without anothe
   assert.equal(after.submissions.length, 1);
   assert.deepEqual(after.submissions[0].unmatchedNames, ["dn1she2_0", "M950"], "original OCR evidence stays intact");
   assert.deepEqual(store.readMatchKda(77), beforeStats, "review reads do not rewrite KDA");
-  assert.deepEqual(globalThis.axisProfileCalls.sort(), [1009, 1010], "current stored Arena names are read even for a regular-mode link");
+  assert.deepEqual(globalThis.axisProfileCalls.sort((a, b) => a - b), [newAid, 1010].sort((a, b) => a - b), "current stored Arena names are read even for a regular-mode link");
   assert.deepEqual(store.readAxisMatchReview(77).nicknameMismatches, ["dn1she2_0", "M950"], "persisted upload evidence is not overwritten");
 });
 

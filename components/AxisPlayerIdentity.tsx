@@ -81,28 +81,36 @@ function AxisLeagueStats({ player, averageKda }: { player: PreviewPlayer; averag
 // All ten editing rows share one local roster read, independent of hover previews.
 const ArenaNamesContext = createContext<ReadonlyMap<string, string | null> | null | undefined>(undefined);
 
-export function AxisArenaNicknames({ matchNumber, active, children }: { matchNumber: number; active: boolean; children: ReactNode }) {
+export function AxisArenaNicknames({ matchNumber, active, revision, children }: { matchNumber: number; active: boolean; revision?: string; children: ReactNode }) {
   const [nicknames, setNicknames] = useState<ReadonlyMap<string, string | null> | null>();
   useEffect(() => {
     setNicknames(undefined);
     if (!active) return;
     const controller = new AbortController();
-    void fetch(`/api/admin/axis-league/ocr-context?match=${matchNumber}`, {
-      cache: "no-store", signal: AbortSignal.any([controller.signal, AbortSignal.timeout(10_000)]),
-    }).then(async (response) => {
-      if (!response.ok) throw new Error("Arena nicknames unavailable");
-      const body = await response.json() as AxisOcrContext;
-      if (body?.matchNumber !== matchNumber || !Array.isArray(body.participants) || body.participants.length !== 10
-        || body.participants.some(participant => typeof participant?.discordId !== "string" || !participant.discordId
-          || participant.arenaNickname !== null && (typeof participant.arenaNickname !== "string" || !participant.arenaNickname.trim()))) {
-        throw new Error("Invalid Arena nicknames");
-      }
-      const names = new Map(body.participants.map(participant => [participant.discordId, participant.arenaNickname]));
-      if (names.size !== 10) throw new Error("Duplicate Arena nickname identities");
-      if (!controller.signal.aborted) setNicknames(names);
-    }).catch(() => { if (!controller.signal.aborted) setNicknames(null); });
-    return () => controller.abort();
-  }, [matchNumber, active]);
+    let running = false;
+    function load() {
+      if (running || document.visibilityState === "hidden" || controller.signal.aborted) return;
+      running = true;
+      void fetch(`/api/admin/axis-league/ocr-context?match=${matchNumber}`, {
+        cache: "no-store", signal: AbortSignal.any([controller.signal, AbortSignal.timeout(10_000)]),
+      }).then(async (response) => {
+        if (!response.ok) throw new Error("Arena nicknames unavailable");
+        const body = await response.json() as AxisOcrContext;
+        if (body?.matchNumber !== matchNumber || !Array.isArray(body.participants) || body.participants.length !== 10
+          || body.participants.some(participant => typeof participant?.discordId !== "string" || !participant.discordId
+            || participant.arenaNickname !== null && (typeof participant.arenaNickname !== "string" || !participant.arenaNickname.trim()))) {
+          throw new Error("Invalid Arena nicknames");
+        }
+        const names = new Map(body.participants.map(participant => [participant.discordId, participant.arenaNickname]));
+        if (names.size !== 10) throw new Error("Duplicate Arena nickname identities");
+        if (!controller.signal.aborted) setNicknames(names);
+      }).catch(() => { if (!controller.signal.aborted) setNicknames(null); }).finally(() => { running = false; });
+    }
+    load();
+    window.addEventListener("focus", load);
+    document.addEventListener("visibilitychange", load);
+    return () => { controller.abort(); window.removeEventListener("focus", load); document.removeEventListener("visibilitychange", load); };
+  }, [matchNumber, active, revision]);
   return <ArenaNamesContext.Provider value={nicknames}>{children}</ArenaNamesContext.Provider>;
 }
 

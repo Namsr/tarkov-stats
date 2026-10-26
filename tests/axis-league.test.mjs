@@ -858,7 +858,7 @@ test("editing loads all ten Arena nicknames in one local roster request and igno
   new Function("require", "module", "exports", code)(name => {
     if (name === "react") return { ...React,
       useState: () => [nicknameState, next => { nicknameState = next; }],
-      useEffect: effect => { effects.push(effect); },
+      useEffect: (effect, deps) => { effects.push({ effect, deps }); },
     };
     if (name === "next/image") return () => null;
     if (name === "@/components/LeaderboardPreview") return {
@@ -875,17 +875,21 @@ test("editing loads all ten Arena nicknames in one local roster request and igno
     discordId: String(i), teamIndex: i < 5 ? 0 : 1, historyName: "Player " + i,
     arenaNickname: i === 7 ? "BushMasterTTV" : i === 9 ? null : "Arena" + i,
   })) };
-  const render = (active = true, matchNumber = 5772) => {
+  const render = (active = true, matchNumber = 5772, revision = "initial") => {
     effects = [];
-    const html = renderToStaticMarkup(React.createElement(identityModule.exports.AxisArenaNicknames, { matchNumber, active },
+    const html = renderToStaticMarkup(React.createElement(identityModule.exports.AxisArenaNicknames, { matchNumber, active, revision },
       body.participants.map((p, i) => React.createElement(identityModule.exports.default, {
         key: p.discordId, player: { id: p.discordId, name: p.historyName, profile: { aid: i + 1, mode: "arena" } },
         mmr: null, showArenaNickname: active,
       }))));
-    return { html, effect: effects[0] };
+    return { html, effect: effects[0].effect, deps: effects[0].deps };
   };
-  const savedFetch = globalThis.fetch;
-  t.after(() => { globalThis.fetch = savedFetch; });
+  const savedGlobals = { fetch: globalThis.fetch, window: globalThis.window, document: globalThis.document };
+  t.after(() => Object.assign(globalThis, savedGlobals));
+  const events = new Map();
+  const eventTarget = { addEventListener(name, listener) { events.set(name, listener); }, removeEventListener(name) { events.delete(name); } };
+  globalThis.window = eventTarget;
+  globalThis.document = { ...eventTarget, visibilityState: "visible" };
   const requests = [];
   let respond;
   globalThis.fetch = (url, options) => {
@@ -905,10 +909,29 @@ test("editing loads all ten Arena nicknames in one local roster request and igno
   const ready = render().html;
   assert.match(ready, /BushMasterTTV/);
   assert.equal((ready.match(/Ник Arena недоступен/g) ?? []).length, 1, "only the missing stored nickname is unavailable");
+  assert.notDeepEqual(first.deps, render(true, 5772, "new-link").deps, "new profile links invalidate the nickname read");
+  events.get("focus")();
+  events.get("visibilitychange")();
+  assert.equal(requests.length, 2, "focus and visibility share one in-flight refresh");
+  const renamed = structuredClone(body);
+  renamed.participants[7].arenaNickname = "NewBushMaster";
+  respond({ ok: true, json: async () => renamed });
+  await new Promise(resolve => setImmediate(resolve));
+  const refreshed = render().html;
+  assert.match(refreshed, /NewBushMaster/);
+  assert.doesNotMatch(refreshed, /BushMasterTTV/);
+  globalThis.document.visibilityState = "hidden";
+  events.get("focus")(); events.get("visibilitychange")();
+  assert.equal(requests.length, 2, "hidden matches do not poll nicknames");
+  globalThis.document.visibilityState = "visible";
+  events.get("visibilitychange")();
+  assert.equal(requests.length, 3);
+  respond({ ok: true, json: async () => body });
+  await new Promise(resolve => setImmediate(resolve));
   cleanup();
   const lateCleanup = render(true, 5773).effect();
   lateCleanup();
-  assert.equal(requests[1].options.signal.aborted, true);
+  assert.equal(requests.at(-1).options.signal.aborted, true);
   respond({ ok: true, json: async () => ({ ...body, matchNumber: 5773 }) });
   await new Promise(resolve => setImmediate(resolve));
   assert.equal(nicknameState, undefined, "a cancelled request cannot populate another editor session");

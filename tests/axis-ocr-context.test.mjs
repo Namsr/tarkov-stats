@@ -148,3 +148,20 @@ test("OCR context turns store failures into uncached service errors", async t =>
   assert.equal(response.headers.get("cache-control"), "no-store");
   assert.deepEqual(await response.json(), { error: "ocr_context_unavailable" });
 });
+
+
+test("the same match reads a corrected profile link and its latest stored Arena nickname on every request", async t => {
+  setup(t);
+  const state = globalThis.ocrContextState, player = state.match.teams[0].players[0];
+  player.profile = { aid: 700, mode: "arena" };
+  state.profiles.set(700, { nickname: "WrongProfile" });
+  assert.equal((await (await get("?match=12")).json()).participants[0].arenaNickname, "WrongProfile");
+  player.profile = { aid: 701, mode: "arena" };
+  assert.equal((await (await get("?match=12")).json()).participants[0].arenaNickname, null,
+    "linking an account does not invent a nickname before its Arena snapshot exists");
+  state.profiles.set(701, { nickname: "CorrectProfile" });
+  assert.equal((await (await get("?match=12")).json()).participants[0].arenaNickname, "CorrectProfile");
+  state.profiles.set(701, { nickname: "RenamedProfile" });
+  assert.equal((await (await get("?match=12")).json()).participants[0].arenaNickname, "RenamedProfile");
+  assert.deepEqual(state.profileCalls, [700, 701, 701, 701]);
+});
