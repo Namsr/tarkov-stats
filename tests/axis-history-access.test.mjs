@@ -41,10 +41,14 @@ function historyHarness() {
   } };
 }
 
-test("the first expanded match exposes uploads without an initial toggle event", () => {
-  const { html } = historyHarness().render({ canSubmitScreenshot: true });
-  assert.match(html, /<details[^>]*open=""/);
-  assert.match(html, /data-upload-match="42"/);
+test("history mounts screenshot submission only for players, below the match results", () => {
+  for (const canEditKda of [false, true]) {
+    const { html } = historyHarness().render({ canEditKda });
+    assert.match(html, /<details[^>]*open=""/);
+    assert.doesNotMatch(html, /data-upload-match|axis-match-photo|axis-photo-paste/);
+    const permitted = historyHarness().render({ canEditKda, canSubmitScreenshot: true }).html;
+    assert.equal(permitted.includes('data-upload-match="42"'), !canEditKda, "moderators use the existing statistics editor");
+  }
 });
 
 test("public history never asks for moderation; refreshes with unchanged archive time still refresh moderator review", async t => {
@@ -101,10 +105,56 @@ test("unreadable nicknames keep a complete match flagged for moderator review", 
       return require(name);
     }, componentModule, componentModule.exports);
     const review = { matchNumber: 42, missingStats: [], nicknameMismatches: [], unreadableNames: 2, conflicts: [], roundConflict: null, submissions: [] };
-    assert.equal(componentModule.exports.axisReviewNeedsAttention(review, false), true);
-    const html = renderToStaticMarkup(React.createElement(componentModule.exports.default, { review, roundsMissing: false }));
+    assert.equal(componentModule.exports.axisReviewNeedsAttention(review), true);
+    const html = renderToStaticMarkup(React.createElement(componentModule.exports.default, { review }));
     assert.ok(html.includes(dict[lang]["axis.review.unreadableNames"].replace("{n}", "2")));
     assert.ok(!html.includes(dict[lang]["axis.review.complete"]));
-    assert.equal(componentModule.exports.axisReviewNeedsAttention({ ...review, unreadableNames: 0 }, false), false);
+    assert.equal(componentModule.exports.axisReviewNeedsAttention({ ...review, unreadableNames: 0 }), false);
+    const complete = { ...review, unreadableNames: 0, submissions: [{ photoRevision: "a".repeat(64) }] };
+    const render = value => renderToStaticMarkup(React.createElement(componentModule.exports.default, { review: value }));
+    assert.equal(render(complete), "", "complete matches must not leave a status panel or screenshot");
+    assert.equal(render({ ...complete, missingStats: ["Player"], conflicts: [{ name: "Player" }], roundConflict: {} }), "", "only nickname warnings belong above the editor");
+    const warning = render({ ...complete, nicknameMismatches: ["Wrong Nick"] });
+    assert.ok(warning.includes(dict[lang]["axis.review.unmatched"].replace("{names}", "Wrong Nick")));
+    assert.match(warning, /role="status"/);
+    assert.doesNotMatch(warning, /<img|<input|<button|<details|<section|<ul/);
   }
+});
+
+test("players open only the screenshot picker with Edit and can close it without numeric fields", () => {
+  const code = ts.transpileModule(readFileSync("components/AxisMatchSubmission.tsx", "utf8"), {
+    compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS, jsx: ts.JsxEmit.ReactJSX },
+  }).outputText;
+  const values = [], componentModule = { exports: {} }; let stateIndex = 0;
+  new Function("require", "module", "exports", code)(name => {
+    if (name === "react") return {
+      useState(initial) { const index = stateIndex++; if (!(index in values)) values[index] = initial;
+        return [values[index], value => { values[index] = typeof value === "function" ? value(values[index]) : value; }]; },
+      useRef: current => ({ current }), useCallback: callback => callback, useEffect() {},
+    };
+    if (name === "@/lib/i18n/context") return { useI18n: () => ({ t: key => key }) };
+    if (name === "@/components/AxisMatchPhoto") return { default: props => {
+      assert.equal(props.uploadOnly, true);
+      return React.createElement("input", { type: "file", "aria-label": "axis.photo.select" });
+    } };
+    return require(name);
+  }, componentModule, componentModule.exports);
+  const render = () => { stateIndex = 0; return componentModule.exports.default({ matchNumber: 42, onSaved() {} }); };
+  const findButton = tree => {
+    if (!React.isValidElement(tree)) return null;
+    if (tree.type === "button") return tree;
+    for (const child of React.Children.toArray(tree.props.children)) { const found = findButton(child); if (found) return found; }
+    return null;
+  };
+  let tree = render(), button = findButton(tree);
+  assert.equal(button.props.children, "axis.kda.edit");
+  assert.equal(button.props["aria-expanded"], false);
+  assert.doesNotMatch(renderToStaticMarkup(tree), /type="file"|type="number"/);
+  button.props.onClick(); tree = render(); button = findButton(tree);
+  assert.equal(button.props.children, "axis.kda.cancel");
+  assert.equal(button.props["aria-expanded"], true);
+  assert.equal((renderToStaticMarkup(tree).match(/type="file"/g) ?? []).length, 1);
+  assert.doesNotMatch(renderToStaticMarkup(tree), /type="number"|<form|axis-kda-inline|axis-round-inputs/);
+  button.props.onClick();
+  assert.doesNotMatch(renderToStaticMarkup(render()), /type="file"|type="number"/);
 });

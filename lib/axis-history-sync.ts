@@ -31,15 +31,18 @@ export async function refreshAxisArchive(store: AxisLeagueStore, request: typeof
         return data;
       };
       const complete = Boolean(progress.complete);
-      let first = await read(1, complete || headOnly ? AXIS_HISTORY_PAGE_SIZE : AXIS_ARCHIVE_PAGE_SIZE);
-      if (!headOnly) {
-        // A normal refresh needs only the newest 25. Catch up after longer outages without gaps.
-        if (complete && !progress.complete) first = await read(1);
-        // Bounded initial import: two older pages per worker tick.
-        for (let i = 0; i < 2 && !progress.complete; i++) {
+      const first = await read(1, headOnly && !complete ? AXIS_HISTORY_PAGE_SIZE : AXIS_ARCHIVE_PAGE_SIZE);
+      if (!headOnly || complete) {
+        // Revisit completed archives too: old results can be cancelled or corrected.
+        // HTTP fallbacks participate once imported, so their shared lease cannot
+        // starve reconciliation. Keep the initial HTTP bootstrap head-only.
+        const reconcile = complete && Boolean(progress.complete);
+        for (let i = 0; i < 2 && (!progress.complete || reconcile); i++) {
           const page = progress.next_page;
           if (page > first.pages) break;
           await read(page);
+          // The persisted cursor wraps to page 2; resume there on the next tick.
+          if (page === first.pages) break;
         }
       }
     } catch (error) {
