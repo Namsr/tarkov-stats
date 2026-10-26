@@ -155,7 +155,7 @@ const instrumentation = String.raw`(() => {
   observe('largest-contentful-paint',entries=>{for(const e of entries)state.lcpMs=e.startTime;});
   observe('layout-shift',entries=>{for(const e of entries)if(!e.hadRecentInput){if(e.startTime-lastShift>1000||e.startTime-sessionStart>5000){sessionStart=e.startTime;sessionValue=0;}sessionValue+=e.value;lastShift=e.startTime;state.cls=Math.max(state.cls,sessionValue);}});
   new MutationObserver(inspect).observe(document,{subtree:true,childList:true,attributes:true,characterData:true});
-  window.__rustArenaBenchmark={snapshot(){for(const{observer,callback}of observers)callback(observer.takeRecords());const dom=inspect();const n=performance.getEntriesByType('navigation')[0];return{...state,dom,timeOrigin:performance.timeOrigin,now:performance.now(),navigation:n?{ttfbMs:n.responseStart-n.startTime,loadMs:n.loadEventEnd-n.startTime,responseStatus:n.responseStatus,type:n.type}:null,marker:document.documentElement.outerHTML.includes('/_rust/arena/')?'rust':document.documentElement.outerHTML.includes('/_next/')?'next':'missing'};}};
+  window.__rustArenaBenchmark={snapshot(){for(const{observer,callback}of observers)callback(observer.takeRecords());const dom=inspect();const html=document.documentElement?.outerHTML || '';const n=performance.getEntriesByType('navigation')[0];return{...state,dom,timeOrigin:performance.timeOrigin,now:performance.now(),navigation:n?{ttfbMs:n.responseStart-n.startTime,loadMs:n.loadEventEnd-n.startTime,responseStatus:n.responseStatus,type:n.type}:null,marker:html.includes('/_rust/arena/')?'rust':html.includes('/_next/')?'next':'missing'};}};
   inspect();
 })();`;
 async function browser() {
@@ -202,7 +202,7 @@ async function page(browser, url) {
   await send("Network.emulateNetworkConditionsByRule", {offline:false,matchedNetworkConditions:[{urlPattern:"",latency:network.latency,downloadThroughput:network.downloadThroughput,uploadThroughput:network.uploadThroughput}]});
   await send("Network.overrideNetworkState", network);
   await send("Page.addScriptToEvaluateOnNewDocument", {source:instrumentation});
-  return {send,state,url,async evaluate(expression){const value=await send("Runtime.evaluate",{expression,returnByValue:true,awaitPromise:true});if(value.exceptionDetails)throw new Error(value.exceptionDetails.text);return value.result.value;},async close(){await browser.cdp.send("Target.disposeBrowserContext",{browserContextId});}};
+  return {send,state,url,async evaluate(expression){const value=await send("Runtime.evaluate",{expression,returnByValue:true,awaitPromise:true});if(value.exceptionDetails)throw new Error([value.exceptionDetails.text,value.exceptionDetails.exception?.description].filter(Boolean).join(": "));return value.result.value;},async close(){await browser.cdp.send("Target.disposeBrowserContext",{browserContextId});}};
 }
 function totals(requests) {
   const categories={js:{requests:0,bytes:0},wasm:{requests:0,bytes:0},css:{requests:0,bytes:0},other:{requests:0,bytes:0}};
