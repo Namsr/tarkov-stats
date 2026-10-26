@@ -38,7 +38,7 @@ export default function CheaterReportButton({ aid, mode, cycle }: { aid: number;
   }, [aid, authStatus]);
 
   const signedOut = authStatus === "unauthenticated";
-  const disabled = signedOut || reported || submitting || authStatus !== "authenticated";
+  const disabled = signedOut || submitting || authStatus !== "authenticated";
 
   async function submit() {
     if (disabled) return;
@@ -46,14 +46,14 @@ export default function CheaterReportButton({ aid, mode, cycle }: { aid: number;
     setError("");
     try {
       const response = await fetch("/api/community-reports", {
-        method: "POST",
+        method: reported ? "DELETE" : "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ aid, mode, cycle }),
+        body: JSON.stringify(reported ? { aid } : { aid, mode, cycle }),
       });
       const body = await response.json() as { count?: number };
       if (!response.ok || typeof body.count !== "number") throw new Error();
       setCount(body.count);
-      setReported(true);
+      setReported(!reported);
     } catch {
       setError(t("report.submitFailed"));
     } finally {
@@ -61,7 +61,7 @@ export default function CheaterReportButton({ aid, mode, cycle }: { aid: number;
     }
   }
 
-  const label = reported ? t("report.already") : t("report.action");
+  const label = reported ? t("report.remove") : t("report.action");
   const button = (
     <button
       type="button"
@@ -74,7 +74,7 @@ export default function CheaterReportButton({ aid, mode, cycle }: { aid: number;
       title={signedOut ? undefined : label}
       className="ghost-button profile-action__button profile-report-button !text-sm !normal-case !tracking-normal disabled:cursor-not-allowed"
     >
-      <span>{submitting ? t("common.loading") : t(reported ? "profile.reported" : "profile.reportAction")}</span>{" "}
+      <span>{submitting ? t("common.loading") : t(reported ? "report.remove" : "profile.reportAction")}</span>{" "}
       <span className="report-count">({count})</span>
     </button>
   );

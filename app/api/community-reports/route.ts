@@ -82,3 +82,23 @@ export async function POST(request: NextRequest) {
     return response({ error: "Storage unavailable" }, 503, headers);
   }
 }
+
+export async function DELETE(request: NextRequest) {
+  const { allowed, headers } = getRateLimitHeaders(getClientIp(request), { bucket: "community-reports" });
+  if (!allowed) return response({ error: "Rate limit exceeded" }, 429, headers);
+  const session = await getSession();
+  if (!session) return response({ error: "Unauthorized" }, 401, headers);
+  const body: unknown = await request.json().catch(() => null);
+  if (!body || typeof body !== "object" || Array.isArray(body) || Object.keys(body).length !== 1 || !("aid" in body)) {
+    return response({ error: "Invalid account ID" }, 400, headers);
+  }
+  const aid = parsePlayerId(String(body.aid ?? ""));
+  if (aid === null) return response({ error: "Invalid account ID" }, 400, headers);
+  try {
+    const store = await getCommunityReportsStore();
+    if (!store) return response({ error: "Storage unavailable" }, 503, headers);
+    return response(await store.unreport(session.sub, aid), 200, headers);
+  } catch {
+    return response({ error: "Storage unavailable" }, 503, headers);
+  }
+}

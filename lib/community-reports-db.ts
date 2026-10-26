@@ -19,6 +19,7 @@ export interface CommunityReportsStore {
   count(aid: number): Promise<number>;
   reportedBy(userSub: string, aid: number): Promise<boolean>;
   report(input: { userSub: string; aid: number; mode: string; cycleId: string; createdAt?: number }): Promise<{ count: number; already: boolean }>;
+  unreport(userSub: string, aid: number): Promise<{ count: number }>;
   candidates(helperId: string, limit: number): Promise<CommunityCandidate[]>;
   vote(input: { helperId: string; aid: number; verdict: "yes" | "no"; createdAt?: number }): Promise<{ already: boolean; missing: boolean }>;
   reviews(aid?: number): Promise<CommunityReview[]>;
@@ -108,6 +109,10 @@ export function createSqliteCommunityReportsStore(db: any): CommunityReportsStor
     async report({ userSub, aid, mode, cycleId, createdAt = Date.now() }) {
       const result = db.prepare("INSERT OR IGNORE INTO suspect_reports (user_sub, aid, mode, cycle_id, created_at) VALUES (?, ?, ?, ?, ?)").run(userSub, aid, mode, cycleId, createdAt);
       return { already: Number(result.changes) === 0, count: Number(db.prepare("SELECT COUNT(*) AS n FROM suspect_reports WHERE aid = ?").get(aid).n) };
+    },
+    async unreport(userSub, aid) {
+      db.prepare("DELETE FROM suspect_reports WHERE user_sub = ? AND aid = ?").run(userSub, aid);
+      return { count: Number(db.prepare("SELECT COUNT(*) AS n FROM suspect_reports WHERE aid = ?").get(aid).n) };
     },
     async candidates(helperId, limit) {
       const n = Number.isSafeInteger(limit) ? Math.min(50, Math.max(1, limit)) : 20;
