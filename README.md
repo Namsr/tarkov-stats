@@ -7,6 +7,8 @@ historical statistics.
 ## Development
 
 Requires Node.js 22.18 or newer. CI and the production image use Node.js 22.
+The native cohort pilot and full test suite also need Rust 1.89+ and a C compiler
+for bundled SQLite (CI uses Rust 1.98.1). The web app defaults to TypeScript.
 
 ```bash
 npm install
@@ -50,3 +52,22 @@ pull request with a short description and the checks you ran.
 
 The application reads public Tarkov data from JSON endpoints and is not
 affiliated with Battlestate Games or Tarkov.dev.
+
+## Rust cohort pilot
+
+`npm run rust:build` builds the release executable. Set
+`REGULAR_COHORT_BACKEND=rust` to use it for Regular player comparison cohorts.
+`typescript` (the default) restores the existing worker. Other modes and jobs
+keep their TypeScript implementation. Both use the same queue and deadline policy;
+Rust calculation failures surface through the existing retryable API error path.
+There is no automatic retry on the other backend that could double the work.
+
+The worker reads the existing `SQLITE_PATH` database without schema changes or
+upstream requests. Start the normal application/storage initialization first.
+`RUST_COHORT_BIN` can override the native executable; the production image includes
+it and sets the path. Build with the installed host toolchain for local use.
+
+Run `npm run benchmark:rust-cohort -- --rows 30000 --iterations 20 --output result.json`
+for an isolated synthetic API comparison. The benchmark does not access production
+data. See [measurement notes](docs/rust-cohort-performance.md) for methodology and
+limits. `npm test` builds Rust and runs both native and TypeScript regression tests.

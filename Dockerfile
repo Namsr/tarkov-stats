@@ -1,5 +1,12 @@
 # syntax=docker/dockerfile:1
 
+# Native pilot is a separate process; the runtime contains no Rust toolchain.
+FROM rust:1.98.1-alpine AS rust-builder
+RUN apk add --no-cache musl-dev
+WORKDIR /build
+COPY rust/cohort-worker/ ./
+RUN cargo build --release --locked
+
 # ---------- 1. Установка зависимостей ----------
 FROM node:22-alpine AS deps
 RUN apk add --no-cache libc6-compat
@@ -34,6 +41,7 @@ RUN addgroup --system --gid 1001 nodejs \
 COPY --from=builder /app/public ./public
 COPY --from=builder --chown=nextjs:nodejs /app/.next/standalone ./
 COPY --from=builder --chown=nextjs:nodejs /app/.next/static ./.next/static
+COPY --from=rust-builder --chown=nextjs:nodejs /build/target/release/tarkov-cohort-worker ./rust/cohort-worker/target/release/tarkov-cohort-worker
 COPY --from=builder --chown=nextjs:nodejs /app/scripts/sync-player-index.mjs ./scripts/sync-player-index.mjs
 COPY --from=builder --chown=nextjs:nodejs /app/scripts/sync-pve-index.mjs ./scripts/sync-pve-index.mjs
 COPY --from=builder --chown=nextjs:nodejs /app/scripts/sync-pve-profiles.mjs ./scripts/sync-pve-profiles.mjs
@@ -80,6 +88,7 @@ USER nextjs
 EXPOSE 3000
 ENV PORT=3000
 ENV HOSTNAME="0.0.0.0"
+ENV RUST_COHORT_BIN="/app/rust/cohort-worker/target/release/tarkov-cohort-worker"
 ENV SQLITE_PATH="/data/players.db"
 ENV BANS_SQLITE_PATH="/data/bans.db"
 ENV PROGRESSION_SQLITE_PATH="/data/progression.db"
