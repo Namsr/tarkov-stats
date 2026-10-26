@@ -38,7 +38,11 @@ test('deploy consumes verified CI images and preserves recovery and rollback', a
     'tag-fail', 'sync-busy', 'image-missing', 'download-fail', 'checksum-fail',
     'invalid-checksum', 'multiline-checksum', 'load-fail', 'revision-mismatch', 'tag-target-fail', 'merge-fail',
     'signal', 'start-fail', 'health-fail'];
-  for (const scenario of scenarios) {
+  const showcaseScenarios = ['routing-to-rust', 'routing-invalid', 'unsupported-rollback',
+    'native-candidate-incompatible', 'native-upgrade', 'current-rust', 'current-rust-sick'];
+  const routingCases = [...scenarios.map((scenario) => ({ scenario, selector: 'SEASONAL_API_UPSTREAM' })),
+    ...showcaseScenarios.map((scenario) => ({ scenario, selector: 'HOME_SHOWCASE_API_UPSTREAM' }))];
+  for (const { scenario, selector } of routingCases) {
     const dir = await mkdtemp(join(tmpdir(), 'deploy-behavior-'));
     try {
       const mock = `
@@ -55,14 +59,14 @@ test('deploy consumes verified CI images and preserves recovery and rollback', a
           *'ps -q web') echo web;;
           *'config --environment')
             case "$SCENARIO" in
-              routing-invalid) echo SEASONAL_API_UPSTREAM=invalid;;
-              routing-to-rust|unsupported-rollback|native-*|current-rust*) echo SEASONAL_API_UPSTREAM=web:3001;;
+              routing-invalid) echo "$SELECTOR=invalid";;
+              routing-to-rust|unsupported-rollback|native-*|current-rust*) echo "$SELECTOR=web:3001";;
             esac;;
           'image inspect '*)
             case "$*" in
-              *org.tarkovstats.rust-http*)
+              *org.tarkovstats.rust-http*|*org.tarkovstats.rust-home-showcase*)
                 if [ "$SCENARIO" != unsupported-rollback ]; then
-                  case "$SCENARIO:$*" in native-candidate-incompatible:*tarkovstats-web:remote) ;; *) echo seasonal-v1;; esac
+                  case "$SCENARIO:$*" in native-candidate-incompatible:*tarkovstats-web:remote) ;; *) case "$*" in *org.tarkovstats.rust-home-showcase*) echo v1;; *) echo seasonal-v1;; esac;; esac
                 fi;;
               *) if [ "$SCENARIO" = revision-mismatch ]; then echo wrong; else echo remote; fi;;
             esac;;
@@ -72,7 +76,7 @@ test('deploy consumes verified CI images and preserves recovery and rollback', a
               *'.Image'*) echo old-image;;
               *'.Config.Env'*)
                 case "$SCENARIO" in
-                  unsupported-rollback|native-*|current-rust*) echo rust;;
+                  unsupported-rollback|native-*|current-rust*) case "$*" in *"$SELECTOR=web:3001"*) echo rust;; esac;;
                   current-isolated-sync-busy) echo WEB_BACKGROUND_WORKERS=false;;
                 esac;;
               *) case "$SCENARIO" in current*) echo remote;; *) if [ -f "$APP/started" ]; then echo remote; else echo old; fi;; esac;;
@@ -123,7 +127,7 @@ test('deploy consumes verified CI images and preserves recovery and rollback', a
       const file = join(dir, 'deploy.sh');
       await writeFile(file, script.replaceAll('\r\n', '\n'));
       const run = (value = scenario) => spawnSync(shell, [file], {
-        env: { ...process.env, SCENARIO: value }, encoding: 'utf8', timeout: 10_000,
+        env: { ...process.env, SCENARIO: value, SELECTOR: selector }, encoding: 'utf8', timeout: 10_000,
       });
       const result = run();
       assert.ifError(result.error);

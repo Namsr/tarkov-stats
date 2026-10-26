@@ -34,6 +34,7 @@ FROM node:22-alpine AS runner
 ARG SOURCE_REVISION=unknown
 LABEL org.opencontainers.image.revision=$SOURCE_REVISION
 LABEL org.tarkovstats.rust-http="seasonal-v1"
+LABEL org.tarkovstats.rust-home-showcase="v1"
 WORKDIR /app
 ENV NODE_ENV=production
 ENV NEXT_TELEMETRY_DISABLED=1

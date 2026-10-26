@@ -259,7 +259,8 @@ pub async fn method_not_allowed() -> StatusCode {
 }
 pub async fn trailing(method: Method, uri: Uri) -> Response {
     let location = format!(
-        "/api/seasonal/cohort{}",
+        "{}{}",
+        uri.path().trim_end_matches('/'),
         uri.query()
             .map_or(String::new(), |query| format!("?{query}"))
     );
@@ -288,7 +289,10 @@ pub fn secure(routes: axum::Router) -> axum::Router {
         .layer(axum::middleware::from_fn(security))
 }
 pub async fn security(request: axum::extract::Request, next: axum::middleware::Next) -> Response {
-    let early_redirect = request.uri().path() == "/api/seasonal/cohort/";
+    let early_redirect = matches!(
+        request.uri().path(),
+        "/api/seasonal/cohort/" | "/api/home/showcase/"
+    );
     let mut response = next.run(request).await;
     // Next normalizes this path before application/global Next headers run.
     // The public proxy still applies its existing HSTS policy.

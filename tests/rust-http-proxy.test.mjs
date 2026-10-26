@@ -49,7 +49,7 @@ test("production proxy selects the Rust endpoint, bounds each upstream and never
   const path = join(directory, "Caddyfile"); await writeFile(path, config);
   const child = spawn(caddy, ["run", "--config", path, "--adapter", "caddyfile"], {
     cwd: directory, windowsHide: true, stdio: ["ignore", "ignore", "pipe"],
-    env: { ...process.env, SEASONAL_API_UPSTREAM: `127.0.0.1:${rustPort}`, GOMEMLIMIT: "192MiB",
+    env: { ...process.env, SEASONAL_API_UPSTREAM: `127.0.0.1:${rustPort}`, HOME_SHOWCASE_API_UPSTREAM: `127.0.0.1:${rustPort}`, GOMEMLIMIT: "192MiB",
       APPDATA: directory, XDG_DATA_HOME: directory, XDG_CONFIG_HOME: directory },
   });
   let logs = ""; child.stderr.setEncoding("utf8"); child.stderr.on("data", (chunk) => { logs = `${logs}${chunk}`.slice(-16000); });
@@ -68,7 +68,7 @@ test("production proxy selects the Rust endpoint, bounds each upstream and never
     try { await request(port, "/proxy-ready"); break; } catch { assert.ok(Date.now() < deadline, logs); await delay(20); }
   }
   for (const host of ["tarkovstats.ru", "tarkovstats.online"]) {
-    for (const path of ["/api/seasonal/cohort?aid=1", "/api/seasonal/cohort/?aid=1"]) {
+    for (const path of ["/api/seasonal/cohort?aid=1", "/api/seasonal/cohort/?aid=1", "/api/home/showcase", "/api/home/showcase/?x=1"]) {
       const result = await request(port, path, host);
       assert.equal(result.status, 200); assert.equal(JSON.parse(result.body).backend, "rust");
       assert.equal(JSON.parse(result.body).path, path);
@@ -76,7 +76,7 @@ test("production proxy selects the Rust endpoint, bounds each upstream and never
       assert.equal(result.headers.server, undefined);
       assert.match(result.headers["strict-transport-security"], /max-age=31536000/);
     }
-    for (const path of ["/api/seasonal/profile", "/api/seasonal/cohort-extra", "/healthz"]) {
+    for (const path of ["/api/seasonal/profile", "/api/seasonal/cohort-extra", "/api/home/showcase-extra", "/api/home/coverage", "/healthz"]) {
       assert.equal(JSON.parse((await request(port, path, host)).body).backend, "next");
     }
   }
@@ -84,8 +84,11 @@ test("production proxy selects the Rust endpoint, bounds each upstream and never
   fail = true;
   assert.equal((await request(port, "/api/seasonal/cohort?aid=1")).status, 503);
   assert.equal(rustCount, nativeBefore + 1); assert.equal(nextCount, before);
+  assert.equal((await request(port, "/api/home/showcase")).status, 503);
+  assert.equal(nextCount, before);
   fail = false; reset = true;
   assert.equal((await request(port, "/api/seasonal/cohort?aid=1")).status, 502);
+  assert.equal((await request(port, "/api/home/showcase")).status, 502);
   assert.equal(nextCount, before); reset = false;
 
   // The two real upstream addresses have separate 32-request bounds. Confirm
@@ -106,7 +109,21 @@ test("production proxy selects the Rust endpoint, bounds each upstream and never
   await close(native);
   assert.equal((await request(port, "/api/seasonal/cohort")).status, 502);
   assert.equal(nextCount, before + 32);
-  await listen(native, rustPort);
+  // Enter handle_errors on refused dial first, then accept and reset. A GET
+  // retry policy here would replay after the application accepted this request.
+  reset = true;
+  const acceptedBefore = rustCount;
+  const resumed = new Promise((resolve, reject) => {
+    setTimeout(() => listen(native, rustPort).then(resolve, reject), 650);
+  });
+  const afterRefused = await request(port, "/api/home/showcase");
+  await resumed;
+  assert.equal(afterRefused.status, 502);
+  assert.equal(rustCount, acceptedBefore + 1, "no replay after refused dial recovers to a connected reset");
+  assert.equal(nextCount, before + 32, "refused native home never falls back to Next");
+  reset = false;
+  const recoveredHome = await request(port, "/api/home/showcase");
+  assert.equal(recoveredHome.status, 200);
   const recovered = await request(port, "/api/seasonal/cohort");
   assert.equal(recovered.status, 200); assert.equal(JSON.parse(recovered.body).backend, "rust");
 });

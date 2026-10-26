@@ -137,3 +137,6 @@ next-env.d.ts
 !/docs/rust-linux-cohort-performance.md
 
 !/docs/rust-http-backend.md
+
+!/docs/rust-ui-migration.md
+!/docs/rust-home-showcase.md
