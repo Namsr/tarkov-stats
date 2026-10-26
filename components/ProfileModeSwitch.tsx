@@ -142,7 +142,7 @@ export default function ProfileModeSwitch({
           pendingNavigation.fromMode === current &&
           pendingNavigation.pathname === pathname &&
           mode !== current;
-        const documentNavigation = page === "average" && mode !== "seasonal" && nativeRoutes[mode];
+        const documentNavigation = page === "average" && nativeRoutes[mode];
         const onNavigate = () => {
           if (mode !== current) {
             warmProfile(mode);

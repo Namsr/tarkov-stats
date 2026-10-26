@@ -143,6 +143,26 @@
 	reverse_proxy @arenaDocument {$ARENA_UI_UPSTREAM:web:3000} {
 		import web_upstream
 	}
+	# Seasonal population has an independent selector; cohort keeps its own gate.
+	@SeasonalPopulation {
+		path /api/average/metrics /api/average/metrics/ /api/progression/average /api/progression/average/ /api/average/achievements /api/average/achievements/
+		expression `{average_first_mode}.matches('^(s|%73)(e|%65)(a|%61)(s|%73)(o|%6[fF])(n|%6[eE])(a|%61)(l|%6[cC])$')`
+	}
+	reverse_proxy @SeasonalPopulation {$SEASONAL_POPULATION_UI_UPSTREAM:web:3000} {
+		import web_upstream
+	}
+	@SeasonalAverage {
+		path /api/seasonal/average /api/seasonal/average/
+	}
+	reverse_proxy @SeasonalAverage {$SEASONAL_POPULATION_UI_UPSTREAM:web:3000} {
+		import web_upstream
+	}
+	@SeasonalDocument {
+		path /population/pvp-season /population/pvp-season/ /average/pvp-season /average/pvp-season/
+	}
+	reverse_proxy @SeasonalDocument {$SEASONAL_POPULATION_UI_UPSTREAM:web:3000} {
+		import web_upstream
+	}
 	# Independent persistent UI/API opt-ins; empty mode remains invalid in Next.
 	@PvePopulation {
 		path /api/average /api/average/ /api/average/metrics /api/average/metrics/ /api/progression/average /api/progression/average/ /api/average/achievements /api/average/achievements/
@@ -175,12 +195,19 @@
 	}
 	@RegularPersistentAssets {
 		path /_rust/persistent/*
-		expression `'{$PVE_UI_UPSTREAM:web:3000}' == 'web:3000'`
+		expression `'{$PVE_UI_UPSTREAM:web:3000}' == 'web:3000' && '{$REGULAR_UI_UPSTREAM:web:3000}' != 'web:3000'`
 	}
 	reverse_proxy @RegularPersistentAssets {$REGULAR_UI_UPSTREAM:web:3000} {
 		import web_upstream
 	}
-	# Select the complete Seasonal endpoint explicitly. The default still uses Next.
+	@SeasonalPersistentAssets {
+		path /_rust/persistent/*
+		expression `'{$PVE_UI_UPSTREAM:web:3000}' == 'web:3000' && '{$REGULAR_UI_UPSTREAM:web:3000}' == 'web:3000'`
+	}
+	reverse_proxy @SeasonalPersistentAssets {$SEASONAL_POPULATION_UI_UPSTREAM:web:3000} {
+		import web_upstream
+	}
+	# Select the complete Seasonal cohort endpoint explicitly. The default still uses Next.
 	@seasonalCohort path /api/seasonal/cohort /api/seasonal/cohort/
 	reverse_proxy @seasonalCohort {$SEASONAL_API_UPSTREAM:web:3000} {
 		import web_upstream
@@ -199,6 +226,46 @@
 		import response_headers
 		@refused expression `{err.status_code} == 502 && {err.message}.matches('^dial tcp .*: (connect: connection refused|connectex: .*actively refused it.*)$')`
 		handle @refused {
+			@retrySeasonalPopulation {
+				path /api/average/metrics /api/average/metrics/ /api/progression/average /api/progression/average/ /api/average/achievements /api/average/achievements/
+				expression `{average_first_mode}.matches('^(s|%73)(e|%65)(a|%61)(s|%73)(o|%6[fF])(n|%6[eE])(a|%61)(l|%6[cC])$')`
+			}
+			handle @retrySeasonalPopulation {
+				reverse_proxy {$SEASONAL_POPULATION_UI_UPSTREAM:web:3000} {
+					import web_upstream
+					lb_try_duration 4s
+					lb_try_interval 100ms
+					lb_retry_match {
+						expression false
+					}
+				}
+			}
+			@retrySeasonalAverage {
+				path /api/seasonal/average /api/seasonal/average/
+			}
+			handle @retrySeasonalAverage {
+				reverse_proxy {$SEASONAL_POPULATION_UI_UPSTREAM:web:3000} {
+					import web_upstream
+					lb_try_duration 4s
+					lb_try_interval 100ms
+					lb_retry_match {
+						expression false
+					}
+				}
+			}
+			@retrySeasonalDocument {
+				path /population/pvp-season /population/pvp-season/ /average/pvp-season /average/pvp-season/
+			}
+			handle @retrySeasonalDocument {
+				reverse_proxy {$SEASONAL_POPULATION_UI_UPSTREAM:web:3000} {
+					import web_upstream
+					lb_try_duration 4s
+					lb_try_interval 100ms
+					lb_retry_match {
+						expression false
+					}
+				}
+			}
 			@retryPvePopulation {
 				path /api/average /api/average/ /api/average/metrics /api/average/metrics/ /api/progression/average /api/progression/average/ /api/average/achievements /api/average/achievements/
 				expression `{average_first_mode}.matches('^(p|%70)(v|%76)(e|%65)$')`
@@ -265,10 +332,24 @@
 			}
 			@retryRegularPersistentAssets {
 				path /_rust/persistent/*
-				expression `'{$PVE_UI_UPSTREAM:web:3000}' == 'web:3000'`
+				expression `'{$PVE_UI_UPSTREAM:web:3000}' == 'web:3000' && '{$REGULAR_UI_UPSTREAM:web:3000}' != 'web:3000'`
 			}
 			handle @retryRegularPersistentAssets {
 				reverse_proxy {$REGULAR_UI_UPSTREAM:web:3000} {
+					import web_upstream
+					lb_try_duration 4s
+					lb_try_interval 100ms
+					lb_retry_match {
+						expression false
+					}
+				}
+			}
+			@retrySeasonalPersistentAssets {
+				path /_rust/persistent/*
+				expression `'{$PVE_UI_UPSTREAM:web:3000}' == 'web:3000' && '{$REGULAR_UI_UPSTREAM:web:3000}' == 'web:3000'`
+			}
+			handle @retrySeasonalPersistentAssets {
+				reverse_proxy {$SEASONAL_POPULATION_UI_UPSTREAM:web:3000} {
 					import web_upstream
 					lb_try_duration 4s
 					lb_try_interval 100ms

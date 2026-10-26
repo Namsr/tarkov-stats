@@ -137,6 +137,7 @@ pub fn mount(
             }));
         }
         let mut other = current.clone();
+        other.cycle_id = "persistent".into();
         other.mode = if current.mode == "pve" {
             "regular"
         } else {
@@ -149,10 +150,12 @@ pub fn mount(
     let pop = Closure::wrap(Box::new(move || {
         if let Some(window) = web_sys::window() {
             let search = window.location().search().unwrap_or_default();
-            let mode = state.with_untracked(|s| s.mode.clone());
-            if let Ok(next) =
-                PersistentState::read(&mode, search.strip_prefix('?').unwrap_or(&search))
-            {
+            let (mode, cycle) = state.with_untracked(|s| (s.mode.clone(), s.cycle_id.clone()));
+            if let Ok(next) = PersistentState::read_for_cycle(
+                &mode,
+                &cycle,
+                search.strip_prefix('?').unwrap_or(&search),
+            ) {
                 state.set(next);
             }
         }

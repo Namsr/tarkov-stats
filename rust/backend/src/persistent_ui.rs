@@ -23,6 +23,7 @@ pub struct PersistentUi {
     service: PersistentService,
     progression: ProgressionService,
     seasonal_cycle: Option<String>,
+    config: Config,
 }
 impl PersistentUi {
     pub fn start(
@@ -47,13 +48,57 @@ impl PersistentUi {
             service,
             progression,
             seasonal_cycle: config.available_cycle.clone(),
+            config: config.clone(),
         })
     }
     async fn page(&self, mode: &str, request: Request<Body>) -> Response {
         let started = Instant::now();
         let lang = ui::language(request.headers());
         let now = crate::now_ms();
-        if !self.service.allow(request.headers(), now) {
+        let seasonal = self.service.seasonal();
+        let configured = self.config.cycle.as_deref().unwrap_or("");
+        let cycles = url::form_urlencoded::parse(request.uri().query().unwrap_or("").as_bytes())
+            .filter(|(key, _)| key == "cycle")
+            .map(|(_, value)| value.into_owned())
+            .collect::<Vec<_>>();
+        let unavailable = mode == "seasonal"
+            && (!seasonal.ready(now)
+                || cycles.len() > 1
+                || cycles
+                    .first()
+                    .is_some_and(|cycle| !cycle.is_empty() && cycle != configured));
+        if unavailable {
+            if request.method() == Method::HEAD {
+                return (
+                    [
+                        ("content-type", "text/html; charset=utf-8"),
+                        ("cache-control", "no-store"),
+                        ("vary", "Cookie, Accept-Language"),
+                    ],
+                    Body::empty(),
+                )
+                    .into_response();
+            }
+            let package = self.assets.package("_rust/persistent");
+            let handler = leptos_axum::render_app_to_stream_with_context(
+                || {},
+                move || tarkov_ui::app::persistent_unavailable_document(lang, package.clone()),
+            );
+            let mut response = handler(request).await;
+            response
+                .headers_mut()
+                .insert("cache-control", HeaderValue::from_static("no-store"));
+            response
+                .headers_mut()
+                .insert("vary", HeaderValue::from_static("Cookie, Accept-Language"));
+            return response;
+        }
+        let allowed = if mode == "seasonal" {
+            seasonal.allow(request.headers(), now)
+        } else {
+            self.service.allow(request.headers(), now)
+        };
+        if !allowed {
             return (
                 StatusCode::TOO_MANY_REQUESTS,
                 [("cache-control", "no-store")],
@@ -72,7 +117,15 @@ impl PersistentUi {
             )
                 .into_response();
         }
-        let state = match PersistentState::read(mode, request.uri().query().unwrap_or("")) {
+        let state = match PersistentState::read_for_cycle(
+            mode,
+            if mode == "seasonal" {
+                configured
+            } else {
+                "persistent"
+            },
+            request.uri().query().unwrap_or(""),
+        ) {
             Ok(state) => state,
             Err(_) => return StatusCode::NOT_FOUND.into_response(),
         };
@@ -84,10 +137,10 @@ impl PersistentUi {
                     ..InitialReply::default()
                 };
             }
-            average(&self.service, &requests[0], now).await
+            average(&self.service, &requests[0], now, mode).await
         };
-        let context = average(&self.service, &requests[1], now);
-        let progression = self.progression.load(mode, "persistent", now);
+        let context = average(&self.service, &requests[1], now, mode);
+        let progression = self.progression.load(mode, &state.cycle_id, now);
         let (selected, context, progression) = tokio::join!(selected, context, progression);
         let progression = progression.map_or_else(
             || InitialReply {
@@ -136,20 +189,40 @@ impl PersistentUi {
         response
     }
 }
-async fn average(service: &PersistentService, url: &str, now: i64) -> InitialReply {
+async fn average(service: &PersistentService, url: &str, now: i64, mode: &str) -> InitialReply {
     let query = url.split_once('?').map_or("", |(_, query)| query);
-    let Ok(query) = AverageQuery::parse(query) else {
-        return InitialReply {
-            status: 400,
-            ..InitialReply::default()
-        };
+    let response = if mode == "seasonal" {
+        let seasonal = service.seasonal();
+        match crate::seasonal_population::Query::parse(
+            query,
+            seasonal.config.cycle.as_deref().unwrap_or(""),
+            false,
+        ) {
+            Ok(query) => seasonal.load(&query, now, false).await,
+            Err(_) => {
+                return InitialReply {
+                    status: 400,
+                    ..InitialReply::default()
+                };
+            }
+        }
+    } else {
+        match AverageQuery::parse(query) {
+            Ok(query) => service.load_average(&query, now).await,
+            Err(_) => {
+                return InitialReply {
+                    status: 400,
+                    ..InitialReply::default()
+                };
+            }
+        }
     };
     let PersistentResponse {
         status,
         body,
         headers,
         ..
-    } = service.load_average(&query, now).await;
+    } = response;
     InitialReply {
         body: status.is_success().then_some(body),
         status: status.as_u16(),
@@ -158,6 +231,9 @@ async fn average(service: &PersistentService, url: &str, now: i64) -> InitialRep
         retry_after: ui::retry(&headers),
         generated_at: ui::generated(&headers),
     }
+}
+pub async fn seasonal(State(ui): State<PersistentUi>, request: Request<Body>) -> Response {
+    ui.page("seasonal", request).await
 }
 pub async fn pve(State(ui): State<PersistentUi>, request: Request<Body>) -> Response {
     ui.page("pve", request).await
@@ -176,7 +252,7 @@ pub async fn alias(method: Method, uri: Uri) -> Response {
     let Some(mode) = uri
         .path()
         .strip_prefix("/average/")
-        .filter(|mode| ["pve", "regular"].contains(mode))
+        .filter(|mode| ["pve", "regular", "pvp-season"].contains(mode))
     else {
         return StatusCode::NOT_FOUND.into_response();
     };

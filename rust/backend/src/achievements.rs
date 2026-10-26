@@ -86,11 +86,34 @@ pub fn parse_published(row: &Value, now: i64) -> Option<Value> {
     });
     Some(json!({"total":total,"rows":rows,"ts":now,"storage":"sqlite"}))
 }
+pub fn parse_seasonal(value: &Value, now: i64) -> Option<Value> {
+    let total = value
+        .get("eligibleN")?
+        .as_f64()
+        .filter(|n| n.is_finite() && *n >= 0.0)?;
+    let entries = value.get("achievements")?.as_array()?;
+    let mut rows = Vec::with_capacity(entries.len());
+    for entry in entries {
+        let id = entry.get("id")?.as_str().filter(|v| !v.is_empty())?;
+        let owners = entry
+            .get("owners")?
+            .as_f64()
+            .filter(|n| n.is_finite() && *n >= 0.0)?;
+        let sample_pct = entry.get("samplePct")?.as_f64().filter(|n| n.is_finite())?;
+        let first = |keys: &[&str]| {
+            keys.iter()
+                .find_map(|key| entry.get(*key).filter(|v| !v.is_null()).and_then(number))
+                .unwrap_or(0.0)
+        };
+        rows.push(json!({"id":id,"owners":owners,"samplePct":sample_pct,"meanHours":entry.get("meanHours").and_then(number).unwrap_or(0.0),"stdHours":entry.get("stdHours").and_then(number).unwrap_or(0.0),"earlyHours":first(&["earlyHours","meanHours"]),"unlockHours":first(&["unlockHours","earlyHours","meanHours"])}));
+    }
+    Some(json!({"total":total,"rows":rows,"ts":now,"storage":"sqlite"}))
+}
 pub fn valid_baseline(value: &Value, job: &Value) -> bool {
     job.get("kind").and_then(Value::as_str) == Some("achievement_baseline")
         && matches!(
             job.get("mode").and_then(Value::as_str),
-            Some("regular" | "pve")
+            Some("regular" | "pve" | "seasonal")
         )
         && value.get("storage").and_then(Value::as_str) == Some("sqlite")
         && nonnegative(value.get("total")).is_some()
@@ -117,7 +140,12 @@ pub fn valid_baseline(value: &Value, job: &Value) -> bool {
                         .all(|field| {
                             row.get(*field)
                                 .and_then(Value::as_f64)
-                                .is_some_and(|value| value.is_finite() && value >= 0.0)
+                                .is_some_and(|value| {
+                                    value.is_finite()
+                                        && (job.get("mode").and_then(Value::as_str)
+                                            == Some("seasonal")
+                                            || value >= 0.0)
+                                })
                         })
                         && row.get("samplePct").is_some_and(|value| {
                             value.is_null()
@@ -133,6 +161,7 @@ pub struct AchievementsService {
     cache: Cache,
     storage: Storage,
     reference: Reference,
+    config: crate::config::Config,
 }
 pub struct AchievementResponse {
     pub status: StatusCode,
@@ -187,16 +216,26 @@ impl AchievementsService {
             cache,
             storage,
             reference,
+            config: crate::config::Config::from_env(),
         }
     }
     pub async fn load(&self, mode: &str, now: i64) -> AchievementResponse {
-        if !["regular", "pve", "arena"].contains(&mode) {
+        self.load_cycle(mode, None, now).await
+    }
+    async fn load_cycle(&self, mode: &str, cycle: Option<&str>, now: i64) -> AchievementResponse {
+        if !["regular", "pve", "arena", "seasonal"].contains(&mode) {
             return AchievementResponse::error(400, "Invalid game mode", None);
         }
         let started = Instant::now();
         let storage = self.storage.clone();
         let selected = mode.to_owned();
-        let key = format!("achievement-baseline:{mode}");
+        let memo = if mode == "seasonal" {
+            format!("seasonal:{}", cycle.unwrap_or(""))
+        } else {
+            mode.to_owned()
+        };
+        let selected_cycle = cycle.map(str::to_owned);
+        let key = format!("achievement-baseline:{memo}");
         let observation = Arc::new(Mutex::new(None));
         let observed = observation.clone();
         let baseline = self
@@ -204,16 +243,20 @@ impl AchievementsService {
             .load_with(
                 key.clone(),
                 key,
-                json!({"kind":"achievement_baseline","mode":mode,"args":[mode]}),
+                json!({"kind":"achievement_baseline","mode":mode,"args":[mode,cycle]}),
                 now,
                 async move {
-                    let read = storage
-                        .achievement_baseline(selected, now)
-                        .await
-                        .ok_or_else(|| Failure {
-                            reason: "achievement_storage_unavailable",
-                            message: "Achievement baseline is unavailable".into(),
-                        })?;
+                    let read = if selected == "seasonal" {
+                        storage
+                            .seasonal_achievement_baseline(selected_cycle.unwrap_or_default(), now)
+                            .await
+                    } else {
+                        storage.achievement_baseline(selected, now).await
+                    }
+                    .ok_or_else(|| Failure {
+                        reason: "achievement_storage_unavailable",
+                        message: "Achievement baseline is unavailable".into(),
+                    })?;
                     *observed.lock().unwrap() = Some(read.store_open_ms);
                     if read.error {
                         return Err(Failure {
@@ -252,17 +295,26 @@ impl AchievementsService {
         };
         let started = Instant::now();
         let reference = self.reference.clone();
-        let key = "achievement-metadata:regular".to_string();
+        let reference_mode = if mode == "seasonal" {
+            Mode::Seasonal
+        } else {
+            Mode::Regular
+        };
+        let key = if mode == "seasonal" {
+            format!("achievement-metadata:{memo}")
+        } else {
+            "achievement-metadata:regular".to_string()
+        };
         let metadata = self
             .cache
             .load_with(
                 key.clone(),
                 key,
-                json!({"kind":"achievement_metadata","mode":"regular","args":["regular"]}),
+                json!({"kind":"achievement_metadata","mode":reference_mode.as_str(),"args":[reference_mode.as_str()]}),
                 crate::now_ms(),
                 async move {
                     Ok(Computed {
-                        value: reference.get(Mode::Regular).await,
+                        value: reference.get(reference_mode).await,
                         queue_ms: 0,
                         worker_ms: 0,
                     })
@@ -384,7 +436,19 @@ pub async fn get(
         .find(|(name, _)| name == "mode")
         .map_or_else(|| "regular".to_string(), |(_, value)| value.into_owned());
     let response = if mode == "seasonal" {
-        AchievementResponse::error(404, "Seasonal average unavailable", Some(mode))
+        let now = crate::now_ms();
+        let configured = service.config.cycle.as_deref().unwrap_or("");
+        let cycles = url::form_urlencoded::parse(raw.as_bytes())
+            .filter(|(key, _)| key == "cycle")
+            .map(|(_, value)| value.into_owned())
+            .collect::<Vec<_>>();
+        if !service.config.ready(configured, now) {
+            AchievementResponse::error(404, "Seasonal average unavailable", Some(mode))
+        } else if cycles.len() != 1 || cycles[0] != configured {
+            AchievementResponse::error(400, "Invalid Seasonal cycle", Some(mode))
+        } else {
+            service.load_cycle("seasonal", Some(configured), now).await
+        }
     } else {
         service.load(&mode, crate::now_ms()).await
     };

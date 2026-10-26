@@ -145,3 +145,30 @@ test("persistent Rust panel translation literals resolve in both shared language
     for (const lang of ["en", "ru"]) assert.equal(typeof messages[lang][key], "string", `${lang}: ${key}`);
   }
 });
+
+
+test("Seasonal Rust state preserves actual TS main/overlay periods and cycle endpoints", () => {
+  const source = ts.createSourceFile("AverageMetricOverlay.tsx", readFileSync("components/AverageMetricOverlay.tsx", "utf8"), ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
+  let expression;
+  function find(node) {
+    if (ts.isVariableDeclaration(node) && node.name.getText(source) === "period") expression = node.initializer.getText(source);
+    ts.forEachChild(node, find);
+  }
+  find(source);
+  assert.ok(expression, "read actual overlay period initializer");
+  const overlayPeriod = new Function("mode", "searchParams", `return (${expression})`);
+  const queries = ["cycle=fixture-season", "cycle=fixture-season&period=90d&statistic=median", "cycle=fixture-season&period=all", "cycle=fixture-season&period=bad&unknown=keep", "?statistic=median&cycle=fixture-season&period=90d"];
+  const actual = native(queries.map(query => ({ op: "state", mode: "seasonal", query })));
+  actual.forEach((state, i) => {
+    const params = new URLSearchParams("?" + queries[i]);
+    assert.equal(state.period, params.get("period") === "90d" ? "90d" : "all");
+    assert.equal(state.statistic, params.get("statistic") === "median" ? "median" : "trimmed_mean");
+    const [selected, context, progression, metrics, achievements] = state.requests.map(url => new URL(url, "http://local"));
+    assert.equal(selected.pathname, "/api/seasonal/average");
+    assert.equal(selected.searchParams.get("mode"), null);
+    assert.equal(context.searchParams.has("min"), false);
+    assert.equal(metrics.searchParams.get("period"), overlayPeriod("seasonal", params));
+    for (const url of [selected, context, progression, metrics, achievements]) assert.equal(url.searchParams.get("cycle"), "fixture-season");
+    assert.ok(state.href.startsWith("/population/pvp-season?"));
+  });
+});

@@ -85,6 +85,7 @@ pub fn matches(url: &str, body: &Value) -> Option<bool> {
     let (path, query) = url.split_once('?').unwrap_or((url, ""));
     if ![
         "/api/average",
+        "/api/seasonal/average",
         "/api/progression/average",
         "/api/average/metrics",
         "/api/average/achievements",
@@ -94,13 +95,28 @@ pub fn matches(url: &str, body: &Value) -> Option<bool> {
         return None;
     }
     let p = Params::parse(query);
-    let mode = p.get("mode").unwrap_or("regular");
-    if !["regular", "pve"].contains(&mode) {
+    let mode = if path == "/api/seasonal/average" {
+        "seasonal"
+    } else {
+        p.get("mode").unwrap_or("regular")
+    };
+    if !["regular", "pve", "seasonal"].contains(&mode) {
         return None;
+    }
+    let cycle = if mode == "seasonal" {
+        let Some(cycle) = p.get("cycle") else {
+            return Some(false);
+        };
+        cycle
+    } else {
+        "persistent"
+    };
+    if cycle.is_empty() || (mode == "seasonal" && cycle == "persistent") {
+        return Some(false);
     }
     let valid = if path == "/api/average/achievements" {
         body["total"].as_f64().is_some_and(|v| v >= 0.0) && body["achievements"].is_array()
-    } else if body["mode"] != mode || body["cycleId"] != "persistent" {
+    } else if body["mode"] != mode || body["cycleId"] != cycle {
         false
     } else if path == "/api/progression/average" {
         body["series"]["cumulative"]["overall"].is_array()
@@ -433,5 +449,21 @@ mod tests {
         assert_eq!(selected.max, 99.0);
         assert_eq!(value_at(&bins, bounds, 1.0, true, 360.0), 99.0);
         assert_eq!(position(&bins, bounds, 99.0, true, 360.0), 1.0);
+    }
+    #[test]
+    fn seasonal_identity_rejects_old_cycle_and_mismatched_overlay_period() {
+        let s = PersistentState::read_for_cycle("seasonal", "cycle-two", "period=90d").unwrap();
+        let urls = s.requests();
+        let mut body = serde_json::json!({"mode":"seasonal","cycleId":"cycle-two","statistic":"trimmed_mean","period":"90d","dimension":"hours","metric":"players","averages":null,"metricCounts":{},"buckets":[]});
+        assert_eq!(matches(&urls[0], &body), Some(true));
+        body["cycleId"] = serde_json::json!("cycle-one");
+        assert_eq!(matches(&urls[0], &body), Some(false));
+        body["cycleId"] = serde_json::json!("cycle-two");
+        body["mode"] = serde_json::json!("regular");
+        assert_eq!(matches(&urls[0], &body), Some(false));
+        let mut series = serde_json::json!({"mode":"seasonal","cycleId":"cycle-two","statistic":"trimmed_mean","period":"all","series":super::super::state::OVERLAY.into_iter().map(|m|(m,Vec::<serde_json::Value>::new())).collect::<std::collections::BTreeMap<_,_>>()});
+        assert_eq!(matches(&urls[3], &series), Some(true));
+        series["period"] = serde_json::json!("90d");
+        assert_eq!(matches(&urls[3], &series), Some(false));
     }
 }

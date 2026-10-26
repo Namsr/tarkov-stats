@@ -20,9 +20,15 @@ pub fn document(initial: ArenaInitial, lang: Lang, package: String) -> impl Into
 pub fn PersistentApp(
     initial: crate::persistent::data::PersistentInitial,
     lang: Lang,
+    unavailable: bool,
 ) -> impl IntoView {
     let language = RwSignal::new(lang);
-    view! {<SiteShell lang=language><crate::persistent::view::PersistentDashboard initial lang=language/></SiteShell>}
+    let content = if unavailable {
+        view!{<main class="page-frame"><h1 class="page-title">{move||language.get().t("seasonal.unavailable")}</h1><a href="/" class="mt-6 inline-block text-[var(--accent)] hover:underline">{move||language.get().t("common.back")}</a></main>}.into_any()
+    } else {
+        view! {<crate::persistent::view::PersistentDashboard initial lang=language/>}.into_any()
+    };
+    view! {<SiteShell lang=language>{content}</SiteShell>}
 }
 #[cfg(feature = "ssr")]
 pub fn persistent_document(
@@ -30,7 +36,35 @@ pub fn persistent_document(
     lang: Lang,
     package: String,
 ) -> impl IntoView {
-    full_document(view! {<PersistentApp initial lang/>}, lang, package)
+    full_document(
+        view! {<PersistentApp initial lang unavailable=false/>},
+        lang,
+        package,
+    )
+}
+#[cfg(feature = "ssr")]
+pub fn persistent_unavailable_document(lang: Lang, package: String) -> impl IntoView {
+    use crate::persistent::{
+        data::{InitialReply, PersistentInitial},
+        state::PersistentState,
+    };
+    // This state is serialized only to keep the same single hydration root.
+    // The unavailable branch never mounts the dashboard or starts data requests.
+    let initial = PersistentInitial {
+        state: PersistentState::read("regular", "").expect("known placeholder mode"),
+        selected: InitialReply::default(),
+        context: InitialReply::default(),
+        progression: InitialReply::default(),
+        metrics: InitialReply::default(),
+        achievements: InitialReply::default(),
+        level_bands: Vec::new(),
+        seasonal_cycle: None,
+    };
+    full_document(
+        view! {<PersistentApp initial lang unavailable=true/>},
+        lang,
+        package,
+    )
 }
 #[cfg(feature = "ssr")]
 fn full_document(child: impl IntoView, lang: Lang, package: String) -> impl IntoView {
@@ -54,5 +88,38 @@ fn full_document(child: impl IntoView, lang: Lang, package: String) -> impl Into
                 {child}
             </body>
         </html>
+    }
+}
+
+#[cfg(all(test, feature = "ssr"))]
+mod tests {
+    use super::*;
+    #[test]
+    fn unavailable_seasonal_uses_same_hydration_root_without_dashboard_data() {
+        for lang in [Lang::En, Lang::Ru] {
+            use crate::persistent::{
+                data::{InitialReply, PersistentInitial},
+                state::PersistentState,
+            };
+            let initial = PersistentInitial {
+                state: PersistentState::read("regular", "").unwrap(),
+                selected: InitialReply::default(),
+                context: InitialReply::default(),
+                progression: InitialReply::default(),
+                metrics: InitialReply::default(),
+                achievements: InitialReply::default(),
+                level_bands: Vec::new(),
+                seasonal_cycle: None,
+            };
+            let html = Owner::new()
+                .with(|| view! {<PersistentApp initial lang unavailable=true/>}.to_html());
+            assert!(html.contains(&lang.t("seasonal.unavailable")));
+            assert!(html.contains(&lang.t("common.back")));
+            assert!(html.contains("page-frame"));
+            assert!(!html.contains("average-toolbar"));
+            assert!(!html.contains("name=\"statistic\""));
+            assert!(!html.contains("seasonal-chart__hit"));
+            assert!(!html.contains("/_next/"));
+        }
     }
 }

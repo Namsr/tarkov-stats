@@ -8,6 +8,7 @@ mod persistent;
 mod persistent_ui;
 mod progression;
 pub mod reference;
+mod seasonal_population;
 mod showcase;
 mod storage;
 mod ui;
@@ -45,6 +46,7 @@ async fn serve() -> Result<(), Box<dyn std::error::Error>> {
     let ui_enabled = ui_selector("ARENA_UI_UPSTREAM")?;
     let pve_enabled = ui_selector("PVE_UI_UPSTREAM")?;
     let regular_enabled = ui_selector("REGULAR_UI_UPSTREAM")?;
+    let seasonal_enabled = ui_selector("SEASONAL_POPULATION_UI_UPSTREAM")?;
     let worker = compute::Worker::start().map_err(std::io::Error::other)?;
     let storage = storage::Storage::start();
     let config = config::Config::from_env();
@@ -62,7 +64,7 @@ async fn serve() -> Result<(), Box<dyn std::error::Error>> {
     } else {
         None
     };
-    let persistent_ui = if pve_enabled || regular_enabled {
+    let persistent_ui = if pve_enabled || regular_enabled || seasonal_enabled {
         Some(
             persistent_ui::PersistentUi::start(
                 persistent.clone(),
@@ -95,6 +97,13 @@ async fn serve() -> Result<(), Box<dyn std::error::Error>> {
         .with_state(state)
         .merge(
             Router::new()
+                .route(
+                    "/api/seasonal/average",
+                    get(seasonal_population::get)
+                        .options(http::options)
+                        .fallback(http::method_not_allowed),
+                )
+                .route("/api/seasonal/average/", any(http::trailing))
                 .route(
                     "/api/average",
                     get(persistent::average_get)
@@ -199,6 +208,20 @@ async fn serve() -> Result<(), Box<dyn std::error::Error>> {
                 .route("/population/regular/", any(http::trailing))
                 .route("/average/regular", any(persistent_ui::alias))
                 .route("/average/regular/", any(http::trailing))
+        } else {
+            routes
+        };
+        let routes = if seasonal_enabled {
+            routes
+                .route(
+                    "/population/pvp-season",
+                    get(persistent_ui::seasonal)
+                        .options(http::options)
+                        .fallback(http::method_not_allowed),
+                )
+                .route("/population/pvp-season/", any(http::trailing))
+                .route("/average/pvp-season", any(persistent_ui::alias))
+                .route("/average/pvp-season/", any(http::trailing))
         } else {
             routes
         };

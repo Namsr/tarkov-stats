@@ -288,11 +288,14 @@ pub fn valid_result(value: &Value, input: &Value) -> bool {
 }
 
 #[derive(Default)]
-struct Limiter {
+pub(crate) struct Limiter {
     entries: HashMap<String, VecDeque<i64>>,
 }
 impl Limiter {
     fn allow(&mut self, ip: &str, now: i64) -> bool {
+        self.allow_max(ip, now, 300)
+    }
+    pub(crate) fn allow_max(&mut self, ip: &str, now: i64, max: usize) -> bool {
         if !self.entries.contains_key(ip) && self.entries.len() >= 5000 {
             self.entries.retain(|_, times| {
                 times
@@ -310,7 +313,7 @@ impl Limiter {
         {
             times.pop_front();
         }
-        if times.len() >= 300 {
+        if times.len() >= max {
             return false;
         }
         times.push_back(now);

@@ -22,8 +22,8 @@ async function fixture(t, env = {}) {
     process.on("SIGTERM",()=>process.exit(0));
   `);
   const child = spawn(process.execPath, [entry], { cwd: directory, windowsHide: true,
-    env: { ...process.env, WEB_BACKGROUND_WORKERS: "false", RUNTIME_HEALTH_ENABLED: "false",
-      SEASONAL_API_UPSTREAM: "web:3000", HOME_SHOWCASE_API_UPSTREAM: "web:3000", ARENA_UI_UPSTREAM: "web:3000", PVE_UI_UPSTREAM: "web:3000", REGULAR_UI_UPSTREAM: "web:3000", RUST_API_BIND: "127.0.0.1:0", RUST_API_BIN: binary, ...env },
+    env: { ...process.env, WEB_BACKGROUND_WORKERS: "false", RUNTIME_HEALTH_ENABLED: "false", SEASONAL_ENABLED: "false",
+      SEASONAL_API_UPSTREAM: "web:3000", HOME_SHOWCASE_API_UPSTREAM: "web:3000", ARENA_UI_UPSTREAM: "web:3000", PVE_UI_UPSTREAM: "web:3000", REGULAR_UI_UPSTREAM: "web:3000", SEASONAL_POPULATION_UI_UPSTREAM: "web:3000", RUST_API_BIND: "127.0.0.1:0", RUST_API_BIN: binary, ...env },
     stdio: ["pipe", "pipe", "pipe"] });
   let stdout = "", stderr = "";
   const done = new Promise((resolve) => { child.once("close", (code, signal) => resolve({ code, signal })); });
@@ -66,6 +66,20 @@ test("web startup rejects unknown routing and does not require Rust for the defa
   assert.equal((await original.done).code, 0);
   assert.equal(original.events().filter((event) => event.name === "Rust API").length, 0);
   assert.ok(original.events().some((event) => event.event === "next_fixture_ready"));
+});
+
+test("Seasonal population selection rejects invalid routing and keeps an explicit empty selector on Next", { timeout: 20000 }, async t => {
+  const invalid = await fixture(t, { SEASONAL_POPULATION_UI_UPSTREAM: "external:3001" });
+  assert.equal((await invalid.done).code, 1);
+  assert.match(invalid.stderr(), /SEASONAL_POPULATION_UI_UPSTREAM must be/);
+  assert.deepEqual(invalid.events(), []);
+  const missing = await fixture(t, { SEASONAL_POPULATION_UI_UPSTREAM: "web:3001", RUST_API_BIN: resolve("missing-seasonal-population-server") });
+  assert.equal((await missing.done).code, 1);
+  assert.equal(missing.events().some(event => event.event === "next_fixture_ready"), false);
+  const empty = await fixture(t, { SEASONAL_POPULATION_UI_UPSTREAM: "", RUST_API_BIN: resolve("missing-seasonal-population-server"), SUPERVISOR_FIXTURE_EXIT: "0" });
+  assert.equal((await empty.done).code, 0);
+  assert.equal(empty.events().filter(event => event.name === "Rust API").length, 0);
+  assert.ok(empty.events().some(event => event.event === "next_fixture_ready"));
 });
 
 test("opted-in Rust spawn failure prevents a falsely healthy Next server", { timeout: 20000 }, async (t) => {
@@ -187,7 +201,7 @@ test("Arena UI-only and combined selectors start one real ready UI process and s
 });
 
 test("persistent UI selectors independently reject invalid routing, missing binary and missing assets", { timeout: 30000 }, async t => {
-  for (const flag of ["PVE_UI_UPSTREAM", "REGULAR_UI_UPSTREAM"]) {
+  for (const flag of ["PVE_UI_UPSTREAM", "REGULAR_UI_UPSTREAM", "SEASONAL_POPULATION_UI_UPSTREAM"]) {
     const invalid = await fixture(t, { [flag]: "external:3001" });
     assert.equal((await invalid.done).code, 1); assert.ok(invalid.stderr().includes(`${flag} must be web:3000 or web:3001`));
     assert.equal(invalid.events().some(event => event.event === "next_fixture_ready"), false);
@@ -202,8 +216,8 @@ test("persistent UI selectors independently reject invalid routing, missing bina
 test("persistent UI-only and combined selections use one ready Rust server without enabling other pages", { timeout: 60000 }, async t => {
   const assets = process.env.RUST_PERSISTENT_UI_ASSETS || resolve("public/_rust/persistent");
   assert.ok(existsSync(join(assets, "manifest.json")), "build real persistent UI assets before supervisor checks");
-  const combinations = [{ PVE_UI_UPSTREAM: "web:3001" }, { REGULAR_UI_UPSTREAM: "web:3001" }, { PVE_UI_UPSTREAM: "web:3001", REGULAR_UI_UPSTREAM: "web:3001" },
-    { PVE_UI_UPSTREAM: "web:3001", REGULAR_UI_UPSTREAM: "web:3001", ARENA_UI_UPSTREAM: "web:3001", HOME_SHOWCASE_API_UPSTREAM: "web:3001", SEASONAL_API_UPSTREAM: "web:3001" }];
+  const combinations = [{ SEASONAL_POPULATION_UI_UPSTREAM: "web:3001" }, { SEASONAL_POPULATION_UI_UPSTREAM: "web:3001", SEASONAL_API_UPSTREAM: "web:3001" }, { PVE_UI_UPSTREAM: "web:3001" }, { REGULAR_UI_UPSTREAM: "web:3001" }, { PVE_UI_UPSTREAM: "web:3001", REGULAR_UI_UPSTREAM: "web:3001" },
+    { SEASONAL_POPULATION_UI_UPSTREAM: "web:3001", PVE_UI_UPSTREAM: "web:3001", REGULAR_UI_UPSTREAM: "web:3001", ARENA_UI_UPSTREAM: "web:3001", HOME_SHOWCASE_API_UPSTREAM: "web:3001", SEASONAL_API_UPSTREAM: "web:3001" }];
   for (const selection of combinations) {
     const run = await fixture(t, { ...selection, RUST_PERSISTENT_UI_ASSETS: assets, RUST_UI_ASSETS: resolve("public/_rust/arena") });
     const next = await run.waitEvent(event => event.event === "next_fixture_ready");
@@ -214,8 +228,9 @@ test("persistent UI-only and combined selections use one ready Rust server witho
     assert.notEqual(preload.pid, native[0].pid);
     const ready = run.events().find(event => event.event === "rust_api_ready");
     assert.ok(run.events().indexOf(ready) < run.events().findIndex(event => event.event === "next_fixture_ready"));
-    for (const mode of ["pve", "regular"]) {
-      const enabled = selection[`${mode.toUpperCase()}_UI_UPSTREAM`] === "web:3001";
+    for (const mode of ["pve", "regular", "pvp-season"]) {
+      const flag = mode === "pvp-season" ? "SEASONAL_POPULATION_UI_UPSTREAM" : `${mode.toUpperCase()}_UI_UPSTREAM`;
+      const enabled = selection[flag] === "web:3001";
       const response = await fetch(`http://${ready.address}/population/${mode}`, { method: "HEAD", signal: AbortSignal.timeout(5000) });
       assert.equal(response.status, enabled ? 200 : 404); assert.equal(await response.text(), "");
       if (enabled) {
@@ -283,7 +298,7 @@ test("persistent image fixture guards reject accidental data writes before datab
     const path = join(tmpdir(), `blocked-${mode}-runtime-${process.pid}-${Date.now()}.db`);
     const child = spawn(process.execPath, [resolve("scripts/verify-rust-http-runtime.mjs"), `--${mode}-ui`], {
       windowsHide: true, env: { ...process.env, RUST_UI_RUNTIME_FIXTURE: String(optIn), SQLITE_PATH: path, AVERAGE_PUBLICATIONS_ENABLED: "false",
-        SEASONAL_API_UPSTREAM: "web:3000", HOME_SHOWCASE_API_UPSTREAM: "web:3000", ARENA_UI_UPSTREAM: "web:3000", PVE_UI_UPSTREAM: "web:3000", REGULAR_UI_UPSTREAM: "web:3000", [`${mode.toUpperCase()}_UI_UPSTREAM`]: "web:3001" },
+        SEASONAL_API_UPSTREAM: "web:3000", HOME_SHOWCASE_API_UPSTREAM: "web:3000", ARENA_UI_UPSTREAM: "web:3000", PVE_UI_UPSTREAM: "web:3000", REGULAR_UI_UPSTREAM: "web:3000", SEASONAL_POPULATION_UI_UPSTREAM: "web:3000", [`${mode.toUpperCase()}_UI_UPSTREAM`]: "web:3001" },
       stdio: ["ignore", "ignore", "pipe"],
     });
     let stderr = ""; child.stderr.on("data", chunk => { stderr += chunk; });

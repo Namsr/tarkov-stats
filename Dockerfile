@@ -66,6 +66,7 @@ LABEL org.tarkovstats.rust-home-showcase="v1"
 LABEL org.tarkovstats.rust-arena-ui="v1"
 LABEL org.tarkovstats.rust-persistent-ui="v1"
 LABEL org.tarkovstats.rust-population-api="v1"
+LABEL org.tarkovstats.rust-seasonal-population="v1"
 WORKDIR /app
 RUN apk add --no-cache ca-certificates
 ENV NODE_ENV=production

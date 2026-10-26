@@ -150,13 +150,31 @@ impl Cache {
     ) -> Result<Loaded, Failure> {
         let worker = self.worker.clone();
         let input = args.clone();
+        let seasonal_average = matches!(Kind::from_job(&args), Some(Kind::SeasonalAverage));
         self.load_factory(
             key,
             fallback,
             args,
             now,
-            async move { worker.compute(input).await },
-            false,
+            async move {
+                let mut computed = worker.compute(input).await?;
+                if seasonal_average {
+                    if computed.value.get("available").and_then(Value::as_bool) != Some(true) {
+                        return Err(Failure {
+                            reason: "seasonal_storage_unavailable",
+                            message: "Seasonal average unavailable".into(),
+                        });
+                    }
+                    computed.value = match computed.value.get("result") {
+                        Some(value) if !value.is_null() => {
+                            serde_json::json!({"status":"ready","result":value})
+                        }
+                        _ => serde_json::json!({"status":"not-found"}),
+                    };
+                }
+                Ok(computed)
+            },
+            seasonal_average,
         )
         .await
     }

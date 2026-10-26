@@ -10,6 +10,7 @@ enum Command {
     Event(Value),
     ArenaVersion(oneshot::Sender<u64>),
     AchievementBaseline(String, i64, oneshot::Sender<Option<AchievementRead>>),
+    SeasonalAchievementBaseline(String, i64, oneshot::Sender<Option<AchievementRead>>),
     ReadReference(crate::reference::Mode, oneshot::Sender<Option<Value>>),
     WriteReference(crate::reference::Mode, Value, oneshot::Sender<()>),
     Publication(
@@ -25,18 +26,20 @@ enum Command {
         oneshot::Sender<Option<crate::progression::Published>>,
     ),
 }
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub enum PublicationScope {
     Regular,
     Pve,
     Arena,
+    Seasonal(String),
 }
 impl PublicationScope {
-    fn as_str(self) -> &'static str {
+    fn as_str(&self) -> &str {
         match self {
             Self::Regular => "regular",
             Self::Pve => "pve",
             Self::Arena => "arena",
+            Self::Seasonal(scope) => scope,
         }
     }
 }
@@ -349,6 +352,13 @@ impl Storage {
                         Command::AchievementBaseline(mode, now, reply) => {
                             let _ = reply.send(Some(state.achievement_baseline(&mode, now)));
                         }
+                        Command::SeasonalAchievementBaseline(cycle, now, reply) => {
+                            let _ = reply.send(Some(AchievementRead {
+                                value: crate::progression::read_achievement_baseline(&cycle, now),
+                                store_open_ms: 0,
+                                error: false,
+                            }));
+                        }
                         Command::ReadReference(mode, reply) => {
                             let _ = reply.send(state.read_reference(mode));
                         }
@@ -433,6 +443,17 @@ impl Storage {
         let (reply, answer) = oneshot::channel();
         self.sender
             .try_send(Command::AchievementBaseline(mode, now, reply))
+            .ok()?;
+        answer.await.ok().flatten()
+    }
+    pub async fn seasonal_achievement_baseline(
+        &self,
+        cycle: String,
+        now: i64,
+    ) -> Option<AchievementRead> {
+        let (reply, answer) = oneshot::channel();
+        self.sender
+            .try_send(Command::SeasonalAchievementBaseline(cycle, now, reply))
             .ok()?;
         answer.await.ok().flatten()
     }

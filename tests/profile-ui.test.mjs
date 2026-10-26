@@ -1826,7 +1826,7 @@ test("runtime native UI rollouts independently change population ingress to docu
     "@/lib/i18n/server": { resolveLang: async () => "en" },
     "@/lib/i18n/dictionary": { dict: {} },
   });
-  const flags = ["ARENA_UI_UPSTREAM", "PVE_UI_UPSTREAM", "REGULAR_UI_UPSTREAM"];
+  const flags = ["ARENA_UI_UPSTREAM", "PVE_UI_UPSTREAM", "REGULAR_UI_UPSTREAM", "SEASONAL_POPULATION_UI_UPSTREAM"];
   const previousEnv = Object.fromEntries(flags.map(flag => [flag, process.env[flag]]));
   const previousWindow = Object.getOwnPropertyDescriptor(globalThis, "window");
   const previousFetch = globalThis.fetch;
@@ -1891,33 +1891,34 @@ test("runtime native UI rollouts independently change population ingress to docu
     assert.equal(history.at(-1), "back");
     assert.deepEqual(before, []);
     assert.deepEqual(events, []);
-    for (let mask = 0; mask < 8; mask++) {
-      const modes = ["arena", "pve", "regular"];
+    for (let mask = 0; mask < 16; mask++) {
+      const modes = ["arena", "pve", "regular", "seasonal"];
       const selected = modes.filter((_, index) => mask & (1 << index));
       const extra = Object.fromEntries(flags.slice(1).map((flag, index) => [flag, selected.includes(modes[index + 1]) ? "web:3001" : "web:3000"]));
       await render(selected.includes("arena") ? "web:3001" : "web:3000", { current: "seasonal", page: "average" }, true, extra);
-      assert.deepEqual(native.map(link => link.href).sort(), selected.map(mode => `/population/${mode}`).sort());
+      assert.deepEqual(native.map(link => link.href).sort(), selected.map(mode => `/population/${mode === "seasonal" ? "pvp-season" : mode}`).sort());
       assert.equal(nextLinks.length, 4 - selected.length);
-      assert.ok(nextLinks.some(link => link.href === "/population/pvp-season"), "Seasonal stays on Next");
+      assert.equal(nextLinks.some(link => link.href === "/population/pvp-season"), !selected.includes("seasonal"));
       for (const link of native) {
         before.length = 0; events.length = 0; active.resetActiveLinkStateForTests();
         const event = click(); link.onClick(event);
-        assert.equal(event.defaultPrevented, false);
-        assert.deepEqual(before, [link.href.split("/").at(-1)]);
-        assert.deepEqual(events, ["profile-mode-navigate"]);
+        const activeSeasonal = link.href.endsWith("/pvp-season");
+        assert.equal(event.defaultPrevented, activeSeasonal);
+        assert.deepEqual(before, activeSeasonal ? [] : [link.href.split("/").at(-1)]);
+        assert.deepEqual(events, activeSeasonal ? [] : ["profile-mode-navigate"]);
         assert.equal(link.prefetch, undefined);
       }
     }
-    for (const mode of ["pve", "regular"]) {
-      pathname = `/population/${mode}`;
-      await render("web:3000", { current: mode, page: "average" }, true, { [`${mode.toUpperCase()}_UI_UPSTREAM`]: "web:3001" });
+    for (const mode of ["pve", "regular", "seasonal"]) {
+      pathname = `/population/${mode === "seasonal" ? "pvp-season" : mode}`;
+      await render("web:3000", { current: mode, page: "average" }, true, { [mode === "seasonal" ? "SEASONAL_POPULATION_UI_UPSTREAM" : `${mode.toUpperCase()}_UI_UPSTREAM`]: "web:3001" });
       assert.equal(native[0]["aria-current"], "page");
       const event = click(); native[0].onClick(event);
       assert.equal(event.defaultPrevented, true);
       assert.deepEqual(before, []);
     }
     pathname = "/player/pvp-season/42"; query = "radarDemo=1&cycle=old";
-    await render("web:3001", { current: "seasonal", page: "player", aid: 42, seasonalCycleId: "s1" }, true, { PVE_UI_UPSTREAM: "web:3001", REGULAR_UI_UPSTREAM: "web:3001" });
+    await render("web:3001", { current: "seasonal", page: "player", aid: 42, seasonalCycleId: "s1" }, true, { PVE_UI_UPSTREAM: "web:3001", REGULAR_UI_UPSTREAM: "web:3001", SEASONAL_POPULATION_UI_UPSTREAM: "web:3001" });
     assert.equal(native.length, 0, "Arena profiles remain Next pages");
     assert.equal(nextLinks.find((link) => link.href.startsWith("/player/arena/")).href, "/player/arena/42");
     assert.equal(nextLinks.find((link) => link.href.startsWith("/player/regular/")).href, "/player/regular/42?radarDemo=1");

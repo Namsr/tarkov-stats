@@ -227,7 +227,7 @@ fn js_text_number(text: &str) -> f64 {
     }
     text.parse().unwrap_or(f64::NAN)
 }
-fn sql_number(value: ValueRef<'_>) -> Result<f64, String> {
+pub(super) fn sql_number(value: ValueRef<'_>) -> Result<f64, String> {
     match value {
         ValueRef::Null => Ok(0.0),
         ValueRef::Integer(n) if !(-SAFE_INTEGER..=SAFE_INTEGER).contains(&n) => {

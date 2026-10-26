@@ -16,7 +16,7 @@ healthy() {
   [ "$health_status" = 200 ] || return 1
   # Inspect the actual container, including rollback images, rather than the
   # checkout's desired environment. Next alone cannot prove an opted-in API ready.
-  health_native=$(docker inspect --format '{{range .Config.Env}}{{if or (eq . "SEASONAL_API_UPSTREAM=web:3001") (eq . "HOME_SHOWCASE_API_UPSTREAM=web:3001") (eq . "ARENA_UI_UPSTREAM=web:3001") (eq . "PVE_UI_UPSTREAM=web:3001") (eq . "REGULAR_UI_UPSTREAM=web:3001")}}rust{{end}}{{end}}' "$health_cid") || return 1
+  health_native=$(docker inspect --format '{{range .Config.Env}}{{if or (eq . "SEASONAL_API_UPSTREAM=web:3001") (eq . "HOME_SHOWCASE_API_UPSTREAM=web:3001") (eq . "ARENA_UI_UPSTREAM=web:3001") (eq . "PVE_UI_UPSTREAM=web:3001") (eq . "REGULAR_UI_UPSTREAM=web:3001") (eq . "SEASONAL_POPULATION_UI_UPSTREAM=web:3001")}}rust{{end}}{{end}}' "$health_cid") || return 1
   if [ -n "$health_native" ]; then
     health_rust_status=$(curl --silent --show-error --noproxy '*' --connect-timeout 2 --max-time 5 \
       --header 'Host: tarkovstats.ru' --output /dev/null --write-out '%{http_code}' \
@@ -47,7 +47,8 @@ desired_native=false
 desired_showcase=false
 desired_ui=false
 desired_persistent=false
-for selector in SEASONAL_API_UPSTREAM HOME_SHOWCASE_API_UPSTREAM ARENA_UI_UPSTREAM PVE_UI_UPSTREAM REGULAR_UI_UPSTREAM; do
+desired_seasonal_population=false
+for selector in SEASONAL_API_UPSTREAM HOME_SHOWCASE_API_UPSTREAM ARENA_UI_UPSTREAM PVE_UI_UPSTREAM REGULAR_UI_UPSTREAM SEASONAL_POPULATION_UI_UPSTREAM; do
   desired_api=$(printf '%s\n' "$interpolation" | sed -n "s/^$selector=//p")
   desired_api=${desired_api:-web:3000}
   case "$desired_api" in
@@ -64,7 +65,7 @@ for selector in SEASONAL_API_UPSTREAM HOME_SHOWCASE_API_UPSTREAM ARENA_UI_UPSTRE
     fi
   fi
   if [ "$desired_api" = web:3001 ]; then
-    case "$selector" in SEASONAL_API_UPSTREAM) desired_native=true;; HOME_SHOWCASE_API_UPSTREAM) desired_showcase=true;; ARENA_UI_UPSTREAM) desired_ui=true;; PVE_UI_UPSTREAM|REGULAR_UI_UPSTREAM) desired_persistent=true;; esac
+    case "$selector" in SEASONAL_API_UPSTREAM) desired_native=true;; HOME_SHOWCASE_API_UPSTREAM) desired_showcase=true;; ARENA_UI_UPSTREAM) desired_ui=true;; PVE_UI_UPSTREAM|REGULAR_UI_UPSTREAM) desired_persistent=true;; SEASONAL_POPULATION_UI_UPSTREAM) desired_seasonal_population=true;; esac
   fi
 done
 unset interpolation
@@ -82,9 +83,12 @@ image_supports_routing() {
     [ "$(docker image inspect --format '{{index .Config.Labels "org.tarkovstats.rust-persistent-ui"}}' "$1")" = v1 ] || return 1
     [ "$(docker image inspect --format '{{index .Config.Labels "org.tarkovstats.rust-population-api"}}' "$1")" = v1 ] || return 1
   fi
+  if [ "$desired_seasonal_population" = true ]; then
+    [ "$(docker image inspect --format '{{index .Config.Labels "org.tarkovstats.rust-seasonal-population"}}' "$1")" = v1 ] || return 1
+  fi
   return 0
 }
-if [ "$desired_native" = true ] || [ "$desired_showcase" = true ] || [ "$desired_ui" = true ] || [ "$desired_persistent" = true ]; then
+if [ "$desired_native" = true ] || [ "$desired_showcase" = true ] || [ "$desired_ui" = true ] || [ "$desired_persistent" = true ] || [ "$desired_seasonal_population" = true ]; then
   # All requested listeners/routes must remain usable after an image rollback.
   if [ -z "$previous_image" ] || ! image_supports_routing "$previous_image"; then
     logger -t tarkovstats-deploy "deploy deferred: Rust routing requires a compatible running rollback image"

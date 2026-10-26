@@ -1,6 +1,7 @@
 mod arena;
 mod population;
 mod seasonal;
+mod seasonal_population;
 
 use rusqlite::{Connection, OpenFlags};
 use serde::Deserialize;
@@ -216,8 +217,14 @@ struct VectorBudget {
 
 impl VectorBudget {
     fn push(&mut self, values: &mut Vec<f64>, value: f64) -> Result<(), String> {
+        self.push_item(values, value)
+    }
+    fn release<T>(&mut self, values: &Vec<T>) {
+        self.used = self.used.saturating_sub(values.capacity() * size_of::<T>());
+    }
+    fn push_item<T>(&mut self, values: &mut Vec<T>, value: T) -> Result<(), String> {
         if values.len() == values.capacity() {
-            let remaining = self.limit.saturating_sub(self.used) / size_of::<f64>();
+            let remaining = self.limit.saturating_sub(self.used) / size_of::<T>();
             if remaining == 0 {
                 return Err(MEMORY_LIMIT_ERROR.into());
             }
@@ -227,7 +234,7 @@ impl VectorBudget {
                 .try_reserve_exact(growth)
                 .map_err(|_| "Cohort exceeds available memory".to_string())?;
             let bytes = (values.capacity() - previous_capacity)
-                .checked_mul(size_of::<f64>())
+                .checked_mul(size_of::<T>())
                 .ok_or(MEMORY_LIMIT_ERROR)?;
             self.used = self
                 .used
@@ -521,6 +528,8 @@ struct Databases {
     population_ready: [bool; 2],
     players: Option<Connection>,
     progression: Option<Connection>,
+    seasonal_ready: bool,
+    seasonal_population_ready: bool,
 }
 
 impl Databases {
@@ -563,7 +572,7 @@ impl Databases {
         }
         self.players()
     }
-    fn progression(&mut self) -> Result<&mut Connection, String> {
+    fn progression_raw(&mut self) -> Result<&mut Connection, String> {
         if self.progression.is_none() {
             let path = env::var("PROGRESSION_SQLITE_PATH")
                 .ok()
@@ -575,12 +584,31 @@ impl Databases {
                 })
                 .unwrap_or_else(|| "/data/progression.db".into());
             let db = open_path(path)?;
-            if !seasonal::ready(&db) {
-                return Err("Seasonal storage schema is unavailable".into());
-            }
             self.progression = Some(db);
         }
         Ok(self.progression.as_mut().unwrap())
+    }
+    fn progression(&mut self) -> Result<&mut Connection, String> {
+        if !self.seasonal_ready {
+            if !seasonal::ready(self.progression_raw()?) {
+                self.progression = None;
+                self.seasonal_population_ready = false;
+                return Err("Seasonal storage schema is unavailable".into());
+            }
+            self.seasonal_ready = true;
+        }
+        self.progression_raw()
+    }
+    fn seasonal_population(&mut self) -> Result<&mut Connection, String> {
+        if !self.seasonal_population_ready {
+            if !seasonal_population::ready(self.progression_raw()?) {
+                self.progression = None;
+                self.seasonal_ready = false;
+                return Err("Seasonal population storage schema is unavailable".into());
+            }
+            self.seasonal_population_ready = true;
+        }
+        self.progression_raw()
     }
 }
 fn handle(frame: &[u8], databases: &mut Databases) -> Value {
@@ -636,6 +664,20 @@ fn handle(frame: &[u8], databases: &mut Databases) -> Value {
                     .map_err(|error| error.to_string())?
                     .as_millis() as f64;
                 population::compute_metrics(db, &input, now)
+            }
+            "seasonal_average" => {
+                let input = seasonal_population::parse(&job.args, false)?;
+                let Ok(db) = databases.seasonal_population() else {
+                    return Ok(json!({"available":false,"result":null}));
+                };
+                seasonal_population::average(db, &input)
+            }
+            "seasonal_metrics" => {
+                let input = seasonal_population::parse(&job.args, true)?;
+                let Ok(db) = databases.seasonal_population() else {
+                    return Ok(Value::Null);
+                };
+                seasonal_population::metrics(db, &input)
             }
             "seasonal" => {
                 let input = seasonal::parse(&job.args)?;

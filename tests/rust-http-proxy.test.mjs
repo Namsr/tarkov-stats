@@ -49,7 +49,7 @@ test("production proxy selects the Rust endpoint, bounds each upstream and never
   const path = join(directory, "Caddyfile"); await writeFile(path, config);
   const child = spawn(caddy, ["run", "--config", path, "--adapter", "caddyfile"], {
     cwd: directory, windowsHide: true, stdio: ["ignore", "ignore", "pipe"],
-    env: { ...process.env, SEASONAL_API_UPSTREAM: `127.0.0.1:${rustPort}`, HOME_SHOWCASE_API_UPSTREAM: `127.0.0.1:${rustPort}`, ARENA_UI_UPSTREAM: `127.0.0.1:${rustPort}`, PVE_UI_UPSTREAM: `127.0.0.1:${nextPort}`, REGULAR_UI_UPSTREAM: `127.0.0.1:${nextPort}`, GOMEMLIMIT: "192MiB",
+    env: { ...process.env, SEASONAL_API_UPSTREAM: `127.0.0.1:${rustPort}`, HOME_SHOWCASE_API_UPSTREAM: `127.0.0.1:${rustPort}`, ARENA_UI_UPSTREAM: `127.0.0.1:${rustPort}`, SEASONAL_POPULATION_UI_UPSTREAM: `127.0.0.1:${nextPort}`, PVE_UI_UPSTREAM: `127.0.0.1:${nextPort}`, REGULAR_UI_UPSTREAM: `127.0.0.1:${nextPort}`, GOMEMLIMIT: "192MiB",
       APPDATA: directory, XDG_DATA_HOME: directory, XDG_CONFIG_HOME: directory },
   });
   let logs = ""; child.stderr.setEncoding("utf8"); child.stderr.on("data", (chunk) => { logs = `${logs}${chunk}`.slice(-16000); });
@@ -155,17 +155,18 @@ test("persistent UI selectors independently route decoded modes, assets and ever
   const source = await readFile("ops/Caddyfile", "utf8");
   const families = ["/api/average", "/api/average/metrics", "/api/progression/average", "/api/average/achievements"];
   const asset = "/_rust/persistent/hash/tarkov_ui_bg.wasm";
-  for (const [pve, regular] of [[false, false], [true, false], [false, true], [true, true]]) {
+  for (const [pve, regular, seasonal] of [false, true].flatMap(pve => [false, true].flatMap(regular => [false, true].map(seasonal => [pve, regular, seasonal])))) {
     const probe = http.createServer(), port = await listen(probe); await close(probe);
     const config = source.replace("{", "{\n admin off\n persist_config off\n auto_https off\n default_bind 127.0.0.1")
       .replaceAll("web:3000", `127.0.0.1:${nextPort}`)
       .replace(/^tarkovstats\.ru, www\.tarkovstats\.ru \{/m, `http://tarkovstats.ru:${port} {`)
       .replace(/^tarkovstats\.online, www\.tarkovstats\.online \{/m, `http://tarkovstats.online:${port} {`);
-    const file = join(directory, `Caddyfile-${pve}-${regular}`); await writeFile(file, config);
+    const file = join(directory, `Caddyfile-${pve}-${regular}-${seasonal}`); await writeFile(file, config);
     const child = spawn(caddy, ["run", "--config", file, "--adapter", "caddyfile"], {
       windowsHide: true, stdio: ["ignore", "ignore", "pipe"], cwd: directory,
       env: { ...process.env, PVE_UI_UPSTREAM: `127.0.0.1:${pve ? rustPort : nextPort}`,
         REGULAR_UI_UPSTREAM: `127.0.0.1:${regular ? rustPort : nextPort}`,
+        SEASONAL_POPULATION_UI_UPSTREAM: `127.0.0.1:${seasonal ? rustPort : nextPort}`,
         ARENA_UI_UPSTREAM: `127.0.0.1:${nextPort}`, SEASONAL_API_UPSTREAM: `127.0.0.1:${nextPort}`,
         HOME_SHOWCASE_API_UPSTREAM: `127.0.0.1:${nextPort}`, GOMEMLIMIT: "192MiB",
         APPDATA: directory, XDG_CONFIG_HOME: directory, XDG_DATA_HOME: directory },
@@ -179,30 +180,34 @@ test("persistent UI selectors independently route decoded modes, assets and ever
     }
     const check = async (path, selected, host = "tarkovstats.ru") => {
       const response = await request(port, path, host);
-      assert.equal(response.status, 200, `${pve}/${regular} ${path} ${logs}`);
-      assert.equal(JSON.parse(response.body).backend, selected ? "rust" : "next", `${pve}/${regular} ${path}`);
+      assert.equal(response.status, 200, `${pve}/${regular}/${seasonal} ${path} ${logs}`);
+      assert.equal(JSON.parse(response.body).backend, selected ? "rust" : "next", `${pve}/${regular}/${seasonal} ${path}`);
       assert.equal(JSON.parse(response.body).path, path);
     };
     for (const family of families) for (const trailing of ["", "/"]) {
-      for (const query of ["", "?statistic=median", "?MODE=pve", "?mo+de=pve", "?m%256fde=pve", "?mode=regular", "?mode=regular&mode=pve", "?%6d%6f%64%65=%72eg%75lar"]) await check(family + trailing + query, regular);
-      for (const query of ["?mode=pve", "?mode=pve&mode=regular", "?m%6Fde=%70%76%65", "?MODE=regular&mode=pve"]) await check(family + trailing + query, pve, "tarkovstats.online");
-      for (const query of ["?mode", "?mode=", "?mode=&mode=regular", "?mode=Regular", "?mode=%20regular", "?mode=%2570ve", "?mode=arena", "?mode=seasonal"]) await check(family + trailing + query, false);
+      for (const query of ["", "?statistic=median", "?MODE=pve", "?mo+de=pve", "?m%256fde=pve", "?m%256fde=seasonal", "?mode=regular", "?mode=regular&mode=pve", "?mode=regular&mode=seasonal", "?%6d%6f%64%65=%72eg%75lar"]) await check(family + trailing + query, regular);
+      for (const query of ["?mode=pve", "?mode=pve&mode=regular", "?mode=pve&mode=seasonal", "?m%6Fde=%70%76%65", "?MODE=regular&mode=pve"]) await check(family + trailing + query, pve, "tarkovstats.online");
+      for (const query of ["?mode=seasonal", "?mode=seasonal&mode=pve", "?mode=seasonal&mode=regular", "?m%6Fde=%73e%61son%61%6C", "?%6d%6f%64%65=%73%65%61%73%6f%6e%61%6c", "?MODE=pve&mode=seasonal"]) await check(family + trailing + query, family !== "/api/average" && seasonal);
+      for (const query of ["?mode", "?mode=", "?mode=&mode=regular", "?mode=Regular", "?mode=%20regular", "?mode=%2570ve", "?mode=arena", "?mode=&mode=seasonal", "?mode=pvex&mode=seasonal", "?mode=Seasonal", "?mode=%20seasonal", "?mode=seaso+nal", "?mode=%2573easonal"]) await check(family + trailing + query, false);
     }
     for (const path of ["/population/pve", "/population/pve/", "/average/pve", "/average/pve/"]) await check(path, pve);
     for (const path of ["/population/regular", "/population/regular/", "/average/regular", "/average/regular/"]) await check(path, regular);
-    await check(asset, pve || regular);
-    for (const path of ["/population/pvex", "/average/regular-extra", "/api/average/metrics-extra?mode=pve", "/_rust/persistent-extra/hash/app.js"]) await check(path, false);
-    if (pve || regular) {
-      const chosen = pve ? "pve" : "regular", beforeNext = nextCount;
+    for (const path of ["/population/pvp-season", "/population/pvp-season/", "/average/pvp-season", "/average/pvp-season/", "/api/seasonal/average", "/api/seasonal/average/"]) await check(path, seasonal);
+    for (const query of ["", "?mode=seasonal", "?mode=pve"]) await check("/api/seasonal/cohort" + query, false, "tarkovstats.online");
+    await check(asset, pve || regular || seasonal);
+    for (const path of ["/population/pvex", "/average/regular-extra", "/api/average/metrics-extra?mode=pve", "/_rust/persistent-extra/hash/app.js", "/population/seasonal", "/average/seasonal", "/population/pvp-season-extra", "/api/seasonal/average-extra"]) await check(path, false);
+    if (pve || regular || seasonal) {
+      const chosen = pve ? "pve" : regular ? "regular" : "seasonal", beforeNext = nextCount;
+      const chosenPaths = chosen === "seasonal" ? ["/api/seasonal/average", ...families.slice(1).map(path => path + "?mode=seasonal")] : families.map(path => path + "?mode=" + chosen);
       fail = true;
-      for (const family of families) {
+      for (const path of chosenPaths) {
         const beforeRust = rustCount;
-        assert.equal((await request(port, family + "?mode=" + chosen)).status, 503);
+        assert.equal((await request(port, path)).status, 503);
         assert.equal(rustCount, beforeRust + 1, "accepted overload never replays");
       }
       fail = false;
-      if (!pve || !regular) {
-        for (const path of [asset, pve ? "/api/progression/average?mode=pve" : "/api/average/metrics"]) {
+      if ([pve, regular, seasonal].filter(Boolean).length === 1) {
+        for (const path of [asset, chosenPaths[0], ...(seasonal ? ["/population/pvp-season", "/api/progression/average?mode=seasonal"] : [])]) {
           await close(native); reset = true;
           const beforeRust = rustCount;
           let resumeTimer;
@@ -218,13 +223,14 @@ test("persistent UI selectors independently route decoded modes, assets and ever
       }
       assert.equal(nextCount, beforeNext, "native failures never fall back to Next");
     }
-    if (pve && regular) {
+    if (pve && regular && seasonal) {
       hold = true;
-      const paths = [...families.map(path => path + "?mode=pve"), ...families.map(path => path + "?mode=regular"), "/population/pve", "/average/regular", asset];
+      const paths = [...families.map(path => path + "?mode=pve"), ...families.map(path => path + "?mode=regular"), "/population/pve", "/average/regular", asset, "/population/pvp-season", "/api/seasonal/average", ...families.slice(1).map(path => path + "?mode=seasonal")];
       const pending = Array.from({ length: 32 }, (_, i) => request(port, paths[i % paths.length]));
       const filled = Date.now() + 5000;
       while (held.length !== 32) { assert.ok(Date.now() < filled, logs); await delay(10); }
       assert.equal((await request(port, "/api/average/metrics?mode=regular")).status, 503);
+      assert.equal((await request(port, "/api/seasonal/average")).status, 503);
       assert.equal((await request(port, asset)).status, 503);
       await check("/healthz", false);
       hold = false;

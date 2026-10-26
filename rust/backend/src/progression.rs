@@ -34,7 +34,7 @@ fn valid(value: &Value, mode: &str, cycle: &str) -> bool {
 
 // Called only by the existing bounded storage thread; no unbounded blocking
 // tasks, persistent history handles, migrations, or writes are introduced.
-pub fn read(mode: &str, cycle: &str, now: i64) -> Option<Published> {
+fn open() -> Option<Connection> {
     let path = ["PROGRESSION_SQLITE_PATH", "PROGRESSION_DB_PATH"]
         .into_iter()
         .find_map(|key| env::var(key).ok().filter(|value| !value.is_empty()))
@@ -45,7 +45,10 @@ pub fn read(mode: &str, cycle: &str, now: i64) -> Option<Published> {
     )
     .ok()?;
     db.busy_timeout(Duration::from_millis(100)).ok()?;
-    read_from(&db, mode, cycle, now)
+    Some(db)
+}
+pub fn read(mode: &str, cycle: &str, now: i64) -> Option<Published> {
+    read_from(&open()?, mode, cycle, now)
 }
 
 fn read_from(db: &Connection, mode: &str, cycle: &str, now: i64) -> Option<Published> {
@@ -77,6 +80,30 @@ fn read_from(db: &Connection, mode: &str, cycle: &str, now: i64) -> Option<Publi
         generated_at,
         stale: now as f64 - generated_at >= REFRESH_MS,
     })
+}
+
+// Read only the compact published baseline on the bounded storage thread.
+// The source requires truthy metrics and an array riskBaselines for a valid
+// population publication; do not accept an arbitrary standalone baseline.
+pub fn read_achievement_baseline(cycle: &str, now: i64) -> Option<Value> {
+    let db = open()?;
+    read_achievement_baseline_from(&db, cycle, now)
+}
+fn read_achievement_baseline_from(db: &Connection, cycle: &str, now: i64) -> Option<Value> {
+    let row=db.prepare_cached("SELECT g.generation,g.generated_at,substr(json_extract(g.payload,'$.achievementBaseline'),1,1048577),json_extract(g.payload,'$.metrics'),json_type(g.payload,'$.riskBaselines') FROM progression_population_current c JOIN progression_population_generations g ON g.mode=c.mode AND g.cycle_id=c.cycle_id AND g.generation=c.generation WHERE c.mode='seasonal' AND c.cycle_id=?").ok()?.query_row([cycle],|row|{
+        for index in 0..5 {if let rusqlite::types::ValueRef::Integer(n)=row.get_ref(index)? && !(-9_007_199_254_740_991..=9_007_199_254_740_991).contains(&n){return Err(rusqlite::Error::IntegralValueOutOfRange(index,n));}}
+        let metrics=match row.get_ref(3)? {rusqlite::types::ValueRef::Null=>false,rusqlite::types::ValueRef::Integer(n)=>n!=0,rusqlite::types::ValueRef::Real(n)=>n!=0.0,rusqlite::types::ValueRef::Text(v)=>!v.is_empty(),_=>false};
+        Ok((row.get::<_,f64>(0)?,row.get::<_,f64>(1)?,row.get::<_,String>(2)?,metrics,row.get::<_,String>(4)?))
+    }).optional().ok()??;
+    if !row.0.is_finite()
+        || !row.1.is_finite()
+        || row.2.len() > MAX_RESPONSE_BYTES
+        || !row.3
+        || row.4 != "array"
+    {
+        return None;
+    }
+    crate::achievements::parse_seasonal(&serde_json::from_str::<Value>(&row.2).ok()?, now)
 }
 
 #[derive(Clone)]
@@ -244,5 +271,36 @@ mod tests {
                 "{payload}"
             );
         }
+    }
+    #[test]
+    fn seasonal_baseline_uses_current_compact_publication_and_zero_unlock_hours() {
+        let db = fixture();
+        db.execute(
+            "INSERT INTO progression_population_current VALUES('seasonal','s1',2)",
+            [],
+        )
+        .unwrap();
+        let payload = json!({"metrics":{},"riskBaselines":[],"achievementBaseline":{"eligibleN":10,"achievements":[{"id":"zero","owners":2,"samplePct":20,"meanHours":90,"stdHours":0,"earlyHours":5,"unlockHours":0},{"id":"fallback","owners":1,"samplePct":10,"meanHours":20,"stdHours":0,"earlyHours":null}]}});
+        db.execute(
+            "INSERT INTO progression_population_generations VALUES('seasonal','s1',2,1000,?1)",
+            [payload.to_string()],
+        )
+        .unwrap();
+        let value = read_achievement_baseline_from(&db, "s1", 5000).unwrap();
+        assert_eq!(value["total"], 10.0);
+        assert_eq!(value["rows"][0]["unlockHours"], 0.0);
+        assert_eq!(value["rows"][1]["earlyHours"], 20.0);
+        assert_eq!(value["rows"][1]["unlockHours"], 20.0);
+        assert!(read_achievement_baseline_from(&db, "s2", 5000).is_none());
+        let mut corrupt = payload.clone();
+        corrupt["riskBaselines"] = json!({});
+        db.execute(
+            "UPDATE progression_population_generations SET payload=?1",
+            [corrupt.to_string()],
+        )
+        .unwrap();
+        assert!(read_achievement_baseline_from(&db, "s1", 5000).is_none());
+        db.execute("UPDATE progression_population_generations SET payload=?1,generated_at=9007199254740993",[payload.to_string()]).unwrap();
+        assert!(read_achievement_baseline_from(&db, "s1", 5000).is_none());
     }
 }

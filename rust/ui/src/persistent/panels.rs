@@ -476,7 +476,14 @@ fn moscow_timestamp(ms: f64, lang: Lang) -> String {
         )
     }
 }
-fn point_label(point: &Value, bands: &[LevelBand], lang: Lang) -> String {
+fn overall_key(mode: &str) -> &'static str {
+    match mode {
+        "seasonal" => "seasonal.series.overall",
+        "pve" => "progression.series.overall.pve",
+        _ => "progression.series.overall",
+    }
+}
+fn point_label(point: &Value, bands: &[LevelBand], lang: Lang, mode: &str) -> String {
     let raw = num(&point["value"]);
     let value = if !bands.is_empty() {
         lang.text(
@@ -491,7 +498,14 @@ fn point_label(point: &Value, bands: &[LevelBand], lang: Lang) -> String {
     };
     let date = date_label(point["date"].as_str().unwrap_or(""), lang);
     let mut fields = vec![
-        ("series", lang.t("progression.series.overall")),
+        (
+            "series",
+            lang.t(if mode == "seasonal" {
+                "seasonal.series.overall"
+            } else {
+                "progression.series.overall"
+            }),
+        ),
         ("date", date),
         ("value", value),
         ("n", format(num(&point["n"]), 0, lang)),
@@ -580,7 +594,7 @@ pub fn Progression(
                     .find(|p| point_id(p) == id)
                     .cloned()
             })
-            .map(|p| bands.with_value(|b| point_label(&p, b, lang.get())))
+            .map(|p| bands.with_value(|b| point_label(&p, b, lang.get(), &mode.get_value())))
             .unwrap_or_default()
     };
     let _inspect = move |point: Option<(f64, f64)>| {
@@ -603,13 +617,13 @@ pub fn Progression(
             active.set(nearest)
         }
     };
-    view! {<section class="mt-10" aria-labelledby="average-progression-heading"><h2 id="average-progression-heading" class="section-heading">{move||lang.get().t("player.progression")}</h2><div class="h-72 rounded-xl skeleton" role="status" hidden=move||{reply.get().body.is_some()||(reply.get().status>=400&&reply.get().status!=503)} aria-label=move||lang.get().t("common.loading")></div><p class="mt-10 text-sm text-[var(--danger)]" role="status" hidden=move||{reply.get().body.is_some()||reply.get().status<400||reply.get().status==503}>{move||lang.get().t("progression.unavailable")}</p><section class="data-panel seasonal-chart" hidden=move||reply.get().body.is_none()><div class="seasonal-chart__head"><h2 class="section-heading">{move||lang.get().t("progression.chart.xp")}</h2><div class="seasonal-chart__toggles" aria-label=move||lang.get().t("progression.series.toggleAria")><button type="button" aria-pressed=move||shown.get().to_string() class:is-active=move||shown.get() on:click=move|_|{shown.update(|v|*v = !*v);active.set(None)}><span style="background:#9aa0a6" aria-hidden="true"></span>{move||lang.get().t(if mode.with_value(|m|m=="pve"){"progression.series.overall.pve"}else{"progression.series.overall"})}</button></div></div>
-    <p class="seasonal-chart__empty" hidden=move||{reply.get().status<400}>{move||lang.get().t("progression.unavailable")}</p><p class="seasonal-chart__empty" hidden=move||!plot.get().points.is_empty()>{move||lang.get().t("progression.noHistory")}</p>
+    view! {<section class="mt-10" aria-labelledby="average-progression-heading"><h2 id="average-progression-heading" class="section-heading">{move||lang.get().t("player.progression")}</h2><div class="h-72 rounded-xl skeleton" role="status" hidden=move||{reply.get().body.is_some()||(reply.get().status>=400&&reply.get().status!=503)} aria-label=move||lang.get().t("common.loading")></div><p class="mt-10 text-sm text-[var(--danger)]" role="status" hidden=move||{reply.get().body.is_some()||reply.get().status<400||reply.get().status==503}>{move||lang.get().t("progression.unavailable")}</p><section class="data-panel seasonal-chart" hidden=move||reply.get().body.is_none()><div class="seasonal-chart__head"><h2 class="section-heading">{move||lang.get().t("progression.chart.xp")}</h2><div class="seasonal-chart__toggles" aria-label=move||lang.get().t(if mode.with_value(|m|m=="seasonal"){"seasonal.series.toggleAria"}else{"progression.series.toggleAria"})><button type="button" aria-pressed=move||shown.get().to_string() class:is-active=move||shown.get() on:click=move|_|{shown.update(|v|*v = !*v);active.set(None)}><span style="background:#9aa0a6" aria-hidden="true"></span>{move||lang.get().t(overall_key(&mode.get_value()))}</button></div></div>
+    <p class="seasonal-chart__empty" hidden=move||{reply.get().status<400}>{move||lang.get().t("progression.unavailable")}</p><p class="seasonal-chart__empty" hidden=move||!plot.get().points.is_empty()>{move||lang.get().t(if mode.with_value(|m|m=="seasonal"){"seasonal.noHistory"}else{"progression.noHistory"})}</p>
     <div class="seasonal-chart__scroll" hidden=move||plot.get().points.is_empty()><svg node_ref=svg viewBox="0 0 760 270" role="group" aria-label=move||lang.get().t("progression.chart.xp") on:pointermove=move|event|{#[cfg(feature="hydrate")]if event.pointer_type()!="touch"{_inspect(super::client::pointer_point(&event,760.0,270.0));}#[cfg(not(feature="hydrate"))]let _=event;} on:click=move|event|{#[cfg(feature="hydrate")]_inspect(super::client::mouse_point(&event,760.0,270.0));#[cfg(not(feature="hydrate"))]let _=event;} on:pointerleave=move|event|{#[cfg(feature="hydrate")]if !super::client::chart_focused(&event){active.set(None)}#[cfg(not(feature="hydrate"))]let _=event;}>
     {move||[0.0,0.25,0.5,0.75,1.0].into_iter().map(move|tick|{let value=plot.get().min_y+(plot.get().max_y-plot.get().min_y)*tick;view!{<g><line x1="62" x2="742" y1=y(&plot.get(),value) y2=y(&plot.get(),value) class="seasonal-chart__grid"/><text x="52" y=y(&plot.get(),value)+4.0 text-anchor="end" class="seasonal-chart__axis" data-chart-tick="">{bands.with_value(|bands|if bands.is_empty(){format(Some(value),0,lang.get())}else{lang.get().text("seasonal.levelBand",&[("level",format(Some(level_at(value,bands)),0,lang.get()))])})}</text></g>}}).collect_view()}
     {move||{let p=plot.get();let start=(p.min_x/10.0).ceil().max(1.0)*10.0;let end=(p.max_x/10.0).floor()*10.0;let count=((end-start)/10.0+1.0).max(0.0);let step=(count/8.0).ceil().max(1.0)*10.0;(0..((end-start)/step+1.0).max(0.0)as usize).map(move|i|{let raid=start+i as f64*step;view!{<g><line x1=x(&plot.get(),raid) x2=x(&plot.get(),raid) y1="18" y2="232" class="seasonal-chart__grid"/><text x=x(&plot.get(),raid) y="252" text-anchor="middle" class="seasonal-chart__axis" data-chart-tick="">{format(Some(raid),0,lang.get())}</text></g>}}).collect_view()}}
     <g visibility=move||if shown.get(){"visible"}else{"hidden"}><path d=move||plot_path(&plot.get(),"value") fill="none" stroke="#9aa0a6" stroke-width="2" vector-effect="non-scaling-stroke"/>
-    <For each=move||plot.get().points key=point_id children=move|point|{let id=StoredValue::new(point_id(&point));let fallback=StoredValue::new(point);let p=Memo::new(move |_|plot.get().points.iter().find(|p|point_id(p)==id.get_value()).cloned().unwrap_or_else(||fallback.get_value()));let label=move||p.with(|p|bands.with_value(|b|point_label(p,b,lang.get())));view!{<circle cx=move||p.with(|p|x(&plot.get(),num(&p["pmcRaids"]).unwrap_or(0.0))) cy=move||p.with(|p|y(&plot.get(),num(&p["value"]).unwrap_or(0.0))) r="13" fill="transparent" class="seasonal-chart__hit" role="button" tabindex="0" aria-label=label on:focus=move|_|active.set(Some(id.get_value())) on:blur=move|_|active.set(None) on:keydown=move|event|{match event.key().as_str(){"Escape"=>active.set(None),"Enter"|" "=>{event.prevent_default();active.set(Some(id.get_value()))},_=>{}}}><title>{label}</title></circle>}}/>
+    <For each=move||plot.get().points key=point_id children=move|point|{let id=StoredValue::new(point_id(&point));let fallback=StoredValue::new(point);let p=Memo::new(move |_|plot.get().points.iter().find(|p|point_id(p)==id.get_value()).cloned().unwrap_or_else(||fallback.get_value()));let label=move||p.with(|p|bands.with_value(|b|point_label(p,b,lang.get(),&mode.get_value())));view!{<circle cx=move||p.with(|p|x(&plot.get(),num(&p["pmcRaids"]).unwrap_or(0.0))) cy=move||p.with(|p|y(&plot.get(),num(&p["value"]).unwrap_or(0.0))) r="13" fill="transparent" class="seasonal-chart__hit" role="button" tabindex="0" aria-label=label on:focus=move|_|active.set(Some(id.get_value())) on:blur=move|_|active.set(None) on:keydown=move|event|{match event.key().as_str(){"Escape"=>active.set(None),"Enter"|" "=>{event.prevent_default();active.set(Some(id.get_value()))},_=>{}}}><title>{label}</title></circle>}}/>
     {move||active.get().and_then(|id|plot.get().points.iter().find(|p|point_id(p)==id).cloned()).map(|p|{let px=x(&plot.get(),num(&p["pmcRaids"]).unwrap_or(0.0));let py=y(&plot.get(),num(&p["value"]).unwrap_or(0.0));view!{<g class="chart-crosshair" aria-hidden="true" pointer-events="none"><line x1=px x2=px y1=py y2="232" stroke="#9aa0a6" class="chart-crosshair__guide"/><line x1="62" x2=px y1=py y2=py stroke="#9aa0a6" class="chart-crosshair__guide"/><circle cx=px cy=py r="6" fill="#9aa0a6"/><text style="fill:#9aa0a6" x=px y="252" text-anchor="middle" class="chart-crosshair__label">{format(num(&p["pmcRaids"]),0,lang.get())}</text><text style="fill:#9aa0a6" x="52" y=py+4.0 text-anchor="end" class="chart-crosshair__label">{format(num(&p["value"]),0,lang.get())}</text></g>}})}</g><text x="402" y="265" text-anchor="middle" class="seasonal-chart__axis">{move||lang.get().t("progression.axisPmcRaids")}</text></svg></div>
     <p class="sr-only" role="status" aria-live="polite">{active_label}</p><div class="seasonal-chart__meta"><span>{move||lang.get().text("seasonal.sampleN",&[("n",format(reply.get().body.as_ref().and_then(|v|num(&v["series"]["cumulative"]["n"])),0,lang.get()))])}</span><span>{move||lang.get().text("seasonal.confidenceValue",&[("n",format(reply.get().body.as_ref().and_then(|v|num(&v["series"]["cumulative"]["confidence"])).map(|n|n*100.0),0,lang.get()))])}</span><span>{move||reply.get().body.as_ref().and_then(|v|num(&v["series"]["cumulative"]["freshnessAt"])).filter(|v|*v>0.0).map(|v|lang.get().text("seasonal.freshness",&[("date",moscow_timestamp(v,lang.get()))])).unwrap_or_default()}</span></div></section></section>}
 }

@@ -96,7 +96,7 @@ jobs:
             assert.equal(services.caddy.environment.HOME_SHOWCASE_API_UPSTREAM, services.web.environment.HOME_SHOWCASE_API_UPSTREAM);
             assert.equal(services.web.environment.ARENA_UI_UPSTREAM, "web:3000");
             assert.equal(services.caddy.environment.ARENA_UI_UPSTREAM, services.web.environment.ARENA_UI_UPSTREAM);
-            for (const flag of ["PVE_UI_UPSTREAM", "REGULAR_UI_UPSTREAM"]) {
+            for (const flag of ["PVE_UI_UPSTREAM", "REGULAR_UI_UPSTREAM", "SEASONAL_POPULATION_UI_UPSTREAM"]) {
               assert.equal(services.web.environment[flag], "web:3000");
               assert.equal(services.caddy.environment[flag], services.web.environment[flag]);
             }
@@ -113,6 +113,7 @@ jobs:
           test "$(docker image inspect --format '{{index .Config.Labels "org.tarkovstats.rust-arena-ui"}}' "tarkovstats-web:$GITHUB_SHA")" = "v1"
           test "$(docker image inspect --format '{{index .Config.Labels "org.tarkovstats.rust-persistent-ui"}}' "tarkovstats-web:$GITHUB_SHA")" = "v1"
           test "$(docker image inspect --format '{{index .Config.Labels "org.tarkovstats.rust-population-api"}}' "tarkovstats-web:$GITHUB_SHA")" = "v1"
+          test "$(docker image inspect --format '{{index .Config.Labels "org.tarkovstats.rust-seasonal-population"}}' "tarkovstats-web:$GITHUB_SHA")" = "v1"
           docker run --rm --network none --entrypoint node "tarkovstats-web:$GITHUB_SHA" --experimental-strip-types --experimental-sqlite -e "require('node:sqlite'); require('discord.js'); require('node:fs').accessSync('/app/server.js'); require('node:fs').accessSync('/app/scripts/axis-discord-bot.mjs')"
           docker run --rm --network none --entrypoint /app/rust/cohort-worker/target/release/tarkov-cohort-worker "tarkovstats-web:$GITHUB_SHA" < /dev/null
           docker network create image-smoke

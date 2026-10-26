@@ -62,6 +62,8 @@ pub fn valid_lookup(value: &Value, input: &Value) -> bool {
 #[derive(Clone, Copy)]
 pub enum Kind {
     Seasonal,
+    SeasonalAverage,
+    SeasonalMetrics,
     ArenaPopulation,
     PersistentAverage,
     PersistentMetrics,
@@ -72,6 +74,8 @@ impl Kind {
     pub fn from_job(job: &Value) -> Option<Self> {
         match job.get("kind")?.as_str()? {
             "seasonal" => Some(Self::Seasonal),
+            "seasonal_average" => Some(Self::SeasonalAverage),
+            "seasonal_metrics" => Some(Self::SeasonalMetrics),
             "arena_population" => Some(Self::ArenaPopulation),
             "persistent_average" => Some(Self::PersistentAverage),
             "persistent_metrics" => Some(Self::PersistentMetrics),
@@ -83,6 +87,8 @@ impl Kind {
     pub fn name(self) -> &'static str {
         match self {
             Self::Seasonal => "seasonal",
+            Self::SeasonalAverage => "seasonal_average",
+            Self::SeasonalMetrics => "seasonal_metrics",
             Self::ArenaPopulation => "arena_population",
             Self::PersistentAverage => "persistent_average",
             Self::PersistentMetrics => "persistent_metrics",
@@ -94,7 +100,11 @@ impl Kind {
         match self {
             Self::Seasonal | Self::AchievementBaseline => 300000.0,
             Self::AchievementMetadata => 21600000.0,
-            Self::ArenaPopulation | Self::PersistentAverage | Self::PersistentMetrics => 900000.0,
+            Self::ArenaPopulation
+            | Self::PersistentAverage
+            | Self::PersistentMetrics
+            | Self::SeasonalAverage
+            | Self::SeasonalMetrics => 900000.0,
         }
     }
     fn deadline_ms(self) -> u64 {
@@ -109,11 +119,20 @@ impl Kind {
         };
         match self {
             Self::Seasonal => valid_lookup(value, input),
+            Self::SeasonalAverage => crate::seasonal_population::valid_cached(value, job, false),
+            Self::SeasonalMetrics => crate::seasonal_population::valid_cached(value, job, true),
             Self::ArenaPopulation => value.is_null() || crate::arena::valid_result(value, input),
             Self::PersistentAverage => crate::persistent::valid_average(value, job),
             Self::PersistentMetrics => crate::persistent::valid_metrics(value, job),
             Self::AchievementBaseline => crate::achievements::valid_baseline(value, job),
             Self::AchievementMetadata => crate::reference::valid_metadata(value, job),
+        }
+    }
+    fn valid_worker(self, value: &Value, job: &Value) -> bool {
+        match self {
+            Self::SeasonalAverage => crate::seasonal_population::valid_worker(value, job, false),
+            Self::SeasonalMetrics => crate::seasonal_population::valid_worker(value, job, true),
+            _ => self.valid(value, job),
         }
     }
     pub fn accepted(self, value: &Value) -> bool {
@@ -122,7 +141,10 @@ impl Kind {
                 value.get("available").and_then(Value::as_bool) == Some(true)
                     && value.get("result").is_some_and(|value| !value.is_null())
             }
-            Self::ArenaPopulation | Self::PersistentMetrics => !value.is_null(),
+            Self::ArenaPopulation | Self::PersistentMetrics | Self::SeasonalMetrics => {
+                !value.is_null()
+            }
+            Self::SeasonalAverage => value.get("status").and_then(Value::as_str) == Some("ready"),
             Self::AchievementBaseline => {
                 value.get("storage").and_then(Value::as_str) == Some("sqlite")
             }
@@ -205,7 +227,7 @@ impl Session {
         }
         match (reply.get("result"), reply.get("error")) {
             (Some(value), None) => {
-                if !Kind::from_job(args).is_some_and(|kind| kind.valid(value, args)) {
+                if !Kind::from_job(args).is_some_and(|kind| kind.valid_worker(value, args)) {
                     return Err(Failure::new(
                         "protocol",
                         "Invalid worker result identity or shape",

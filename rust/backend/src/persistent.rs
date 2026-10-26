@@ -92,7 +92,7 @@ fn range(raw: Option<&str>) -> Result<Option<f64>, &'static str> {
         })
         .transpose()
 }
-fn json_key(value: &Value) -> String {
+pub(crate) fn json_key(value: &Value) -> String {
     match value {
         Value::Array(values) => format!(
             "[{}]",
@@ -431,6 +431,7 @@ pub struct PersistentService {
     storage: Storage,
     publication_enabled: bool,
     limiter: arena::ArenaService,
+    seasonal: crate::seasonal_population::SeasonalService,
 }
 pub struct PersistentResponse {
     pub status: StatusCode,
@@ -444,7 +445,7 @@ pub struct PersistentResponse {
     pub outcome: &'static str,
 }
 impl PersistentResponse {
-    fn error(
+    pub(crate) fn error(
         status: u16,
         message: &str,
         retry: bool,
@@ -488,7 +489,7 @@ impl IntoResponse for PersistentResponse {
         response
     }
 }
-fn publication_headers(publication: &Publication) -> HeaderMap {
+pub(crate) fn publication_headers(publication: &Publication) -> HeaderMap {
     let mut headers = HeaderMap::new();
     headers.insert(
         "cache-control",
@@ -514,7 +515,7 @@ fn publication_headers(publication: &Publication) -> HeaderMap {
     }
     headers
 }
-fn statistics_headers(stale: bool, generated_at: f64, average: bool) -> HeaderMap {
+pub(crate) fn statistics_headers(stale: bool, generated_at: f64, average: bool) -> HeaderMap {
     let mut headers = HeaderMap::new();
     headers.insert("cache-control", HeaderValue::from_static("no-store"));
     headers.insert(
@@ -541,12 +542,21 @@ impl PersistentService {
             && std::env::var("SQLITE_PATH").is_ok_and(|value| !value.is_empty())
             && (enabled.as_deref() == Some("true")
                 || std::env::var("NODE_ENV").as_deref() == Ok("production"));
+        let seasonal = crate::seasonal_population::SeasonalService::new(
+            cache.clone(),
+            storage.clone(),
+            crate::config::Config::from_env(),
+        );
         Self {
             cache,
             storage,
             publication_enabled,
             limiter,
+            seasonal,
         }
+    }
+    pub(crate) fn seasonal(&self) -> crate::seasonal_population::SeasonalService {
+        self.seasonal.clone()
     }
     /// Admit one public request before an SSR caller fans out to both data reads.
     pub fn allow(&self, headers: &HeaderMap, now: i64) -> bool {
@@ -718,7 +728,7 @@ impl PersistentService {
         response.averages_ms = Some(elapsed);
         response
     }
-    fn record(&self, response: &PersistentResponse, headers: &HeaderMap, elapsed: u64) {
+    pub(crate) fn record(&self, response: &PersistentResponse, headers: &HeaderMap, elapsed: u64) {
         let stage = match response.outcome {
             "success" => None,
             "invalid" => Some("request"),
@@ -817,6 +827,11 @@ pub async fn metrics_get(
     let mode = first(&params(&raw), "mode")
         .unwrap_or("regular")
         .to_string();
+    if mode == "seasonal" {
+        let response = service.seasonal.response(&raw, &headers, now, true).await;
+        service.record(&response, &headers, started.elapsed().as_millis() as u64);
+        return response.into_response();
+    }
     let response = if !service.allow(&headers, now) {
         PersistentResponse::error(
             429,

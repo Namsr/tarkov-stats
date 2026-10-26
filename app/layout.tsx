@@ -43,6 +43,7 @@ export default async function RootLayout({
   const nativeArena = process.env.ARENA_UI_UPSTREAM === "web:3001";
   const nativePve = process.env.PVE_UI_UPSTREAM === "web:3001";
   const nativeRegular = process.env.REGULAR_UI_UPSTREAM === "web:3001";
+  const nativeSeasonal = process.env.SEASONAL_POPULATION_UI_UPSTREAM === "web:3001";
 
   return (
     <html lang={lang} className="h-full antialiased">
@@ -55,7 +56,7 @@ export default async function RootLayout({
         suppressHydrationWarning
       >
         <LanguageProvider initialLang={lang}>
-          <NativeRoutesProvider arena={nativeArena} pve={nativePve} regular={nativeRegular}>
+          <NativeRoutesProvider arena={nativeArena} pve={nativePve} regular={nativeRegular} seasonal={nativeSeasonal}>
             <FavoritesProvider>
               <SkipLink />
               <SiteHeader />
