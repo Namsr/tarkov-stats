@@ -72,6 +72,8 @@ jobs:
             assert.equal(services.web.environment.WEB_BACKGROUND_WORKERS, "false");
             assert.equal(services.web.environment.SEASONAL_API_UPSTREAM, "web:3000");
             assert.equal(services.caddy.environment.SEASONAL_API_UPSTREAM, services.web.environment.SEASONAL_API_UPSTREAM);
+            assert.equal(services.web.environment.HOME_SHOWCASE_API_UPSTREAM, "web:3000");
+            assert.equal(services.caddy.environment.HOME_SHOWCASE_API_UPSTREAM, services.web.environment.HOME_SHOWCASE_API_UPSTREAM);
             assert.equal(services.web.ports, undefined);
             assert.equal(Number(services.web.mem_limit), 896 * 1024 ** 2);
             assert.equal(Number(services.worker.mem_limit), 512 * 1024 ** 2);

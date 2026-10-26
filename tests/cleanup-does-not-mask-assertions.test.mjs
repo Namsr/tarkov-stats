@@ -685,6 +685,7 @@ const suitesWhoseDeleteNeedsAGuard = [
   "tests/average-publication.test.ts",
   "tests/ban-import.test.ts",
   "tests/home-showcase-config-api.test.mjs",
+  "tests/rust-home-showcase.test.mjs",
   "tests/leaderboard-cli.test.mjs",
   "tests/operator-seasonal-run-outcome.test.mjs",
   "tests/player-index-sync.test.mjs",

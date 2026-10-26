@@ -123,3 +123,16 @@ including leaderboard preview, keep their queue during coexistence. Caddy's
 to each server. Mixed-load and production readiness must be checked before
 activation; worker-only results do not establish that the HTTP migration is
 faster. See [HTTP migration, validation and rollout](docs/rust-http-backend.md).
+
+`/api/home/showcase` also has a native Rust handler, including its own showcase
+schema initialization and legacy mode migration. Independent
+`HOME_SHOWCASE_API_UPSTREAM=web:3000|web:3001` selects Next (default) or Rust.
+Either native selector starts the same supervised Rust process; the public
+configuration read does not use the cohort/analytics write queue. Activation
+requires coordinated web/Caddy recreation and a rollback image labeled
+`org.tarkovstats.rust-home-showcase=v1`. See the [home endpoint contract](docs/rust-home-showcase.md).
+
+The [first complete Rust UI slice](docs/rust-ui-migration.md) is planned around
+the Arena population dashboard, including native data access, SSR, interactive
+controls and shared site behavior. That interface is not implemented by the
+home configuration endpoint or the Seasonal computation port.

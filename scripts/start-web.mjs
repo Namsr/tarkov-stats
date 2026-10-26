@@ -2,10 +2,13 @@ import { spawn } from "node:child_process";
 import { resolve } from "node:path";
 import { superviseWorker } from "./supervise-worker.mjs";
 
-const upstream = process.env.SEASONAL_API_UPSTREAM || "web:3000";
-if (!["web:3000", "web:3001"].includes(upstream)) {
-  throw new Error("SEASONAL_API_UPSTREAM must be web:3000 or web:3001");
-}
+const selectors = ["SEASONAL_API_UPSTREAM", "HOME_SHOWCASE_API_UPSTREAM"].map((name) => {
+  const value = process.env[name] || "web:3000";
+  if (!["web:3000", "web:3001"].includes(value)) {
+    throw new Error(`${name} must be web:3000 or web:3001`);
+  }
+  return value;
+});
 const critical = new Set();
 let stopping = false;
 let progressionMaterializer;
@@ -97,7 +100,7 @@ async function startRust() {
 }
 
 try {
-  if (upstream === "web:3001") await startRust();
+  if (selectors.includes("web:3001")) await startRust();
   if (!stopping) {
     launchCritical("Next.js", process.execPath, ["--experimental-sqlite", "--import", "./scripts/web-runtime-health.mjs", "server.js"]);
     const backgroundEnabled = process.env.WEB_BACKGROUND_WORKERS !== "false";

@@ -29,6 +29,8 @@ const cases = [
   ["HEAD", "/api/seasonal/cohort/?aid=1&cycle=native-s1"],
   ["POST", "/api/seasonal/cohort/?aid=1&cycle=native-s1"],
 ];
+for (const method of ["GET", "HEAD", "OPTIONS", "POST"]) cases.push([method, "/api/home/showcase"]);
+for (const method of ["GET", "HEAD", "POST"]) cases.push([method, "/api/home/showcase/?x=1"]);
 const mismatches = [];
 for (const [method, path] of cases) {
   const replies = await Promise.all([next, native].map(async (base) => {

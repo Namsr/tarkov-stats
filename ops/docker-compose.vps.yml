@@ -13,6 +13,7 @@ services:
     environment:
       WEB_BACKGROUND_WORKERS: "false"
       SEASONAL_API_UPSTREAM: ${SEASONAL_API_UPSTREAM:-web:3000}
+      HOME_SHOWCASE_API_UPSTREAM: ${HOME_SHOWCASE_API_UPSTREAM:-web:3000}
     depends_on:
       - axis-league
       - home-counter-sampler
@@ -142,6 +143,7 @@ services:
       # Go's limit is soft; proxy concurrency is also bounded in ops/Caddyfile.
       GOMEMLIMIT: 192MiB
       SEASONAL_API_UPSTREAM: ${SEASONAL_API_UPSTREAM:-web:3000}
+      HOME_SHOWCASE_API_UPSTREAM: ${HOME_SHOWCASE_API_UPSTREAM:-web:3000}
     restart: unless-stopped
     ports:
       - "80:80"

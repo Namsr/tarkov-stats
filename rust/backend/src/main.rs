@@ -2,6 +2,7 @@ mod cache;
 mod compute;
 mod config;
 mod http;
+mod showcase;
 mod storage;
 
 use axum::{
@@ -36,8 +37,10 @@ async fn main() {
 async fn serve() -> Result<(), Box<dyn std::error::Error>> {
     let worker = compute::Worker::start().map_err(std::io::Error::other)?;
     let storage = storage::Storage::start();
+    let config = config::Config::from_env();
+    let showcase = showcase::Showcase::start(config.clone());
     let state = Arc::new(http::App {
-        config: config::Config::from_env(),
+        config,
         cache: cache::Cache::new(storage.clone(), worker.clone()),
         storage,
     });
@@ -53,7 +56,18 @@ async fn serve() -> Result<(), Box<dyn std::error::Error>> {
             "/healthz",
             get(|| async { Json(json!({"status":"ok","service":"rust-api"})) }),
         )
-        .with_state(state);
+        .with_state(state)
+        .merge(
+            Router::new()
+                .route(
+                    "/api/home/showcase",
+                    get(showcase::get)
+                        .options(http::options)
+                        .fallback(http::method_not_allowed),
+                )
+                .route("/api/home/showcase/", any(http::trailing))
+                .with_state(showcase),
+        );
     let app = http::secure(app);
     let bind = env::var("RUST_API_BIND").unwrap_or_else(|_| "127.0.0.1:3001".into());
     let listener = tokio::net::TcpListener::bind(bind).await?;

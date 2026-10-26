@@ -131,6 +131,11 @@
 	reverse_proxy @seasonalCohort {$SEASONAL_API_UPSTREAM:web:3000} {
 		import web_upstream
 	}
+	# The public home configuration can move independently of Seasonal.
+	@homeShowcase path /api/home/showcase /api/home/showcase/
+	reverse_proxy @homeShowcase {$HOME_SHOWCASE_API_UPSTREAM:web:3000} {
+		import web_upstream
+	}
 	reverse_proxy web:3000 {
 		import web_upstream
 	}
@@ -149,6 +154,17 @@
 					lb_try_interval 100ms
 					lb_retry_match {
 						expression false
+					}
+				}
+			}
+			@retryHomeShowcase path /api/home/showcase /api/home/showcase/
+			handle @retryHomeShowcase {
+				reverse_proxy {$HOME_SHOWCASE_API_UPSTREAM:web:3000} {
+					import web_upstream
+					lb_try_duration 4s
+					lb_try_interval 100ms
+					lb_retry_match {
+						method GET HEAD
 					}
 				}
 			}

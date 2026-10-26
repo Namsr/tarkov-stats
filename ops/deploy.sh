@@ -16,8 +16,8 @@ healthy() {
   [ "$health_status" = 200 ] || return 1
   # Inspect the actual container, including rollback images, rather than the
   # checkout's desired environment. Next alone cannot prove an opted-in API ready.
-  health_native=$(docker inspect --format '{{range .Config.Env}}{{if eq . "SEASONAL_API_UPSTREAM=web:3001"}}rust{{end}}{{end}}' "$health_cid") || return 1
-  if [ "$health_native" = rust ]; then
+  health_native=$(docker inspect --format '{{range .Config.Env}}{{if or (eq . "SEASONAL_API_UPSTREAM=web:3001") (eq . "HOME_SHOWCASE_API_UPSTREAM=web:3001")}}rust{{end}}{{end}}' "$health_cid") || return 1
+  if [ -n "$health_native" ]; then
     health_rust_status=$(curl --silent --show-error --noproxy '*' --connect-timeout 2 --max-time 5 \
       --header 'Host: tarkovstats.ru' --output /dev/null --write-out '%{http_code}' \
       "http://$health_ip:3001/healthz") || return 1
@@ -43,25 +43,41 @@ if ! interpolation=$(compose config --environment); then
   logger -t tarkovstats-deploy "deploy deferred: cannot inspect routing configuration"
   exit 75
 fi
-desired_api=$(printf '%s\n' "$interpolation" | sed -n 's/^SEASONAL_API_UPSTREAM=//p')
-unset interpolation
-desired_api=${desired_api:-web:3000}
-case "$desired_api" in
-  web:3000|web:3001) ;;
-  *) logger -t tarkovstats-deploy "deploy deferred: invalid Seasonal API selector"; exit 75 ;;
-esac
-if [ -n "$cid" ]; then
-  current_native=$(docker inspect --format '{{range .Config.Env}}{{if eq . "SEASONAL_API_UPSTREAM=web:3001"}}rust{{end}}{{end}}' "$cid")
-  current_api=web:3000
-  if [ "$current_native" = rust ]; then current_api=web:3001; fi
-  if [ "$current_api" != "$desired_api" ]; then
-    logger -t tarkovstats-deploy "deploy deferred: routing changes require coordinated web and Caddy recreation"
-    exit 75
+desired_native=false
+desired_showcase=false
+for selector in SEASONAL_API_UPSTREAM HOME_SHOWCASE_API_UPSTREAM; do
+  desired_api=$(printf '%s\n' "$interpolation" | sed -n "s/^$selector=//p")
+  desired_api=${desired_api:-web:3000}
+  case "$desired_api" in
+    web:3000|web:3001) ;;
+    *) logger -t tarkovstats-deploy "deploy deferred: invalid $selector selector"; exit 75 ;;
+  esac
+  if [ -n "$cid" ]; then
+    current_native=$(docker inspect --format "{{range .Config.Env}}{{if eq . \"$selector=web:3001\"}}rust{{end}}{{end}}" "$cid")
+    current_api=web:3000
+    if [ "$current_native" = rust ]; then current_api=web:3001; fi
+    if [ "$current_api" != "$desired_api" ]; then
+      logger -t tarkovstats-deploy "deploy deferred: routing changes require coordinated web and Caddy recreation"
+      exit 75
+    fi
   fi
-fi
-if [ "$desired_api" = web:3001 ]; then
-  # The selected Rust port must remain available after an image rollback.
-  if [ -z "$previous_image" ] || [ "$(docker image inspect --format '{{index .Config.Labels "org.tarkovstats.rust-http"}}' "$previous_image")" != seasonal-v1 ]; then
+  if [ "$desired_api" = web:3001 ]; then
+    if [ "$selector" = SEASONAL_API_UPSTREAM ]; then desired_native=true; else desired_showcase=true; fi
+  fi
+done
+unset interpolation
+image_supports_routing() {
+  if [ "$desired_native" = true ]; then
+    [ "$(docker image inspect --format '{{index .Config.Labels "org.tarkovstats.rust-http"}}' "$1")" = seasonal-v1 ] || return 1
+  fi
+  if [ "$desired_showcase" = true ]; then
+    [ "$(docker image inspect --format '{{index .Config.Labels "org.tarkovstats.rust-home-showcase"}}' "$1")" = v1 ] || return 1
+  fi
+  return 0
+}
+if [ "$desired_native" = true ] || [ "$desired_showcase" = true ]; then
+  # Both requested listeners/routes must remain usable after an image rollback.
+  if [ -z "$previous_image" ] || ! image_supports_routing "$previous_image"; then
     logger -t tarkovstats-deploy "deploy deferred: Rust routing requires a compatible running rollback image"
     exit 75
   fi
@@ -194,9 +210,7 @@ curl --fail --silent --show-error --location --proto '=https' --proto-redir '=ht
 docker image load --input "$download_dir/web.tar.gz"
 image_revision=$(docker image inspect --format '{{index .Config.Labels "org.opencontainers.image.revision"}}' "$candidate")
 [ "$image_revision" = "$remote" ]
-if [ "$desired_api" = web:3001 ]; then
-  [ "$(docker image inspect --format '{{index .Config.Labels "org.tarkovstats.rust-http"}}' "$candidate")" = seasonal-v1 ]
-fi
+image_supports_routing "$candidate"
 docker image tag "$candidate" tarkovstats-web:latest
 git merge --ff-only origin/main
 starting=1
