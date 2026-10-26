@@ -101,4 +101,3 @@ differs from TypeScript's first-ever lazy creation of an empty database. Failed
 opens/readiness checks are not retained, so a later external initialization is
 visible without restarting. Errors after established readiness remain errors.
 The players and progression handles fail independently.
-
