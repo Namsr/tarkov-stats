@@ -92,7 +92,8 @@ export async function DELETE(request: NextRequest) {
   if (!body || typeof body !== "object" || Array.isArray(body) || Object.keys(body).length !== 1 || !("aid" in body)) {
     return response({ error: "Invalid account ID" }, 400, headers);
   }
-  const aid = parsePlayerId(String(body.aid ?? ""));
+  if (typeof body.aid !== "number" && typeof body.aid !== "string") return response({ error: "Invalid account ID" }, 400, headers);
+  const aid = parsePlayerId(String(body.aid));
   if (aid === null) return response({ error: "Invalid account ID" }, 400, headers);
   try {
     const store = await getCommunityReportsStore();

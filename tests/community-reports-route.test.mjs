@@ -61,7 +61,7 @@ test("DELETE requires authentication", async () => {
 
 test("DELETE rejects invalid identities and supplied user IDs", async () => {
   await store.report({ userSub: "alice", aid: 9, mode: "regular", cycleId: "persistent" });
-  for (const body of [null, [], {}, { aid: 0 }, { aid: "7x" }, { aid: 9, userSub: "bob" }, { aid: 9, mode: "arena" }]) {
+  for (const body of [null, [], {}, { aid: 0 }, { aid: "7x" }, { aid: [9] }, { aid: {} }, { aid: { toString: null } }, { aid: 9, userSub: "bob" }, { aid: 9, mode: "arena" }]) {
     assert.equal((await remove(body)).status, 400, JSON.stringify(body));
   }
   const malformed = await DELETE(new NextRequest("http://local/api/community-reports", { method: "DELETE", body: "{" }));
