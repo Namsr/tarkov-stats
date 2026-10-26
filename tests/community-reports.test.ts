@@ -27,6 +27,26 @@ for (const [name, makeStore] of storeFactories) {
     ]);
   });
 
+  test(`${name}: withdrawing a report is scoped to its author and account and can be repeated`, async () => {
+    const store = makeStore();
+    await store.report({ userSub: "alice", aid: 7, mode: "seasonal", cycleId: "old-cycle", createdAt: 1 });
+    await store.report({ userSub: "bob", aid: 7, mode: "arena", cycleId: "persistent", createdAt: 2 });
+    await store.report({ userSub: "alice", aid: 8, mode: "regular", cycleId: "persistent", createdAt: 3 });
+    await store.vote({ helperId: "helper", aid: 7, verdict: "yes" });
+    assert.deepEqual(await store.unreport("alice", 7), { count: 1 });
+    assert.equal(await store.reportedBy("alice", 7), false);
+    assert.equal(await store.reportedBy("bob", 7), true);
+    assert.equal(await store.reportedBy("alice", 8), true);
+    assert.deepEqual((await store.reviews(7)).map(({ modes, yesCount }) => ({ modes, yesCount })), [{ modes: ["arena"], yesCount: 1 }]);
+    assert.deepEqual(await store.unreport("alice", 7), { count: 1 });
+    assert.deepEqual(await store.unreport("bob", 7), { count: 0 });
+    assert.deepEqual(await store.reviews(7), []);
+    assert.deepEqual((await store.candidates("new-helper", 10)).map(({ aid }) => aid), [8]);
+    assert.deepEqual(await store.report({ userSub: "alice", aid: 7, mode: "pve", cycleId: "persistent" }), { already: false, count: 1 });
+    assert.equal((await store.reviews(7))[0].yesCount, 1);
+    assert.deepEqual(await store.unreport("nobody", 999), { count: 0 });
+  });
+
   test(`${name}: votes are idempotent and exclude a helper's prior candidates`, async () => {
     const store = makeStore();
     await store.report({ userSub: "google-a", aid: 70, mode: "regular", cycleId: "persistent", createdAt: 1 });

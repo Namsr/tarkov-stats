@@ -1602,3 +1602,166 @@ test("an unknown progression survival rate is never rendered as a percentage", a
   assert.match(card, /\{suffix && <span className="metric-card__suffix ml-1">\{suffix\}<\/span>\}/);
   assert.doesNotMatch(panel, /common\.unknown|common\.notAvailable/);
 });
+
+// Exercise the actual component with queued network responses. The hook adapter
+// keeps state and effect cleanup per React key so navigation can be tested
+// without a browser dependency in the Node-only test suite.
+async function reportButtonHarness() {
+  const ts = createRequire(import.meta.url)("typescript");
+  const runtime = createRequire(import.meta.url)("react/jsx-runtime");
+  const source = await readFile("components/CheaterReportButton.tsx", "utf8");
+  const compiled = ts.transpileModule(source, { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS, jsx: ts.JsxEmit.ReactJSX } }).outputText;
+  const makeInstance = () => ({ slots: [], cursor: 0, active: true });
+  const root = makeInstance();
+  let child, childKey, current, tree, dirty = false;
+  let props = { aid: 7, mode: "regular", cycle: "persistent" };
+  let authStatus = "authenticated";
+  const requests = [];
+  const effects = [];
+  const react = {
+    useId: () => "auth-hint",
+    useState(initial) {
+      const owner = current, index = owner.cursor++;
+      if (!(index in owner.slots)) owner.slots[index] = typeof initial === "function" ? initial() : initial;
+      return [owner.slots[index], (next) => {
+        if (!owner.active) return;
+        const value = typeof next === "function" ? next(owner.slots[index]) : next;
+        if (!Object.is(owner.slots[index], value)) { owner.slots[index] = value; dirty = true; }
+      }];
+    },
+    useEffect(effect, deps) {
+      const owner = current, index = owner.cursor++;
+      const previous = owner.slots[index];
+      if (previous && deps.every((value, i) => Object.is(value, previous.deps[i]))) return;
+      const entry = { deps, cleanup: undefined };
+      owner.slots[index] = entry;
+      effects.push(() => { previous?.cleanup?.(); entry.cleanup = effect(); });
+    },
+  };
+  const exports = {};
+  new Function("exports", "require", "fetch", compiled)(exports, (specifier) => {
+    if (specifier === "react") return react;
+    if (specifier === "react/jsx-runtime") return runtime;
+    if (specifier === "@/lib/favorites/context") return { useFavorites: () => ({ authStatus }) };
+    if (specifier === "@/lib/i18n/context") return { useI18n: () => ({ t: (key) => key }) };
+    throw new Error(specifier);
+  }, (url, options = {}) => new Promise((resolve, reject) => requests.push({ url, options, resolve, reject })));
+  const dispose = (owner) => { owner.active = false; for (const slot of owner.slots) slot?.cleanup?.(); };
+  const render = () => {
+    dirty = false;
+    current = root; root.cursor = 0;
+    tree = exports.default(props);
+    if (typeof tree.type === "function") {
+      if (!child || childKey !== tree.key) { if (child) dispose(child); child = makeInstance(); childKey = tree.key; }
+      current = child; child.cursor = 0;
+      tree = tree.type(tree.props);
+    }
+    while (effects.length) effects.shift()();
+  };
+  const flush = async () => { for (let n = 0; n < 5; n++) { await new Promise(setImmediate); if (dirty) render(); } };
+  const find = (element, type) => {
+    if (!element || typeof element !== "object") return;
+    if (element.type === type) return element;
+    for (const next of [element.props?.children].flat(Infinity)) { const found = find(next, type); if (found) return found; }
+  };
+  render(); await flush();
+  return {
+    requests, button: () => find(tree, "button").props,
+    async click() { const button = find(tree, "button").props; if (!button.disabled) button.onClick(); await flush(); },
+    async answer(request, body, ok = true) { request.resolve({ ok, json: async () => body }); await flush(); },
+    async navigate(next, auth = authStatus) { props = { ...props, ...next }; authStatus = auth; render(); await flush(); },
+  };
+}
+
+test("report button waits for its saved mark and supports removal and re-marking", async () => {
+  const ui = await reportButtonHarness();
+  assert.equal(ui.button().disabled, true, "the saved mark is not known yet");
+  await ui.click();
+  assert.equal(ui.requests.length, 1, "no write may race the initial read");
+  await ui.answer(ui.requests[0], { count: 3, reportedByMe: true });
+  assert.equal(ui.button().disabled, false);
+  assert.equal(ui.button()["aria-pressed"], true);
+  await ui.click();
+  assert.equal(ui.button().disabled, true);
+  assert.equal(ui.requests[1].options.method, "DELETE");
+  assert.deepEqual(JSON.parse(ui.requests[1].options.body), { aid: 7 });
+  await ui.answer(ui.requests[1], { count: 2 });
+  assert.equal(ui.button()["aria-pressed"], false);
+  await ui.click();
+  assert.equal(ui.requests[2].options.method, "POST");
+  await ui.answer(ui.requests[2], { count: 3 });
+  assert.equal(ui.button()["aria-pressed"], true);
+});
+
+test("report read failures retry the read before permitting a write", async () => {
+  const ui = await reportButtonHarness();
+  await ui.answer(ui.requests[0], { error: "unavailable" }, false);
+  assert.equal(ui.button().disabled, false, "a failed read remains retryable");
+  await ui.click();
+  assert.equal(ui.requests[1].options.method ?? "GET", "GET");
+  await ui.answer(ui.requests[1], { count: 1, reportedByMe: true });
+  await ui.click();
+  assert.equal(ui.requests[2].options.method, "DELETE");
+});
+
+test("report navigation isolates pending writes and resets the next profile before its read", async () => {
+  const ui = await reportButtonHarness();
+  await ui.answer(ui.requests[0], { count: 3, reportedByMe: true });
+  await ui.click();
+  await ui.navigate({ aid: 8 });
+  assert.equal(ui.button().disabled, true, "the new profile must load its own mark");
+  await ui.answer(ui.requests[2], { count: 4, reportedByMe: true });
+  await ui.answer(ui.requests[1], { count: 2 });
+  assert.equal(ui.button()["aria-pressed"], true, "an old DELETE response cannot clear the new profile's mark");
+  await ui.click();
+  assert.deepEqual(JSON.parse(ui.requests[3].options.body), { aid: 8 });
+});
+
+test("report loading ignores stale reads and authentication changes", async () => {
+  const ui = await reportButtonHarness();
+  await ui.navigate({ aid: 8 });
+  await ui.answer(ui.requests[1], { count: 4, reportedByMe: true });
+  await ui.answer(ui.requests[0], { count: 0, reportedByMe: false });
+  assert.equal(ui.button()["aria-pressed"], true);
+  await ui.click();
+  await ui.navigate({}, "unauthenticated");
+  await ui.answer(ui.requests[2], { count: 3 });
+  assert.equal(ui.button().disabled, true);
+  await ui.navigate({}, "authenticated");
+  assert.equal(ui.button().disabled, true);
+  await ui.answer(ui.requests[3], { count: 5, reportedByMe: true });
+  assert.equal(ui.button()["aria-pressed"], true);
+});
+
+test("report write failures keep the mark and allow retrying the same action", async () => {
+  const ui = await reportButtonHarness();
+  await ui.answer(ui.requests[0], { count: 3, reportedByMe: true });
+  await ui.click();
+  await ui.answer(ui.requests[1], { error: "unavailable" }, false);
+  assert.equal(ui.button()["aria-pressed"], true);
+  assert.equal(ui.button().disabled, false);
+  await ui.click();
+  assert.equal(ui.requests[2].options.method, "DELETE");
+  await ui.answer(ui.requests[2], { count: 2 });
+  assert.equal(ui.button()["aria-pressed"], false);
+});
+
+test("report actions follow the current game mode while keeping a global mark", async () => {
+  const ui = await reportButtonHarness();
+  await ui.answer(ui.requests[0], { count: 3, reportedByMe: true });
+  for (const mode of ["regular", "pve", "arena", "seasonal"]) {
+    const cycle = mode === "seasonal" ? "current-cycle" : "persistent";
+    await ui.navigate({ mode, cycle });
+    assert.equal(ui.button()["aria-pressed"], true);
+    await ui.click();
+    const removal = ui.requests.at(-1);
+    assert.equal(removal.options.method, "DELETE");
+    assert.deepEqual(JSON.parse(removal.options.body), { aid: 7 });
+    await ui.answer(removal, { count: 2 });
+    await ui.click();
+    const addition = ui.requests.at(-1);
+    assert.equal(addition.options.method, "POST");
+    assert.deepEqual(JSON.parse(addition.options.body), { aid: 7, mode, cycle });
+    await ui.answer(addition, { count: 3 });
+  }
+});
