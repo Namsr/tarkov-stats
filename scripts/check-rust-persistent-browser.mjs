@@ -52,6 +52,13 @@ const instrumentation = String.raw`(() => {
 })();`;
 
 const blockedImage = "https://assets.tarkov.dev/fixture-missing.webp";
+function pendingFilteredRequest(requests,before) {
+  return [...requests.values()].find(request=>{
+    const url=new URL(request.url);
+    return !before.has(request.id)&&!request.finished&&!request.canceled&&url.pathname==="/api/average"&&url.searchParams.get("mode")==="pve"&&Number(url.searchParams.get("min"))>0;
+  });
+}
+
 async function validate({ snapshot, requests, tab, backend }) {
   assert.equal(snapshot.dom.lang, "ru"); assert.equal(snapshot.dom.visibility, "visible");
   assert.equal(snapshot.dom.sample, "300"); assert.equal(snapshot.dom.metrics.length, 13);
@@ -198,11 +205,16 @@ async function functional(tab, backend, context) {
   const remote = await tab.send("Runtime.evaluate", { expression: "document.querySelector('main input[type=range]')", objectGroup: "persistent-focus" });
   const objectId = remote.result.objectId; assert.ok(objectId);
   const slider = await evaluate(`(()=>{const e=document.querySelector(${JSON.stringify(lowSelector)});e.scrollIntoView({block:'center'});e.focus();const b=e.getBoundingClientRect();return{x:b.left+8+(b.width-16)*Number(e.value)/10000,y:b.top+b.height/2,width:b.width};})()`);
+  const beforeDrag=new Set(tab.state.requests.keys());
   await tab.send("Input.dispatchMouseEvent", { type: "mousePressed", button: "left", clickCount: 1, x: slider.x, y: slider.y });
   await tab.send("Input.dispatchMouseEvent", { type: "mouseMoved", button: "left", buttons: 1, x: slider.x + slider.width / 8, y: slider.y });
   await delay(700);
   const held = await tab.send("Runtime.callFunctionOn", { objectId, functionDeclaration: "function(){return{connected:this.isConnected,disabled:this.disabled,focused:document.activeElement===this}}", returnByValue: true });
   assert.deepEqual(held.result.value, { connected: true, disabled: false, focused: true });
+  const dragPending=pendingFilteredRequest(tab.state.requests,beforeDrag);
+  assert.ok(dragPending,"real fresh filtered average request must still be pending during held drag");
+  evidence.dragPending={...dragPending,interactionDelayMs:700};
+
   await tab.send("Input.dispatchMouseEvent", { type: "mouseMoved", button: "left", buttons: 1, x: slider.x + slider.width / 7, y: slider.y });
   await tab.send("Input.dispatchMouseEvent", { type: "mouseReleased", button: "left", clickCount: 1, x: slider.x + slider.width / 7, y: slider.y });
   await ready();
@@ -214,9 +226,14 @@ async function functional(tab, backend, context) {
   await tab.send("Network.emulateNetworkConditionsByRule",{offline:false,matchedNetworkConditions:[{urlPattern:"*/api/average*",latency:1200,downloadThroughput:-1,uploadThroughput:-1}]});
   const bucketSelector='.chart-panel a[role=button][title],.chart-panel button[type=button][title]';
   const bucket=await tab.send("Runtime.evaluate",{expression:`document.querySelector(${JSON.stringify(bucketSelector)})`,objectGroup:"persistent-bucket"});assert.ok(bucket.result.objectId);
+  const beforeBucket=new Set(tab.state.requests.keys());
   await evaluate(`document.querySelector(${JSON.stringify(bucketSelector)}).focus()`);await key(" ");await delay(700);
   const focusedBucket=await tab.send("Runtime.callFunctionOn",{objectId:bucket.result.objectId,functionDeclaration:"function(){return{connected:this.isConnected,focused:document.activeElement===this}}",returnByValue:true});
   assert.deepEqual(focusedBucket.result.value,{connected:true,focused:true});
+  const bucketPending=pendingFilteredRequest(tab.state.requests,beforeBucket);
+  assert.ok(bucketPending,"real fresh filtered average request must still be pending during bucket focus check");
+  evidence.bucketPending={...bucketPending,interactionDelayMs:700};
+
   await tab.send("Network.emulateNetworkConditionsByRule",{offline:false,matchedNetworkConditions:[]});
   await until(()=>Date.now()-tab.state.lastNetwork>500&&[...tab.state.requests.values()].every(r=>r.finished),15000,"bucket API completes");
   await tab.send("Runtime.releaseObjectGroup",{objectGroup:"persistent-bucket"});

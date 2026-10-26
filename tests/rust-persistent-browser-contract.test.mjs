@@ -53,3 +53,13 @@ test("owned browser/HTTP sources are strictly UTF8, not silently replacement-dec
     assert.equal(text.includes("\ufffd"), false, file);
   }
 });
+
+test("focus delay proof requires a NEW real pending filtered PvE average, not an idle node",()=>{
+ const declaration=tree.statements.find(node=>ts.isFunctionDeclaration(node)&&node.name?.text==="pendingFilteredRequest");assert.ok(declaration);
+ const pending=runInNewContext(declaration.getText(tree)+"\npendingFilteredRequest",{URL});
+ const before=new Set(["old"]);
+ const request=(id,url,extra={})=>({id,url,finished:false,...extra});
+ const rejected=[request("old","http://local/api/average?mode=pve&min=100"),request("unfiltered","http://local/api/average?mode=pve"),request("warm-zero","http://local/api/average?mode=pve&min=0"),request("other-mode","http://local/api/average?mode=regular&min=100"),request("metrics","http://local/api/average/metrics?mode=pve&min=100"),request("finished","http://local/api/average?mode=pve&min=100",{finished:true}),request("aborted","http://local/api/average?mode=pve&min=100",{canceled:true})];
+ const requests=new Map(rejected.map(r=>[r.id,r]));assert.equal(pending(requests,before),undefined);
+ const real=request("new-demand","http://local/api/average?mode=pve&min=1450&max=11999");requests.set(real.id,real);assert.equal(pending(requests,before),real);
+});
