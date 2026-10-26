@@ -44,7 +44,9 @@ export function axisOcrConfidencePercent(readings: readonly { value: number | nu
 
 function normalizeAlias(value: unknown): string | null {
   if (typeof value !== "string") return null;
-  const normalized = value.normalize("NFC").trim().toLowerCase();
+  // Adjacent underscores merge visually on scoreboards; OCR may count the run
+  // differently. Keep its position and every other character significant.
+  const normalized = value.normalize("NFC").trim().toLowerCase().replace(/_{2,}/g, "_");
   return normalized || null;
 }
 
@@ -58,7 +60,7 @@ export function parseAxisOcrCounter(value: unknown): number | null {
   return Number.isSafeInteger(count) && count >= 0 && count <= AXIS_KDA_MAX ? count : null;
 }
 
-/** Match only globally unique, exact aliases. Ambiguous OCR rows and roster names stay unassigned. */
+/** Match globally unique aliases, tolerating underscore run lengths only. Ambiguities stay unassigned. */
 export function matchAxisOcrRows(
   rows: readonly Pick<AxisOcrRow, "id" | "nickname">[],
   participants: readonly AxisOcrParticipant[],

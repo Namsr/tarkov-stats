@@ -126,3 +126,22 @@ test("OCR counters accept only integer values within the AXIS KDA limit", () => 
     assert.equal(parseAxisOcrCounter(input), null, String(input));
   }
 });
+
+
+test("underscore run length errors match only globally unique aliases", () => {
+  const roster = participants();
+  roster[0].arenaNickname = "Porvan_____2z";
+  assert.deepEqual(matchAxisOcrRows([{ id: "porvan", nickname: "Porvan____2z" }], roster), { porvan: "discord-0" });
+  for (const nickname of ["Porvan2z", "Porvan-----2z", "Porvan____3z", "Porvan2_z"]) {
+    assert.equal(matchAxisOcrRows([{ id: "porvan", nickname }], roster).porvan, null, nickname);
+  }
+  assert.deepEqual(matchAxisOcrRows([
+    { id: "exact", nickname: "Porvan_____2z" }, { id: "ocr", nickname: "Porvan____2z" },
+  ], roster), { exact: null, ocr: null }, "even an exact row abstains when another row has the same canonical alias");
+  for (const field of ["historyName", "arenaNickname"]) {
+    roster[1][field] = "Porvan____2z";
+    assert.equal(matchAxisOcrRows([{ id: "porvan", nickname: "Porvan_____2z" }], roster).porvan, null,
+      "an exact alias cannot win over a colliding " + field);
+    roster[1] = participants()[1];
+  }
+});

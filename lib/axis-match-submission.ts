@@ -91,12 +91,24 @@ export function recheckAxisMatchReviewNames(
     const assignments = matchAxisOcrRows(rows, participants);
     // A later alias swap must not move an originally matched row to another
     // player. Neither refreshed Arena aliases nor refreshed archive names can
-    // prove a legacy row's identity: only the original upload may supply it.
+    // prove its original identity: retain the original upload evidence below.
     const originallyUnmatched = new Set(submission.unmatchedNames.map((name) => name.trim()));
+    // Legacy uploads lack per-row identities. A single original missing player
+    // can still be proved by exclusion when all ten current aliases are unique,
+    // the sole unmatched name resolves to that player, and team checks below pass.
+    // This clears a name warning only; it never reassigns saved K/D/A.
+    const unmatchedRows = rows.filter((row) => originallyUnmatched.has(row.nickname.trim()));
+    const legacySingleMissing = rows.every((row) => row.matchedDiscordId === undefined)
+      && submission.unmatchedNames.length === 1
+      && submission.unmatchedNames[0].trim() !== ""
+      && submission.missingDiscordIds.length === 1
+      && unmatchedRows.length === 1
+      && assignments[unmatchedRows[0].id] === submission.missingDiscordIds[0]
+      && Object.values(assignments).filter(Boolean).length === 10;
     if (rows.some((row) => {
       if (!row.nickname.trim() || originallyUnmatched.has(row.nickname.trim())) return false;
       const originalId = row.matchedDiscordId;
-      return !originalId || assignments[row.id] !== originalId;
+      return originalId ? assignments[row.id] !== originalId : !legacySingleMissing;
     })) {
       return submission.unmatchedNames;
     }
