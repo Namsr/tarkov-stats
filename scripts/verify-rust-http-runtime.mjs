@@ -25,6 +25,15 @@ for (const base of [next, native]) {
   }
   assert.ok(ready, `${base} did not become healthy`);
 }
+const securityHeaders = ["content-security-policy", "x-frame-options", "x-content-type-options",
+  "referrer-policy", "permissions-policy", "x-dns-prefetch-control", "strict-transport-security"];
+// next.config redirects run before its configured headers. Compare their native
+// security policy with an ordinary Next response rather than requiring Rust to
+// drop protections merely because that early redirect has none.
+const nextPolicy = await fetch(`${next}/healthz`, { signal: AbortSignal.timeout(5000) });
+assert.equal(nextPolicy.status, 200);
+await nextPolicy.body?.cancel();
+for (const name of securityHeaders) assert.ok(nextPolicy.headers.get(name), `Next security policy missing ${name}`);
 const headers = ["content-security-policy", "x-frame-options", "x-content-type-options",
   "referrer-policy", "permissions-policy", "x-dns-prefetch-control", "strict-transport-security",
   "content-type", "cache-control", "allow", "location", "refresh", "access-control-allow-origin", "set-cookie"];
@@ -55,8 +64,13 @@ for (const [method, path] of cases) {
   }));
   const [expected, actual] = replies;
   if (actual.status !== expected.status) mismatches.push({ method, path, field: "status", actual: actual.status, expected: expected.status });
-  for (const name of headers) if (actual.headers.get(name) !== expected.headers.get(name)) {
-    mismatches.push({ method, path, field: name, actual: actual.headers.get(name), expected: expected.headers.get(name) });
+  for (const name of headers) {
+    const earlyAlias = uiMode && path.startsWith(`/average/${uiMode}?`) && expected.status === 308;
+    const expectedValue = earlyAlias && securityHeaders.includes(name) && expected.headers.get(name) === null
+      ? nextPolicy.headers.get(name) : expected.headers.get(name);
+    if (actual.headers.get(name) !== expectedValue) {
+      mismatches.push({ method, path, field: name, actual: actual.headers.get(name), expected: expectedValue });
+    }
   }
   if (method !== "HEAD" && expected.headers.get("content-type")?.includes("application/json")) {
     assert.deepEqual(JSON.parse(actual.body), JSON.parse(expected.body), `${method} ${path} JSON`);
