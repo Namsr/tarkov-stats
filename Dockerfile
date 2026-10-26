@@ -7,6 +7,11 @@ WORKDIR /build
 COPY rust/cohort-worker/ ./
 RUN cargo build --release --locked
 
+FROM rust-builder AS rust-api-builder
+WORKDIR /backend
+COPY rust/backend/ ./
+RUN cargo build --release --locked
+
 # ---------- 1. Установка зависимостей ----------
 FROM node:22-alpine AS deps
 RUN apk add --no-cache libc6-compat
@@ -28,6 +33,7 @@ RUN npm run build
 FROM node:22-alpine AS runner
 ARG SOURCE_REVISION=unknown
 LABEL org.opencontainers.image.revision=$SOURCE_REVISION
+LABEL org.tarkovstats.rust-http="seasonal-v1"
 WORKDIR /app
 ENV NODE_ENV=production
 ENV NEXT_TELEMETRY_DISABLED=1
@@ -42,6 +48,7 @@ COPY --from=builder /app/public ./public
 COPY --from=builder --chown=nextjs:nodejs /app/.next/standalone ./
 COPY --from=builder --chown=nextjs:nodejs /app/.next/static ./.next/static
 COPY --from=rust-builder --chown=nextjs:nodejs /build/target/release/tarkov-cohort-worker ./rust/cohort-worker/target/release/tarkov-cohort-worker
+COPY --from=rust-api-builder --chown=nextjs:nodejs /backend/target/release/tarkov-backend ./rust/backend/target/release/tarkov-backend
 COPY --from=builder --chown=nextjs:nodejs /app/scripts/sync-player-index.mjs ./scripts/sync-player-index.mjs
 COPY --from=builder --chown=nextjs:nodejs /app/scripts/sync-pve-index.mjs ./scripts/sync-pve-index.mjs
 COPY --from=builder --chown=nextjs:nodejs /app/scripts/sync-pve-profiles.mjs ./scripts/sync-pve-profiles.mjs
@@ -60,6 +67,7 @@ COPY --from=builder --chown=nextjs:nodejs /app/scripts/backfill-progression.mjs 
 COPY --from=builder --chown=nextjs:nodejs /app/scripts/backfill-regular-progression.mjs ./scripts/backfill-regular-progression.mjs
 COPY --from=builder --chown=nextjs:nodejs /app/scripts/warm-average-cache.mjs ./scripts/warm-average-cache.mjs
 COPY --from=builder --chown=nextjs:nodejs /app/scripts/start-web.mjs ./scripts/start-web.mjs
+COPY --from=builder --chown=nextjs:nodejs /app/scripts/verify-rust-http-runtime.mjs ./scripts/verify-rust-http-runtime.mjs
 COPY --from=builder --chown=nextjs:nodejs /app/scripts/web-runtime-health.mjs ./scripts/web-runtime-health.mjs
 COPY --from=builder --chown=nextjs:nodejs /app/scripts/supervise-worker.mjs ./scripts/supervise-worker.mjs
 COPY --from=builder --chown=nextjs:nodejs /app/scripts/sync-axis-league.mjs ./scripts/sync-axis-league.mjs
@@ -85,9 +93,10 @@ RUN mkdir -p /data && chown nextjs:nodejs /data
 
 USER nextjs
 
-EXPOSE 3000
+EXPOSE 3000 3001
 ENV PORT=3000
 ENV HOSTNAME="0.0.0.0"
+ENV RUST_API_BIN="/app/rust/backend/target/release/tarkov-backend"
 ENV RUST_COHORT_BIN="/app/rust/cohort-worker/target/release/tarkov-cohort-worker"
 ENV SQLITE_PATH="/data/players.db"
 ENV BANS_SQLITE_PATH="/data/bans.db"

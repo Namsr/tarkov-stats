@@ -723,6 +723,12 @@ const suitesThatCloseTheHandleOrTheProcessFirst = [
   // All SQLite handles belong to synchronously waited subprocesses; file I/O is awaited.
   "tests/background-isolation.test.mjs",
   "tests/caddy-overload.test.mjs",
+  // Benchmark fixtures contain JSON only; no SQLite handles are opened.
+  "tests/rust-http-benchmark.test.mjs",
+  // Proxy fixture servers and all upstream sockets are closed before deleting files.
+  "tests/rust-http-proxy.test.mjs",
+  // Supervised HTTP processes exit before their fixture directory is removed.
+  "tests/rust-http-supervisor.test.mjs",
   // The converter closes its source/staging handles in finally; fixture handles also close.
   "tests/compact-storage.test.mjs",
   "tests/deploy-wrapper.test.mjs",

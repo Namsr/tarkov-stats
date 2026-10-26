@@ -94,7 +94,7 @@ test('Caddy rejects excess HTTP/2 requests across sites and releases timed-out s
   await writeFile(file, config);
   child = spawn(caddy, ['run', '--config', file, '--adapter', 'caddyfile'], {
     cwd: dir, windowsHide: true, stdio: ['ignore', 'ignore', 'pipe'],
-    env: { ...process.env, GOMEMLIMIT: '192MiB', APPDATA: dir, XDG_DATA_HOME: dir, XDG_CONFIG_HOME: dir },
+    env: { ...process.env, SEASONAL_API_UPSTREAM: `127.0.0.1:${upstreamPort}`, GOMEMLIMIT: '192MiB', APPDATA: dir, XDG_DATA_HOME: dir, XDG_CONFIG_HOME: dir },
   });
   let logs = '';
   const profileLogs = [];
