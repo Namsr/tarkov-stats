@@ -59,11 +59,12 @@ function readOriginal(query) {
   assert.equal(functions.length,names.length);
   const code=ts.transpileModule(`const FILTER_FIELDS=["minHours","maxHours","minMatches","maxMatches"];const DEFAULT_MIN_MATCHES="10";${functions.join("\n")}`,{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022}}).outputText;
   const run=new Function("window","ARENA_MODE_KEYS","ARENA_METRIC_KEYS","URLSearchParams",`${code};const mode=readSelectedMode();const statistic=readStatistic();const filter=readFilter(mode);return {selected:ARENA_MODE_KEYS.indexOf(mode),statistic,invalid:filterIsInvalid(filter),request:requestFor(mode,filter,statistic),context:contextRequestFor(mode,statistic,filter.dimension)};`);
-  return run({location:{search:query}},ARENA_MODE_KEYS,ARENA_METRIC_KEYS,URLSearchParams);
+  return run({location:{search:`?${query}`}},ARENA_MODE_KEYS,ARENA_METRIC_KEYS,URLSearchParams);
 }
 test("Rust reads initial Arena state and filter requests like the current component",()=>{
   const queries=["","arenaMode=lastHero&arenaStatistic=median&arena_lastHero_dimension=hours&arena_lastHero_minHours=0x10", "arenaMode=bad&arenaMode=lastHero&arena_teamFight_metric=win_rate", "arenaMode=blastGang&arena_blastGang_minMatches=bad", "arena_teamFight_minHours=20&arena_teamFight_maxHours=10", "arena_teamFight_minMatches=&arena_teamFight_maxMatches=100", "arenaMode=shootOutDuo&arena_shootOutDuo_metric=damage_per_match&arena_shootOutDuo_minHours=%EF%BB%BF", "arena_teamFight_minHours=-0"];
   queries.push(
+    "arenaMode=lastHero&arenaStatistic=median",
     "?arenaMode=lastHero&arenaStatistic=median",
     "?arenaMode=lastHero&arenaMode=checkpoint&arenaStatistic=median&arenaStatistic=trimmed_mean",
     "?arena_lastHero_minHours=12&arena_lastHero_minHours=99&arenaMode=lastHero&arenaStatistic=median",

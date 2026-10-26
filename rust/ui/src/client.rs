@@ -657,8 +657,10 @@ mod browser {
         let window = web_sys::window().expect("hydration window");
         let pop = Closure::wrap(Box::new(move || {
             if let Some(window) = web_sys::window() {
+                let search = window.location().search().unwrap_or_default();
+                // Location.search includes one separator; ArenaState accepts raw query data.
                 signals.state.set(ArenaState::read(
-                    &window.location().search().unwrap_or_default(),
+                    search.strip_prefix('?').unwrap_or(&search),
                 ));
             }
         }) as Box<dyn FnMut()>);

@@ -21,7 +21,7 @@ pub struct Params(pub Vec<(String, String)>);
 impl Params {
     pub fn parse(query: &str) -> Self {
         Self(
-            url::form_urlencoded::parse(query.strip_prefix('?').unwrap_or(query).as_bytes())
+            url::form_urlencoded::parse(query.as_bytes())
                 .into_owned()
                 .collect(),
         )
@@ -247,36 +247,44 @@ mod tests {
         assert!(state.params.query().contains("unknown=keep&unknown=again"));
     }
     #[test]
-    fn browser_search_and_bare_queries_restore_the_same_mode_and_first_values() {
-        for query in [
-            "arenaMode=lastHero&arenaStatistic=median",
-            "arenaMode=lastHero&arenaMode=checkpoint&arenaStatistic=median&arenaStatistic=trimmed_mean&arena_lastHero_minHours=12&arena_lastHero_minHours=99&unknown=keep&unknown=again",
-            "arena_lastHero_minHours=12&arena_lastHero_minHours=99&arenaMode=lastHero&arenaStatistic=median",
-            "arena_lastHero_minHours=&arena_lastHero_minHours=99&arenaMode=lastHero&arenaStatistic=median",
+    fn raw_queries_preserve_question_mark_keys_and_first_duplicate_values() {
+        for (query, selected, min_hours) in [
+            ("arenaMode=lastHero&arenaStatistic=median", 1, ""),
+            (
+                "arenaMode=lastHero&arenaMode=checkpoint&arenaStatistic=median&arenaStatistic=trimmed_mean&arena_lastHero_minHours=12&arena_lastHero_minHours=99",
+                1,
+                "12",
+            ),
+            (
+                "arena_lastHero_minHours=12&arena_lastHero_minHours=99&arenaMode=lastHero&arenaStatistic=median",
+                1,
+                "12",
+            ),
+            (
+                "arena_lastHero_minHours=&arena_lastHero_minHours=99&arenaMode=lastHero&arenaStatistic=median",
+                1,
+                "",
+            ),
+            ("?arenaMode=lastHero&arenaStatistic=median", 0, ""),
+            ("%3FarenaMode=lastHero&arenaStatistic=median", 0, ""),
+            (
+                "?arena_lastHero_minHours=12&arenaMode=lastHero&arenaStatistic=median",
+                1,
+                "",
+            ),
         ] {
-            let bare = ArenaState::read(query);
-            let browser = ArenaState::read(&format!("?{query}"));
-            assert_eq!(browser, bare, "{query}");
-            assert_eq!(browser.selected, 1);
-            assert_eq!(browser.statistic, "median");
-            assert_eq!(browser.params.query(), query);
-            if query.contains("minHours=12") {
-                assert_eq!(browser.filters[1].ranges[0], "12");
-                assert!(browser.selected_request().contains("minHours=12"));
-                assert!(!browser.selected_request().contains("minHours=99"));
-            } else if query.starts_with("arena_lastHero_minHours=") {
-                assert_eq!(browser.filters[1].ranges[0], "");
-                assert!(!browser.selected_request().contains("minHours="));
-            }
+            let state = ArenaState::read(query);
+            assert_eq!(state.selected, selected, "{query}");
+            assert_eq!(state.statistic, "median", "{query}");
+            assert_eq!(state.filters[selected].ranges[0], min_hours, "{query}");
+            assert!(!state.selected_request().contains("minHours=99"));
         }
-        assert_eq!(Params::parse("?"), Params::default());
-        // URLSearchParams removes one prefix only, not literal/encoded key data.
         assert_eq!(
-            Params::parse("??arenaMode=lastHero").get("?arenaMode"),
+            Params::parse("?arenaMode=lastHero").get("?arenaMode"),
             Some("lastHero")
         );
         assert_eq!(
-            Params::parse("?%3FarenaMode=lastHero").get("?arenaMode"),
+            Params::parse("%3FarenaMode=lastHero").get("?arenaMode"),
             Some("lastHero")
         );
     }

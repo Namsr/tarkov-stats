@@ -82,6 +82,29 @@ test("real Rust Arena SSR and built assets preserve useful HTML, locale, queries
     assert.equal(html.includes('<img id="fixture-xss"'), false); assert.equal(html.includes('</script><img'), false);
     assert.ok(html.includes("&lt;/script&gt;"), "unknown form value must be escaped rather than dropped");
   });
+  await t.test("SSR treats the URI query as raw data and preserves question-mark first keys", async () => {
+    for (const [query, selected] of [
+      ["arenaMode=lastHero&arenaStatistic=median", 1],
+      ["?arenaMode=lastHero&arenaStatistic=median", 0],
+      ["%3FarenaMode=lastHero&arenaStatistic=median", 0],
+      ["arenaMode=lastHero&arenaMode=checkpoint&arenaStatistic=median", 1],
+    ]) {
+      const { initial } = assertDocument(await raw(server.base, `/population/arena?${query}`), "en");
+      assert.equal(initial.state.selected, selected, query);
+      assert.equal(initial.state.statistic, "median", query);
+      assert.equal(initial.selected.filterIdentity.mode, selected === 1 ? "lastHero" : "teamFight", query);
+      if (query.startsWith("?") || query.startsWith("%3F")) {
+        assert.deepEqual(initial.state.params[0], ["?arenaMode", "lastHero"], query);
+      }
+    }
+    for (const first of ["?arena_lastHero_minHours", "%3Farena_lastHero_minHours"]) {
+      const { initial } = assertDocument(await raw(server.base, `/population/arena?${first}=12&arenaMode=lastHero&arenaStatistic=median`), "en");
+      assert.equal(initial.state.selected, 1);
+      assert.equal(initial.state.filters[1].ranges[0], "");
+      assert.equal(initial.selected.filterIdentity.minHours, null);
+      assert.deepEqual(initial.state.params[0], ["?arena_lastHero_minHours", "12"]);
+    }
+  });
   await t.test("invalid range state is server-visible while the independent context remains useful", async () => {
     const { html, initial } = assertDocument(await raw(server.base, "/population/arena?arena_teamFight_minMatches=bad"), "en");
     assert.equal(initial.meta.selected_status, 400); assert.equal(initial.selected, null); assert.equal(initial.context.sampleN, 300);
