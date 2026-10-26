@@ -164,7 +164,7 @@
 					lb_try_duration 4s
 					lb_try_interval 100ms
 					lb_retry_match {
-						method GET HEAD
+						expression false
 					}
 				}
 			}

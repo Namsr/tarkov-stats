@@ -109,7 +109,21 @@ test("production proxy selects the Rust endpoint, bounds each upstream and never
   await close(native);
   assert.equal((await request(port, "/api/seasonal/cohort")).status, 502);
   assert.equal(nextCount, before + 32);
-  await listen(native, rustPort);
+  // Enter handle_errors on refused dial first, then accept and reset. A GET
+  // retry policy here would replay after the application accepted this request.
+  reset = true;
+  const acceptedBefore = rustCount;
+  const resumed = new Promise((resolve, reject) => {
+    setTimeout(() => listen(native, rustPort).then(resolve, reject), 650);
+  });
+  const afterRefused = await request(port, "/api/home/showcase");
+  await resumed;
+  assert.equal(afterRefused.status, 502);
+  assert.equal(rustCount, acceptedBefore + 1, "no replay after refused dial recovers to a connected reset");
+  assert.equal(nextCount, before + 32, "refused native home never falls back to Next");
+  reset = false;
+  const recoveredHome = await request(port, "/api/home/showcase");
+  assert.equal(recoveredHome.status, 200);
   const recovered = await request(port, "/api/seasonal/cohort");
   assert.equal(recovered.status, 200); assert.equal(JSON.parse(recovered.body).backend, "rust");
 });
