@@ -27,7 +27,10 @@ the wrapper restricts repetitions to 1-3. No output or source file is overwritte
 
 Each container uses the built Node/Alpine production image, including its Rust
 binary and application libraries. Read-only bind mounts supply the API-handler
-source and benchmark fixtures omitted from the runtime image. They contain no
+source and benchmark fixtures omitted from the runtime image. The adapter imports
+the actual NextRequest/NextResponse classes from the traced Next.js internals:
+standalone tracing omits the public `next/server.js` export wrapper. No request
+or response class is replaced with a test double. They contain no
 production data. Synthetic SQLite files exist only in a private 128 MiB tmpfs.
 There are no published ports, production volumes, env files or external network.
 Loopback HTTP remains inside each container.

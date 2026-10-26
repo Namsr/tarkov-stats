@@ -17,7 +17,7 @@ output=$(cd "$output" && pwd)
 payload="$output/payload"
 mkdir -p "$payload/scripts" "$payload/tests/fixtures" "$payload/app/api/average/cohort"
 for file in benchmark-rust-cohort.mjs benchmark-worker-resources.mjs; do cp "$root/scripts/$file" "$payload/scripts/$file"; done
-for file in rust-cohort-data.mjs next-cache-shim.mjs; do cp "$root/tests/fixtures/$file" "$payload/tests/fixtures/$file"; done
+for file in rust-cohort-data.mjs next-cache-shim.mjs next-server-entry.mjs; do cp "$root/tests/fixtures/$file" "$payload/tests/fixtures/$file"; done
 cp "$root/app/api/average/cohort/route.ts" "$payload/app/api/average/cohort/route.ts"
 rows=${BENCHMARK_ROWS:-30000}
 iterations=${BENCHMARK_ITERATIONS:-20}

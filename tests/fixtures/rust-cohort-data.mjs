@@ -10,7 +10,8 @@ import { pathToFileURL } from "node:url";
 // context only; the cohort route and its real dynamic cache are left intact.
 const projectRoot = realpathSync(resolve("."));
 registerHooks({ resolve(specifier, context, nextResolve) {
-  if (specifier === "next/server") return nextResolve("next/server.js", context);
+  if (specifier === "next/server") return { shortCircuit: true,
+    url: pathToFileURL(resolve(projectRoot, "tests/fixtures/next-server-entry.mjs")).href };
   if (specifier === "next/cache") return { shortCircuit: true,
     url: pathToFileURL(resolve(projectRoot, "tests/fixtures/next-cache-shim.mjs")).href };
   if (specifier.startsWith("@/")) return { shortCircuit: true,
