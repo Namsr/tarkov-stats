@@ -1,7 +1,7 @@
 "use client";
 
 import { AXIS_REFRESH_MS, type AxisPlayer } from "@/lib/axis-league";
-import AxisPlayerIdentity from "@/components/AxisPlayerIdentity";
+import AxisPlayerIdentity, { AxisArenaNicknames } from "@/components/AxisPlayerIdentity";
 import AxisMatchAttribution from "@/components/AxisMatchAttribution";
 import AxisMatchProbability from "@/components/AxisMatchProbability";
 import AxisMatchStatsEditor from "@/components/AxisMatchStatsEditor";
@@ -251,7 +251,7 @@ export default function AxisMatchHistory({ active = true, canEditKda = false, ca
             <span data-winner={match.winner ?? undefined} className={`axis-match-result${match.winner != null && match.winner >= 0 ? " axis-match-result--winner" : ""}`}>{result(match)}</span>
           </summary>
           <AxisMatchProbability match={match} />
-          <AxisMatchAttribution edited={match.edited} />
+          <AxisMatchAttribution edited={match.edited} canView={canEditKda} />
           {canEditKda && reviews[match.number] && <AxisMatchReview review={reviews[match.number]} roundsMissing={match.rounds == null} />}
           {canSubmitScreenshot && (openMatches[match.number] ?? index === 0) && <AxisMatchSubmission matchNumber={match.number} onSaved={() => { setCachedPages([]); setRetry(value => value + 1); }} />}
           <AxisMatchStatsEditor match={match} canEdit={canEditKda} onConflict={() => { setCachedPages([]); setRetry((value) => value + 1); }} onSaved={(players, rounds, edited) => {
@@ -262,7 +262,7 @@ export default function AxisMatchHistory({ active = true, canEditKda = false, ca
               edited: edited ?? entry.edited,
               teams: entry.teams.map((team) => ({ ...team, players: team.players.map((player) => saved.has(player.id) ? { ...player, kda: saved.get(player.id)! } : player) })) }) } : previous; });
             setRetry((value) => value + 1);
-          }}>{({ teams, renderInputs, rounds, editing }) => <>
+          }}>{({ teams, renderInputs, rounds, editing }) => <AxisArenaNicknames matchNumber={match.number} active={editing}>
             {rounds}
           {teams.length === 0 ? <p className="axis-empty">{t("axis.history.noTeams")}</p> : <div className="axis-match-teams">{teams.map((team, teamIndex) => <section key={teamIndex} className={`axis-match-team${match.winner === teamIndex ? " axis-match-team--winner" : ""}`}>
             <div className="axis-match-team-heading"><h3>{teamName(match, teamIndex)}</h3>{match.winner === teamIndex && <span>{t("axis.history.won")}</span>}</div>
@@ -281,7 +281,7 @@ export default function AxisMatchHistory({ active = true, canEditKda = false, ca
               </div>
             </li>)}</ul>
           </section>)}</div>}
-          </>}</AxisMatchStatsEditor>
+          </AxisArenaNicknames>}</AxisMatchStatsEditor>
         </details>)}</div>}
     </>}
   </section>;
