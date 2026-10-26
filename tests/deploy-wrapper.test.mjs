@@ -42,7 +42,10 @@ test('deploy consumes verified CI images and preserves recovery and rollback', a
     'native-candidate-incompatible', 'native-upgrade', 'current-rust', 'current-rust-sick'];
   const routingCases = [...scenarios.map((scenario) => ({ scenario, selector: 'SEASONAL_API_UPSTREAM' })),
     ...showcaseScenarios.map((scenario) => ({ scenario, selector: 'HOME_SHOWCASE_API_UPSTREAM' })),
-    ...showcaseScenarios.map((scenario) => ({ scenario, selector: 'ARENA_UI_UPSTREAM' }))];
+    ...showcaseScenarios.map((scenario) => ({ scenario, selector: 'ARENA_UI_UPSTREAM' })),
+    ...['PVE_UI_UPSTREAM', 'REGULAR_UI_UPSTREAM'].flatMap(selector => [...showcaseScenarios,
+      'native-population-rollback-incompatible', 'native-ui-rollback-incompatible',
+      'native-population-candidate-incompatible', 'native-ui-candidate-incompatible'].map(scenario => ({ scenario, selector })))];
   for (const { scenario, selector } of routingCases) {
     const dir = await mkdtemp(join(tmpdir(), 'deploy-behavior-'));
     try {
@@ -65,9 +68,11 @@ test('deploy consumes verified CI images and preserves recovery and rollback', a
             esac;;
           'image inspect '*)
             case "$*" in
-              *org.tarkovstats.rust-http*|*org.tarkovstats.rust-home-showcase*|*org.tarkovstats.rust-arena-ui*)
+              *org.tarkovstats.rust-http*|*org.tarkovstats.rust-home-showcase*|*org.tarkovstats.rust-arena-ui*|*org.tarkovstats.rust-persistent-ui*|*org.tarkovstats.rust-population-api*)
                 if [ "$SCENARIO" != unsupported-rollback ]; then
-                  case "$SCENARIO:$*" in native-candidate-incompatible:*tarkovstats-web:remote) ;; *) case "$*" in *org.tarkovstats.rust-home-showcase*|*org.tarkovstats.rust-arena-ui*) echo v1;; *) echo seasonal-v1;; esac;; esac
+                  case "$SCENARIO:$*" in
+                    native-candidate-incompatible:*tarkovstats-web:remote|native-population-candidate-incompatible:*org.tarkovstats.rust-population-api*tarkovstats-web:remote|native-ui-candidate-incompatible:*org.tarkovstats.rust-persistent-ui*tarkovstats-web:remote|native-population-rollback-incompatible:*org.tarkovstats.rust-population-api*old-image|native-ui-rollback-incompatible:*org.tarkovstats.rust-persistent-ui*old-image) ;;
+                    *) case "$*" in *org.tarkovstats.rust-home-showcase*|*org.tarkovstats.rust-arena-ui*|*org.tarkovstats.rust-persistent-ui*|*org.tarkovstats.rust-population-api*) echo v1;; *) echo seasonal-v1;; esac;; esac
                 fi;;
               *) if [ "$SCENARIO" = revision-mismatch ]; then echo wrong; else echo remote; fi;;
             esac;;
@@ -133,7 +138,7 @@ test('deploy consumes verified CI images and preserves recovery and rollback', a
       const result = run();
       assert.ifError(result.error);
       const calls = await readFile(join(dir, 'calls'), 'utf8');
-      if (['routing-to-rust', 'routing-invalid', 'unsupported-rollback'].includes(scenario)) {
+      if (['routing-to-rust', 'routing-invalid', 'unsupported-rollback', 'native-population-rollback-incompatible', 'native-ui-rollback-incompatible'].includes(scenario)) {
         assert.equal(result.status, 75, `${scenario}: ${result.stderr}\n${calls}`);
         assert.doesNotMatch(calls, /releases\/download|git reset --hard|git merge|up -d/);
         assert.match(calls, /deploy deferred:/);
@@ -164,7 +169,7 @@ test('deploy consumes verified CI images and preserves recovery and rollback', a
           assert.equal((repeated.match(/container-remote\/web.tar.gz.sha256/g) ?? []).length, 2);
         } else if (['download-fail', 'checksum-fail', 'invalid-checksum', 'multiline-checksum'].includes(scenario)) {
           assert.doesNotMatch(calls, /image load|git merge|up -d/);
-        } else if (['load-fail', 'revision-mismatch', 'tag-target-fail', 'signal', 'native-candidate-incompatible'].includes(scenario)) {
+        } else if (['load-fail', 'revision-mismatch', 'tag-target-fail', 'signal', 'native-candidate-incompatible', 'native-population-candidate-incompatible', 'native-ui-candidate-incompatible'].includes(scenario)) {
           assert.doesNotMatch(calls, /git merge|up -d/);
         } else {
           assert.match(calls, /image tag tarkovstats-web:remote tarkovstats-web:latest/);

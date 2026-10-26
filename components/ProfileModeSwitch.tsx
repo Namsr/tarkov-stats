@@ -31,7 +31,7 @@ export default function ProfileModeSwitch({
   onBeforeNavigate?: (mode: GameMode) => void;
 }) {
   const { t } = useI18n();
-  const { arena: nativeArena } = useNativeRoutes();
+  const nativeRoutes = useNativeRoutes();
   const router = useRouter();
   const pathname = usePathname();
   const searchParams = useSearchParams();
@@ -142,7 +142,7 @@ export default function ProfileModeSwitch({
           pendingNavigation.fromMode === current &&
           pendingNavigation.pathname === pathname &&
           mode !== current;
-        const documentNavigation = nativeArena && page === "average" && mode === "arena";
+        const documentNavigation = page === "average" && mode !== "seasonal" && nativeRoutes[mode];
         const onNavigate = () => {
           if (mode !== current) {
             warmProfile(mode);

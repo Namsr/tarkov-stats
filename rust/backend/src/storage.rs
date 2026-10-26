@@ -9,6 +9,9 @@ enum Command {
     Write(String, Value, i64, oneshot::Sender<()>),
     Event(Value),
     ArenaVersion(oneshot::Sender<u64>),
+    AchievementBaseline(String, i64, oneshot::Sender<Option<AchievementRead>>),
+    ReadReference(crate::reference::Mode, oneshot::Sender<Option<Value>>),
+    WriteReference(crate::reference::Mode, Value, oneshot::Sender<()>),
     Publication(
         PublicationScope,
         String,
@@ -37,6 +40,11 @@ impl PublicationScope {
         }
     }
 }
+pub struct AchievementRead {
+    pub value: Option<Value>,
+    pub store_open_ms: u64,
+    pub error: bool,
+}
 #[derive(Clone, Debug)]
 pub struct Publication {
     pub generation: f64,
@@ -53,6 +61,7 @@ struct State {
     players_path: String,
     players: Option<Connection>,
     analytics_path: String,
+    reference_dir: String,
     enabled: bool,
     reader: Option<Connection>,
     writer: Option<Connection>,
@@ -70,6 +79,10 @@ impl State {
                 .filter(|p| !p.is_empty())
                 .unwrap_or_else(|| "/data/players.db".into()),
             players: None,
+            reference_dir: env::var("ACHIEVEMENTS_CACHE_DIR")
+                .ok()
+                .filter(|value| !value.is_empty())
+                .unwrap_or_else(|| "/data".into()),
             analytics_path: env::var("ADMIN_ANALYTICS_SQLITE_PATH")
                 .ok()
                 .filter(|path| !path.is_empty())
@@ -127,21 +140,122 @@ impl State {
         db.execute("DELETE FROM statistics_response_cache WHERE cache_key IN(SELECT cache_key FROM(SELECT cache_key,ROW_NUMBER()OVER(ORDER BY generated_at DESC,cache_key)AS position,SUM(payload_bytes)OVER(ORDER BY generated_at DESC,cache_key)AS bytes FROM statistics_response_cache)WHERE position>4096 OR bytes>67108864)",[])?;
         Ok(())
     }
-    fn arena_version(&mut self) -> u64 {
+    fn primary(&mut self) -> rusqlite::Result<&mut Connection> {
         if self.players.is_none() {
-            let Ok(db) = Connection::open_with_flags(
+            let db = Connection::open_with_flags(
                 &self.players_path,
                 OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
-            ) else {
-                return 0;
-            };
-            if db
-                .busy_timeout(std::time::Duration::from_millis(100))
-                .is_err()
-            {
-                return 0;
-            }
+            )?;
+            db.busy_timeout(std::time::Duration::from_millis(100))?;
             self.players = Some(db);
+        }
+        Ok(self.players.as_mut().unwrap())
+    }
+    fn achievement_baseline(&mut self, mode: &str, now: i64) -> AchievementRead {
+        let started = std::time::Instant::now();
+        let opened = self.primary();
+        let store_open_ms = started.elapsed().as_millis() as u64;
+        let (value, error) = (|| {
+            if !["regular", "pve"].contains(&mode) {
+                return (None, false);
+            }
+            let Ok(db) = opened else {
+                return (None, false);
+            };
+            let exists=db.prepare_cached("SELECT 1 FROM sqlite_master WHERE type='table' AND name='achievement_baseline_publications'").ok().and_then(|mut statement|statement.query_row([],|_|Ok(())).optional().ok().flatten()).is_some();
+            if !exists {
+                return (None, false);
+            }
+            let row=db.prepare_cached("SELECT mode,generation,generated_at,total,achievements_json FROM achievement_baseline_publications WHERE mode=? AND length(CAST(achievements_json AS BLOB))<=1048576").and_then(|mut statement|statement.query_row([mode],|row|{
+                for index in 0..5{if let rusqlite::types::ValueRef::Integer(value)=row.get_ref(index)? && !(-9007199254740991..=9007199254740991).contains(&value){return Err(rusqlite::Error::IntegralValueOutOfRange(index,value));}}
+                let string=|value:rusqlite::types::ValueRef<'_>|match value{rusqlite::types::ValueRef::Text(bytes)=>Some(String::from_utf8_lossy(bytes).into_owned()),_=>None};
+                Ok((string(row.get_ref(0)?),sql_number(row.get_ref(1)?),sql_number(row.get_ref(2)?),sql_number(row.get_ref(3)?),string(row.get_ref(4)?)))
+            }).optional());
+            let row = match row {
+                Ok(Some(row)) => row,
+                Ok(None) => return (None, false),
+                Err(_) => return (None, true),
+            };
+            let (Some(selected), Some(generation), Some(generated_at), Some(total), Some(payload)) =
+                row
+            else {
+                return (None, false);
+            };
+            let Ok(entries) = serde_json::from_str::<Value>(&payload) else {
+                return (None, false);
+            };
+            (
+                crate::achievements::parse_published(
+                    &serde_json::json!({"mode":selected,"generation":generation,"generated_at":generated_at,"total":total,"achievements":entries}),
+                    now,
+                ),
+                false,
+            )
+        })();
+        AchievementRead {
+            value,
+            store_open_ms,
+            error,
+        }
+    }
+    fn reference_path(&self, mode: crate::reference::Mode) -> std::path::PathBuf {
+        let directory = self.reference_dir.trim_end_matches(['/', '\\']);
+        std::path::PathBuf::from(format!("{directory}/achievements-{}.json", mode.as_str()))
+    }
+    fn read_reference(&self, mode: crate::reference::Mode) -> Option<Value> {
+        use std::io::Read;
+        let file = std::fs::File::open(self.reference_path(mode)).ok()?;
+        if file.metadata().ok()?.len() > crate::reference::FILE_LIMIT as u64 {
+            return None;
+        }
+        let mut bytes = Vec::new();
+        file.take(crate::reference::FILE_LIMIT as u64 + 1)
+            .read_to_end(&mut bytes)
+            .ok()?;
+        if bytes.len() > crate::reference::FILE_LIMIT {
+            return None;
+        }
+        serde_json::from_slice(&bytes).ok()
+    }
+    fn write_reference(&self, mode: crate::reference::Mode, value: &Value) -> std::io::Result<()> {
+        use std::io::Write;
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let bytes = serde_json::to_vec(value)?;
+        if bytes.len() > crate::reference::FILE_LIMIT {
+            return Ok(());
+        }
+        let path = self.reference_path(mode);
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let temporary = path.with_file_name(format!(
+            "achievements-{}.json.{}.{}.{}.tmp",
+            mode.as_str(),
+            std::process::id(),
+            crate::now_ms(),
+            NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        ));
+        let result = (|| {
+            let mut options = std::fs::OpenOptions::new();
+            options.write(true).create_new(true);
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::OpenOptionsExt;
+                options.mode(0o600);
+            }
+            let mut file = options.open(&temporary)?;
+            file.write_all(&bytes)?;
+            drop(file);
+            std::fs::rename(&temporary, &path)
+        })();
+        if result.is_err() {
+            let _ = std::fs::remove_file(&temporary);
+        }
+        result
+    }
+    fn arena_version(&mut self) -> u64 {
+        if self.primary().is_err() {
+            return 0;
         }
         self.players
             .as_ref()
@@ -206,7 +320,7 @@ impl State {
         let number = |key: &str| event.get(key).and_then(Value::as_i64);
         let operation = text("operation").unwrap_or("average_cohort");
         let mode = text("mode").or_else(|| (operation == "average_cohort").then_some("seasonal"));
-        db.prepare_cached("INSERT INTO request_events(occurred_at,host,operation,aid,mode,cycle_id,outcome,status,source,cache,storage,failure_stage,error_code,latency_ms,cohort_ms,queue_ms,worker_ms,request_id,averages_ms)VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)")?.execute(params![number("at"),text("host"),operation,number("aid"),mode,text("cycle"),text("outcome"),number("status"),text("source"),text("cache"),text("storage"),text("failure_stage"),text("error_code"),number("total_ms"),number("cohort_ms"),number("queue_ms"),number("worker_ms"),text("request_id"),number("averages_ms")])?;
+        db.prepare_cached("INSERT INTO request_events(occurred_at,host,operation,aid,mode,cycle_id,outcome,status,source,cache,storage,failure_stage,error_code,latency_ms,cohort_ms,queue_ms,worker_ms,request_id,averages_ms,store_open_ms,baseline_ms,metadata_ms)VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)")?.execute(params![number("at"),text("host"),operation,number("aid"),mode,text("cycle"),text("outcome"),number("status"),text("source"),text("cache"),text("storage"),text("failure_stage"),text("error_code"),number("total_ms"),number("cohort_ms"),number("queue_ms"),number("worker_ms"),text("request_id"),number("averages_ms"),number("store_open_ms"),number("baseline_ms"),number("metadata_ms")])?;
         Ok(())
     }
 }
@@ -231,6 +345,18 @@ impl Storage {
                         }
                         Command::ArenaVersion(reply) => {
                             let _ = reply.send(state.arena_version());
+                        }
+                        Command::AchievementBaseline(mode, now, reply) => {
+                            let _ = reply.send(Some(state.achievement_baseline(&mode, now)));
+                        }
+                        Command::ReadReference(mode, reply) => {
+                            let _ = reply.send(state.read_reference(mode));
+                        }
+                        Command::WriteReference(mode, value, reply) => {
+                            if state.write_reference(mode, &value).is_err() {
+                                eprintln!("Tarkov achievement file cache write unavailable");
+                            }
+                            let _ = reply.send(());
                         }
                         Command::Publication(scope, variant, now, reply) => {
                             let _ = reply.send(state.publication(scope, &variant, now));
@@ -303,6 +429,30 @@ impl Storage {
             .ok()?;
         answer.await.ok().flatten()
     }
+    pub async fn achievement_baseline(&self, mode: String, now: i64) -> Option<AchievementRead> {
+        let (reply, answer) = oneshot::channel();
+        self.sender
+            .try_send(Command::AchievementBaseline(mode, now, reply))
+            .ok()?;
+        answer.await.ok().flatten()
+    }
+    pub async fn read_reference(&self, mode: crate::reference::Mode) -> Option<Value> {
+        let (reply, answer) = oneshot::channel();
+        self.sender
+            .try_send(Command::ReadReference(mode, reply))
+            .ok()?;
+        answer.await.ok().flatten()
+    }
+    pub async fn write_reference(&self, mode: crate::reference::Mode, value: Value) {
+        let (reply, answer) = oneshot::channel();
+        if self
+            .sender
+            .try_send(Command::WriteReference(mode, value, reply))
+            .is_ok()
+        {
+            let _ = answer.await;
+        }
+    }
     pub fn event(&self, event: Value) {
         if self.sender.try_send(Command::Event(event)).is_err() {
             eprintln!("Rust analytics queue full");
@@ -338,6 +488,7 @@ mod tests {
             players_path: path.to_string_lossy().into(),
             players: None,
             analytics_path: String::new(),
+            reference_dir: path.with_extension("reference").to_string_lossy().into(),
             enabled: true,
             reader: None,
             writer: None,
@@ -372,7 +523,7 @@ mod tests {
         let mut state = state();
         state.analytics_path = state.cache_path.clone();
         let db = Connection::open(&state.analytics_path).unwrap();
-        db.execute_batch("CREATE TABLE request_events(occurred_at INTEGER NOT NULL,host TEXT,operation TEXT,aid INTEGER,mode TEXT,cycle_id TEXT,outcome TEXT,status INTEGER,source TEXT,cache TEXT,storage TEXT,failure_stage TEXT,error_code TEXT,latency_ms INTEGER,cohort_ms INTEGER,queue_ms INTEGER,worker_ms INTEGER,request_id TEXT,averages_ms INTEGER)").unwrap();
+        db.execute_batch("CREATE TABLE request_events(occurred_at INTEGER NOT NULL,host TEXT,operation TEXT,aid INTEGER,mode TEXT,cycle_id TEXT,outcome TEXT,status INTEGER,source TEXT,cache TEXT,storage TEXT,failure_stage TEXT,error_code TEXT,latency_ms INTEGER,cohort_ms INTEGER,queue_ms INTEGER,worker_ms INTEGER,request_id TEXT,averages_ms INTEGER,store_open_ms INTEGER,baseline_ms INTEGER,metadata_ms INTEGER)").unwrap();
         state.event(&serde_json::json!({"at":100,"aid":12,"cycle":"s1","outcome":"success","status":200,"source":"stored","cache":"miss","storage":"sqlite","total_ms":30,"cohort_ms":25,"queue_ms":5,"worker_ms":20})).unwrap();
         let row = db
             .query_row(
@@ -417,6 +568,64 @@ mod tests {
         drop(state);
         drop(db);
         let _ = std::fs::remove_file(path);
+    }
+    #[test]
+    fn achievement_reader_preserves_decode_errors_and_invalid_publication_distinction() {
+        let mut state = state();
+        let db = Connection::open_in_memory().unwrap();
+        db.execute_batch("CREATE TABLE achievement_baseline_publications(mode TEXT,generation,generated_at,total,achievements_json TEXT);INSERT INTO achievement_baseline_publications VALUES('pve',1,1,10,'[{\"ach_id\":\"id\",\"owners\":2,\"meanHours\":100,\"stdHours\":0,\"earlyHours\":0}]')").unwrap();
+        state.players = Some(db);
+        let read = state.achievement_baseline("pve", 100);
+        assert!(!read.error);
+        assert_eq!(read.value.unwrap()["rows"][0]["unlockHours"], 0.0);
+        state
+            .players
+            .as_mut()
+            .unwrap()
+            .execute(
+                "UPDATE achievement_baseline_publications SET generation=9007199254740993",
+                [],
+            )
+            .unwrap();
+        assert!(state.achievement_baseline("pve", 100).error);
+        state.players.as_mut().unwrap().execute("UPDATE achievement_baseline_publications SET generation=1,achievements_json='broken'",[]).unwrap();
+        let read = state.achievement_baseline("pve", 100);
+        assert!(!read.error);
+        assert!(read.value.is_none());
+    }
+    #[test]
+    fn reference_files_replace_atomically_and_oversized_values_do_not_create_directories() {
+        let mut state = state();
+        let directory = state.reference_dir.clone();
+        let mode = crate::reference::Mode::Regular;
+        state
+            .write_reference(mode, &serde_json::json!({"version":2,"savedAt":1}))
+            .unwrap();
+        assert_eq!(state.read_reference(mode).unwrap()["savedAt"], 1);
+        state
+            .write_reference(mode, &serde_json::json!({"version":2,"savedAt":2}))
+            .unwrap();
+        assert_eq!(state.read_reference(mode).unwrap()["savedAt"], 2);
+        let path = state.reference_path(mode);
+        assert_eq!(std::fs::read_dir(&directory).unwrap().count(), 1);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+                0o600
+            );
+        }
+        std::fs::remove_file(path).unwrap();
+        std::fs::remove_dir(&directory).unwrap();
+        state.reference_dir = format!("{directory}-large");
+        state
+            .write_reference(
+                mode,
+                &Value::String("x".repeat(crate::reference::FILE_LIMIT)),
+            )
+            .unwrap();
+        assert!(!std::path::Path::new(&state.reference_dir).exists());
     }
 }
 

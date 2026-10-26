@@ -24,7 +24,7 @@ No React, Next RSC implementation or Next scripts are shipped in Arena HTML.
 The candidate AND rollback image require `org.tarkovstats.rust-arena-ui=v1`.
 A selector change recreates both web and Caddy. Health checks inspect the actual
 running selectors and require the native health endpoint when any is selected.
-Keep the user-disabled `tarkovstats-deploy.timer` stopped. A source merge does
+Keep `tarkovstats-deploy.timer` enabled, following the latest user instruction. A source merge does
 not activate native routes or demonstrate production improvement.
 
 ## Data and SSR

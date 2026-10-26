@@ -8,7 +8,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import test from "node:test";
 
 const entry = resolve("scripts/start-web.mjs");
-const binary = resolve("rust/backend/target/release", `tarkov-backend${process.platform === "win32" ? ".exe" : ""}`);
+const binary = process.env.RUST_BACKEND_BIN || resolve("rust/backend/target/release", `tarkov-backend${process.platform === "win32" ? ".exe" : ""}`);
 
 async function fixture(t, env = {}) {
   const directory = await mkdtemp(join(tmpdir(), "rust-http-supervisor-"));
@@ -23,7 +23,7 @@ async function fixture(t, env = {}) {
   `);
   const child = spawn(process.execPath, [entry], { cwd: directory, windowsHide: true,
     env: { ...process.env, WEB_BACKGROUND_WORKERS: "false", RUNTIME_HEALTH_ENABLED: "false",
-      SEASONAL_API_UPSTREAM: "web:3000", HOME_SHOWCASE_API_UPSTREAM: "web:3000", ARENA_UI_UPSTREAM: "web:3000", RUST_API_BIND: "127.0.0.1:0", RUST_API_BIN: binary, ...env },
+      SEASONAL_API_UPSTREAM: "web:3000", HOME_SHOWCASE_API_UPSTREAM: "web:3000", ARENA_UI_UPSTREAM: "web:3000", PVE_UI_UPSTREAM: "web:3000", REGULAR_UI_UPSTREAM: "web:3000", RUST_API_BIND: "127.0.0.1:0", RUST_API_BIN: binary, ...env },
     stdio: ["pipe", "pipe", "pipe"] });
   let stdout = "", stderr = "";
   const done = new Promise((resolve) => { child.once("close", (code, signal) => resolve({ code, signal })); });
@@ -186,6 +186,49 @@ test("Arena UI-only and combined selectors start one real ready UI process and s
   }
 });
 
+test("persistent UI selectors independently reject invalid routing, missing binary and missing assets", { timeout: 30000 }, async t => {
+  for (const flag of ["PVE_UI_UPSTREAM", "REGULAR_UI_UPSTREAM"]) {
+    const invalid = await fixture(t, { [flag]: "external:3001" });
+    assert.equal((await invalid.done).code, 1); assert.ok(invalid.stderr().includes(`${flag} must be web:3000 or web:3001`));
+    assert.equal(invalid.events().some(event => event.event === "next_fixture_ready"), false);
+    const missing = await fixture(t, { [flag]: "web:3001", RUST_API_BIN: resolve("missing-rust-persistent-server") });
+    assert.equal((await missing.done).code, 1); assert.match(missing.stderr(), /Rust API spawn failed/);
+    const assets = await fixture(t, { [flag]: "web:3001", RUST_PERSISTENT_UI_ASSETS: resolve("missing-rust-persistent-assets") });
+    assert.equal((await assets.done).code, 1); assert.match(assets.stderr(), /Rust UI asset manifest unavailable/);
+    assert.equal(assets.events().some(event => event.event === "next_fixture_ready"), false);
+  }
+});
+
+test("persistent UI-only and combined selections use one ready Rust server without enabling other pages", { timeout: 60000 }, async t => {
+  const assets = process.env.RUST_PERSISTENT_UI_ASSETS || resolve("public/_rust/persistent");
+  assert.ok(existsSync(join(assets, "manifest.json")), "build real persistent UI assets before supervisor checks");
+  const combinations = [{ PVE_UI_UPSTREAM: "web:3001" }, { REGULAR_UI_UPSTREAM: "web:3001" }, { PVE_UI_UPSTREAM: "web:3001", REGULAR_UI_UPSTREAM: "web:3001" },
+    { PVE_UI_UPSTREAM: "web:3001", REGULAR_UI_UPSTREAM: "web:3001", ARENA_UI_UPSTREAM: "web:3001", HOME_SHOWCASE_API_UPSTREAM: "web:3001", SEASONAL_API_UPSTREAM: "web:3001" }];
+  for (const selection of combinations) {
+    const run = await fixture(t, { ...selection, RUST_PERSISTENT_UI_ASSETS: assets, RUST_UI_ASSETS: resolve("public/_rust/arena") });
+    const next = await run.waitEvent(event => event.event === "next_fixture_ready");
+    const native = run.events().filter(event => event.event === "web_critical_process_v1" && event.name === "Rust API");
+    assert.equal(native.length, 1);
+    const preload = run.events().find(event => event.event === "preload_fixture_ready");
+    assert.equal(preload.pid, next.pid, "runtime monitoring stays inside the actual Next child");
+    assert.notEqual(preload.pid, native[0].pid);
+    const ready = run.events().find(event => event.event === "rust_api_ready");
+    assert.ok(run.events().indexOf(ready) < run.events().findIndex(event => event.event === "next_fixture_ready"));
+    for (const mode of ["pve", "regular"]) {
+      const enabled = selection[`${mode.toUpperCase()}_UI_UPSTREAM`] === "web:3001";
+      const response = await fetch(`http://${ready.address}/population/${mode}`, { method: "HEAD", signal: AbortSignal.timeout(5000) });
+      assert.equal(response.status, enabled ? 200 : 404); assert.equal(await response.text(), "");
+      if (enabled) {
+        assert.equal(response.headers.get("content-type"), "text/html; charset=utf-8");
+        const alias = await fetch(`http://${ready.address}/average/${mode}?statistic=median`, { redirect: "manual", signal: AbortSignal.timeout(5000) });
+        assert.equal(alias.status, 308); assert.equal(alias.headers.get("location"), `/population/${mode}?statistic=median`); await alias.body?.cancel();
+      }
+    }
+    run.child.stdin.write("exit:0\n"); assert.equal((await run.done).code, 0);
+    assert.equal(stopped(next.pid), true); assert.equal(stopped(native[0].pid), true);
+  }
+});
+
 test("Arena UI image CI verifies WASM and retains opt-in defaults", async () => {
   const workflow = await readFile(".github/workflows/vps-image.yml", "utf8");
   const compose = await readFile("ops/docker-compose.vps.yml", "utf8");
@@ -232,4 +275,22 @@ test("the Arena image verifier refuses unguarded fixture writes before opening a
   assert.equal(code, 1);
   assert.match(stderr, /Arena runtime fixture requires explicit opt-in/);
   assert.equal(existsSync(path), false);
+});
+
+
+test("persistent image fixture guards reject accidental data writes before database open", { timeout: 10000 }, async t => {
+  for (const mode of ["pve", "regular"]) for (const optIn of [false, true]) {
+    const path = join(tmpdir(), `blocked-${mode}-runtime-${process.pid}-${Date.now()}.db`);
+    const child = spawn(process.execPath, [resolve("scripts/verify-rust-http-runtime.mjs"), `--${mode}-ui`], {
+      windowsHide: true, env: { ...process.env, RUST_UI_RUNTIME_FIXTURE: String(optIn), SQLITE_PATH: path, AVERAGE_PUBLICATIONS_ENABLED: "false",
+        SEASONAL_API_UPSTREAM: "web:3000", HOME_SHOWCASE_API_UPSTREAM: "web:3000", ARENA_UI_UPSTREAM: "web:3000", PVE_UI_UPSTREAM: "web:3000", REGULAR_UI_UPSTREAM: "web:3000", [`${mode.toUpperCase()}_UI_UPSTREAM`]: "web:3001" },
+      stdio: ["ignore", "ignore", "pipe"],
+    });
+    let stderr = ""; child.stderr.on("data", chunk => { stderr += chunk; });
+    const closed = new Promise((done, reject) => { child.once("error", reject); child.once("close", done); });
+    t.after(async () => { if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL"); await closed.catch(() => {}); assert.equal(existsSync(path), false); });
+    assert.equal(await closed, 1);
+    assert.ok(stderr.includes(optIn ? `rust-${mode}-runtime-smoke.db` : "Persistent runtime fixture requires explicit opt-in"));
+    assert.equal(existsSync(path), false);
+  }
 });

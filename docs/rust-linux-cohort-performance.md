@@ -105,6 +105,7 @@ been initialized through TypeScript. Read-only Rust never creates/migrates them;
 uninitialized Arena/Seasonal storage reports unavailable instead of performing
 TypeScript's first-ever lazy bootstrap. Defaults remain TypeScript.
 
-Representative VPS observations and coordination with the maintenance owner
-remain necessary before any production activation. A user-disabled deployment
-timer stays disabled unless the user explicitly changes that instruction.
+Representative VPS observations and a validated rollback remain necessary
+before production activation. Honor existing deploy/data locks; coordination
+with the former maintenance chat has ended by user instruction. Autodeployment
+is enabled under the latest user instruction.

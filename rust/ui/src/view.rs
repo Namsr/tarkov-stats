@@ -7,7 +7,7 @@ use crate::{
 use leptos::{html, prelude::*};
 use serde_json::Value;
 #[path = "client.rs"]
-mod client;
+pub(crate) mod client;
 
 fn history(state: &ArenaState) {
     #[cfg(feature = "hydrate")]

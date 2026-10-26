@@ -264,6 +264,11 @@ pub async fn trailing(method: Method, uri: Uri) -> Response {
         uri.query()
             .map_or(String::new(), |query| format!("?{query}"))
     );
+    redirect(method, location)
+}
+// Next's permanent redirects include both the literal target body and Refresh.
+// Keep aliases and slash normalization on the same verified HTTP boundary.
+pub(crate) fn redirect(method: Method, location: String) -> Response {
     let body = if method == Method::HEAD {
         axum::body::Body::empty()
     } else {
@@ -294,6 +299,13 @@ pub async fn security(request: axum::extract::Request, next: axum::middleware::N
         "/api/seasonal/cohort/"
             | "/api/home/showcase/"
             | "/api/average/"
+            | "/api/average/metrics/"
+            | "/api/progression/average/"
+            | "/api/average/achievements/"
+            | "/population/pve/"
+            | "/population/regular/"
+            | "/average/pve/"
+            | "/average/regular/"
             | "/population/arena/"
             | "/average/arena/"
     );

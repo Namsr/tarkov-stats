@@ -65,6 +65,8 @@ pub enum Kind {
     ArenaPopulation,
     PersistentAverage,
     PersistentMetrics,
+    AchievementBaseline,
+    AchievementMetadata,
 }
 impl Kind {
     pub fn from_job(job: &Value) -> Option<Self> {
@@ -73,6 +75,8 @@ impl Kind {
             "arena_population" => Some(Self::ArenaPopulation),
             "persistent_average" => Some(Self::PersistentAverage),
             "persistent_metrics" => Some(Self::PersistentMetrics),
+            "achievement_baseline" => Some(Self::AchievementBaseline),
+            "achievement_metadata" => Some(Self::AchievementMetadata),
             _ => None,
         }
     }
@@ -82,11 +86,14 @@ impl Kind {
             Self::ArenaPopulation => "arena_population",
             Self::PersistentAverage => "persistent_average",
             Self::PersistentMetrics => "persistent_metrics",
+            Self::AchievementBaseline => "achievement_baseline",
+            Self::AchievementMetadata => "achievement_metadata",
         }
     }
     pub fn ttl_ms(self) -> f64 {
         match self {
-            Self::Seasonal => 300000.0,
+            Self::Seasonal | Self::AchievementBaseline => 300000.0,
+            Self::AchievementMetadata => 21600000.0,
             Self::ArenaPopulation | Self::PersistentAverage | Self::PersistentMetrics => 900000.0,
         }
     }
@@ -105,6 +112,8 @@ impl Kind {
             Self::ArenaPopulation => value.is_null() || crate::arena::valid_result(value, input),
             Self::PersistentAverage => crate::persistent::valid_average(value, job),
             Self::PersistentMetrics => crate::persistent::valid_metrics(value, job),
+            Self::AchievementBaseline => crate::achievements::valid_baseline(value, job),
+            Self::AchievementMetadata => crate::reference::valid_metadata(value, job),
         }
     }
     pub fn accepted(self, value: &Value) -> bool {
@@ -114,6 +123,10 @@ impl Kind {
                     && value.get("result").is_some_and(|value| !value.is_null())
             }
             Self::ArenaPopulation | Self::PersistentMetrics => !value.is_null(),
+            Self::AchievementBaseline => {
+                value.get("storage").and_then(Value::as_str) == Some("sqlite")
+            }
+            Self::AchievementMetadata => value.as_array().is_some_and(|values| !values.is_empty()),
             Self::PersistentAverage => {
                 value.get("storage").and_then(Value::as_str) == Some("sqlite")
             }
@@ -326,6 +339,15 @@ impl Worker {
         })
     }
     pub async fn compute(&self, args: Value) -> Result<Computed, Failure> {
+        if matches!(
+            Kind::from_job(&args),
+            Some(Kind::AchievementBaseline | Kind::AchievementMetadata)
+        ) {
+            return Err(Failure::new(
+                "protocol",
+                "Asynchronous data jobs require a cache factory",
+            ));
+        }
         let permit = self
             .slots
             .clone()

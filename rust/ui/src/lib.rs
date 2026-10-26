@@ -1,6 +1,7 @@
 #![recursion_limit = "256"]
 pub mod data;
 pub mod i18n;
+pub mod persistent;
 pub mod range;
 pub mod state;
 #[cfg(any(feature = "ssr", feature = "hydrate"))]
