@@ -100,3 +100,44 @@ Local real browser checks currently cover loading/hydration, controls, numeric
 Enter, localization/theme, FAQ focus/Escape, responsive360/1280layouts and actual
 NextPvE-to-RustArena document navigation. Final review/CI and complete browser
 measurement are still pending. No production latency/resource gain is claimed.
+
+## Reproducible browser measurement
+
+Browser latency evidence comes from a separate Linux CI runner using the actual
+built production image. Local PC pilots were invalidated before acceptance:
+Rust had test-mode durable-cache settings while Next used production, and the
+user was gaming on the same PC. These pilots prove no production performance
+or site CPU/RAM change. Local interaction checks remain correctness evidence.
+
+The fixture command is available for controlled development environments:
+
+```sh
+CADDY_BIN=/path/to/caddy npm run benchmark:rust-arena:serve
+```
+
+It requires the current production Next standalone artifact, compiled Rust
+backend/worker and UI assets. Both servers explicitly use production mode with
+publications disabled for this dynamic-data experiment, independent durable
+cache files and the same private300-account/all-five-mode player data. Startup
+checks actual HTTP200, full payload parity and frontend markers before exposing
+ready URLs. Metadata records effective settings. Auth/support/telemetry stubs and
+a deliberately unavailable analytics directory are identical for both servers;
+this experiment does not measure real analytics write overhead.
+
+The command binds only127.0.0.1 and blocks outbound Next fetches. It copies only
+the canonical runtime support into checked generated standalone output. Type
+`stop` or `exit` for portable cleanup. POSIX signals are also handled; Windows
+force-termination cannot execute Node cleanup. Startup cancellation and normal
+shutdown close owned processes and SQLite handles before removing private data.
+The command does not deploy or access production databases.
+
+Measure useful numeric DOM availability separately from pixel paint/LCP and
+from enabled interactive ranges. Alternate backend order, use matching locale,
+viewport and browser CPU/network settings, and distinguish warm assets, cold
+HTTP assets and cold backend/cache work. Store each sample, resource transfers,
+app/image/tool versions and trace evidence. A few reloads do not establish a
+production p95; report sample counts and quantile method. Never attribute global
+shared-host CPU/RAM changes to the application.
+
+Final independent approval and current-head Linux image CI remain required.
+No production improvement or completion of the full migration is claimed.

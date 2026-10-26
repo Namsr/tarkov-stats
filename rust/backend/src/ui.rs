@@ -142,10 +142,10 @@ pub fn language(headers: &HeaderMap) -> Lang {
                     }
                     rest = &tail[2..];
                 }
-                if valid {
-                    if let Ok(decoded) = percent_encoding::percent_decode_str(value).decode_utf8() {
-                        cookie = Some(decoded.into_owned());
-                    }
+                if valid
+                    && let Ok(decoded) = percent_encoding::percent_decode_str(value).decode_utf8()
+                {
+                    cookie = Some(decoded.into_owned());
                 }
             }
         }
