@@ -13,8 +13,9 @@ const binary = resolve("rust/backend/target/release", `tarkov-backend${process.p
 async function fixture(t, env = {}) {
   const directory = await mkdtemp(join(tmpdir(), "rust-http-supervisor-"));
   await mkdir(join(directory, "scripts"));
-  await writeFile(join(directory, "scripts/web-runtime-health.mjs"), "// Only process lifecycle is exercised by this fixture.\n");
+  await writeFile(join(directory, "scripts/web-runtime-health.mjs"), "globalThis.preloadFixturePid = process.pid; console.log(JSON.stringify({event:\"preload_fixture_ready\",pid:process.pid}));\n");
   await writeFile(join(directory, "server.js"), `
+    if (globalThis.preloadFixturePid !== process.pid) throw new Error("Next runtime preload was not attached to its child");
     console.log(JSON.stringify({event:"next_fixture_ready",pid:process.pid}));
     if(process.env.SUPERVISOR_FIXTURE_EXIT) setTimeout(()=>process.exit(Number(process.env.SUPERVISOR_FIXTURE_EXIT)),30);
     else { process.stdin.resume(); process.stdin.on("data",data=>{ const match=String(data).match(/^exit:(\\d+)/); if(match)process.exit(Number(match[1])); }); }
@@ -78,6 +79,9 @@ test("both critical HTTP processes stop together and Rust readiness precedes Nex
   assert.ok(existsSync(binary), "build the Rust HTTP backend before running supervisor integration tests");
   const run = await fixture(t, { SEASONAL_API_UPSTREAM: "web:3001" });
   const next = await run.waitEvent((event) => event.event === "next_fixture_ready");
+  const preload = run.events().find((event) => event.event === "preload_fixture_ready");
+  assert.equal(preload.pid, next.pid, "the preload belongs to Next, not the supervisor");
+  assert.notEqual(preload.pid, run.child.pid);
   const native = run.events().find((event) => event.event === "web_critical_process_v1" && event.name === "Rust API");
   assert.ok(native);
   assert.ok(run.events().findIndex((event) => event.event === "rust_api_ready") < run.events().findIndex((event) => event.event === "next_fixture_ready"));
