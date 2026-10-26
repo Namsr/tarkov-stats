@@ -8,6 +8,9 @@ import { DatabaseSync } from "node:sqlite";
 import { snapshotWorkerResources, resourceDelta, snapshotContainerResources } from "./benchmark-worker-resources.mjs";
 import { createCohortFixture, rustCohortBinary, seedRouteOwners,
   syntheticCohortRows } from "../tests/fixtures/rust-cohort-data.mjs";
+import { ARENA_TEST_MODE, SEASONAL_TEST_CYCLE, createArenaSeasonalFixture,
+  seedArenaRouteOwners, seedSeasonalRouteOwners, syntheticArenaRows,
+  syntheticSeasonalRows } from "../tests/fixtures/rust-arena-seasonal-data.mjs";
 
 const args = process.argv.slice(2);
 function argument(name, fallback) {
@@ -15,8 +18,8 @@ function argument(name, fallback) {
   return index < 0 ? fallback : args[index + 1];
 }
 const mode = argument("--mode", "regular");
-assert.ok(["regular", "pve"].includes(mode), "--mode must be regular or pve");
-const backendVariable = mode === "pve" ? "PVE_COHORT_BACKEND" : "REGULAR_COHORT_BACKEND";
+assert.ok(["regular", "pve", "arena", "seasonal"].includes(mode), "--mode must be regular, pve, arena or seasonal");
+const backendVariable = `${mode.toUpperCase()}_COHORT_BACKEND`;
 const backendSelection = argument("--backend", "both");
 assert.ok(["typescript", "rust", "both"].includes(backendSelection), "--backend must be typescript, rust or both");
 const backendOrder = backendSelection === "both" ? ["typescript", "rust"] : [backendSelection];
@@ -29,11 +32,29 @@ const binary = rustCohortBinary();
 assert.ok(!backendOrder.includes("rust") || existsSync(binary), `build the native worker first: ${binary}`);
 process.env.OBSERVABILITY_SAMPLE_RATE = "0";
 process.env.AVERAGE_PUBLICATIONS_ENABLED = "true";
-const fixture = await createCohortFixture(`rust-${mode}-cohort-benchmark-`, mode);
-fixture.seed(syntheticCohortRows(rows));
-const owners = await seedRouteOwners(rows + 1, 4, mode);
+const persistent = mode === "regular" || mode === "pve";
+const fixture = persistent ? await createCohortFixture(`rust-${mode}-cohort-benchmark-`, mode)
+  : await createArenaSeasonalFixture(`rust-${mode}-cohort-benchmark-`);
+let owners;
+if (persistent) {
+  fixture.seed(syntheticCohortRows(rows));
+  owners = await seedRouteOwners(rows + 1, 4, mode);
+} else if (mode === "arena") {
+  fixture.seedArena(syntheticArenaRows(rows, { arenaMode: ARENA_TEST_MODE }));
+  fixture.seedArena(syntheticArenaRows(rows, { arenaMode: "overall" }));
+  owners = seedArenaRouteOwners(fixture, rows + 1);
+} else {
+  fixture.seedSeasonal(syntheticSeasonalRows(rows, { cycleId: SEASONAL_TEST_CYCLE }));
+  owners = seedSeasonalRouteOwners(fixture, rows + 1);
+  Object.assign(process.env, { SEASONAL_CYCLE_ID: SEASONAL_TEST_CYCLE,
+    SEASONAL_ENABLED: "true", SEASONAL_STARTS_AT: "2020-01-01T00:00:00Z",
+    SEASONAL_UPSTREAM_CONTRACT: "direct_profile", SEASONAL_COLLECTION_SOURCE: "operator",
+    SEASONAL_PROFILE_URL_TEMPLATE: "https://players.tarkov.dev/pvp-season/{aid}.json" });
+  delete process.env.SEASONAL_ENDS_AT;
+}
 process.env.RUST_COHORT_BIN = binary;
-const { GET } = await import("../app/api/average/cohort/route.ts");
+const { GET } = mode === "seasonal" ? await import("../app/api/seasonal/cohort/route.ts")
+  : await import("../app/api/average/cohort/route.ts");
 const { NextRequest } = await import("next/server");
 const { resetDynamicAverageCacheForTests } = await import("../lib/average-dynamic-cache.ts");
 const { stopCohortWorkersForTests } = await import("../lib/cohort-worker.ts");
@@ -90,7 +111,12 @@ function distribution(values) {
 async function request(kind, statistic, index = 0) {
   const aid = owners[kind][index % owners[kind].length];
   const started = performance.now();
-  const result = await realFetch(`${base}/api/average/cohort?mode=${mode}&aid=${aid}&statistic=${statistic}&period=all&dimension=hours`);
+  const path = mode === "seasonal" ? "/api/seasonal/cohort" : "/api/average/cohort";
+  const params = new URLSearchParams({ mode, aid: String(aid), statistic, period: "all" });
+  if (mode === "arena") params.set("arenaMode", kind === "population" ? "overall" : ARENA_TEST_MODE);
+  else params.set("dimension", "hours");
+  if (mode === "seasonal") params.set("cycle", SEASONAL_TEST_CYCLE);
+  const result = await realFetch(`${base}${path}?${params}`);
   const body = await result.json();
   const totalMs = performance.now() - started;
   const phases = {};
@@ -99,7 +125,10 @@ async function request(kind, statistic, index = 0) {
     if (match) phases[match[1]] = Number(match[2]);
   }
   return { totalMs, phases, status: result.status, body,
-    valid: result.status === 200 && body.mode === mode && body.identity?.mode === mode && body.strategy === kind && body.n > 0 };
+    valid: result.status === 200 && (mode === "arena" ? body.gameMode === mode && body.sampleN > 0
+      : body.mode === mode && body.n > 0) &&
+      (mode !== "arena" || body.mode === (kind === "population" ? "overall" : ARENA_TEST_MODE)) &&
+      (mode !== "seasonal" || body.identity?.cycleId === SEASONAL_TEST_CYCLE) && body.identity?.mode === mode && body.identity?.aid === aid && body.strategy === kind };
 }
 async function series(kind, statistic, cache, concurrency) {
   const samples = [];
@@ -115,7 +144,8 @@ async function series(kind, statistic, cache, concurrency) {
   return { cache, concurrency, errors: samples.filter((sample) => !sample.valid).map((sample) =>
     ({ status: sample.status, body: sample.body })),
     http: distribution(samples.map((sample) => sample.totalMs)),
-    server: distribution(samples.flatMap((sample) => sample.phases.total == null ? [] : [sample.phases.total])),
+    server: distribution(mode === "seasonal" ? requests.flatMap((event) => event.total_ms == null ? [] : [event.total_ms])
+      : samples.flatMap((sample) => sample.phases.total == null ? [] : [sample.phases.total])),
     queue: distribution(jobs.map((event) => event.queue_ms)),
     worker: distribution(jobs.map((event) => event.worker_ms)),
     workerJobs: jobs.length, workerBackends: [...new Set(jobs.map((event) => event.backend))], cacheHits: requests.filter((event) => event.cache === "hit").length,
@@ -139,6 +169,7 @@ try {
       for (const concurrency of [1, 4]) {
         const measurement = await series(kind, statistic, "miss", concurrency);
         assert.equal(measurement.errors.length, 0, JSON.stringify(measurement.errors));
+        assert.equal(measurement.server.samples, iterations, "every request must have a real server timing");
         assert.equal(measurement.workerJobs, iterations, "every miss must compute; durable cache and request deduplication must not hide work");
         assert.deepEqual(measurement.workerBackends, [backend], "the selected backend must actually execute every cache miss");
         results.push({ backend, scenario: kind, statistic, ...measurement });
@@ -147,6 +178,7 @@ try {
       for (let i = 0; i < owners[kind].length; i++) assert.ok((await request(kind, statistic, i)).valid);
       const cached = await series(kind, statistic, "hit", 4);
       assert.equal(cached.errors.length, 0);
+      assert.equal(cached.server.samples, iterations, "every cache hit must have a real server timing");
       assert.equal(cached.workerJobs, 0, "cache hits must bypass the worker");
       assert.equal(cached.cacheHits, iterations);
       results.push({ backend, scenario: kind, statistic, ...cached });
@@ -161,7 +193,7 @@ try {
   console.info = oldInfo;
   await new Promise((resolve) => server.close(resolve));
   cacheDb.close();
-  fixture.db.close();
+  if (persistent) fixture.db.close(); else fixture.close();
 }
 const versionDb = new DatabaseSync(":memory:");
 const sqliteVersion = versionDb.prepare("SELECT sqlite_version() AS version").get().version;
@@ -171,7 +203,8 @@ const report = { formatVersion: 1, generatedAt: new Date().toISOString(),
     logicalCpus: cpus().length, sqlite: sqliteVersion },
   fixture: { mode, players: rows, owners: 8, synthetic: true, seed: "deterministic modular metric distributions v1" },
   methodology: { iterations, warmupRequestsPerScenario: 1, backendSelection, backendOrder,
-    http: "loopback HTTP -> actual app/api/average/cohort/route.ts GET -> stored progression snapshot -> cache -> worker -> SQLite -> JSON",
+    http: `loopback HTTP -> actual ${mode === "seasonal" ? "app/api/seasonal/cohort/route.ts" : "app/api/average/cohort/route.ts"} GET -> cache -> worker -> SQLite -> JSON`,
+    server: mode === "seasonal" ? "request_timing_v1.total_ms; route has no Server-Timing header" : "Server-Timing total",
     misses: "memory and durable statistics response cache cleared before each sequential request or distinct-owner concurrent batch",
     hits: "all four owners cached before timing; worker job count must be zero",
     cold: "fresh worker process; route modules, fixture and analytics schema already initialized; OS page cache not flushed",

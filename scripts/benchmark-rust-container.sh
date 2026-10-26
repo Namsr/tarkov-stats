@@ -15,10 +15,11 @@ endpoint=$(docker context inspect default --format '{{(index .Endpoints "docker"
 mkdir -p -- "$output"
 output=$(cd "$output" && pwd)
 payload="$output/payload"
-mkdir -p "$payload/scripts" "$payload/tests/fixtures" "$payload/app/api/average/cohort"
+mkdir -p "$payload/scripts" "$payload/tests/fixtures" "$payload/app/api/average/cohort" "$payload/app/api/seasonal/cohort"
 for file in benchmark-rust-cohort.mjs benchmark-worker-resources.mjs; do cp "$root/scripts/$file" "$payload/scripts/$file"; done
-for file in rust-cohort-data.mjs next-cache-shim.mjs next-server-entry.mjs; do cp "$root/tests/fixtures/$file" "$payload/tests/fixtures/$file"; done
+for file in rust-cohort-data.mjs rust-arena-seasonal-data.mjs next-cache-shim.mjs next-server-entry.mjs; do cp "$root/tests/fixtures/$file" "$payload/tests/fixtures/$file"; done
 cp "$root/app/api/average/cohort/route.ts" "$payload/app/api/average/cohort/route.ts"
+cp "$root/app/api/seasonal/cohort/route.ts" "$payload/app/api/seasonal/cohort/route.ts"
 rows=${BENCHMARK_ROWS:-30000}
 iterations=${BENCHMARK_ITERATIONS:-20}
 rounds=${BENCHMARK_ROUNDS:-2}
@@ -28,7 +29,7 @@ cleanup() {
   if [[ -n $active_container ]]; then docker rm --force "$active_container" >/dev/null 2>&1 || true; fi
 }
 trap cleanup EXIT
-for mode in regular pve; do
+for mode in regular pve arena seasonal; do
   for ((round=1; round<=rounds; round++)); do
     # Reverse order between repetitions; each backend still gets a fresh process,
     # fixture, cgroup and high-water memory counter, with no shared live cache.

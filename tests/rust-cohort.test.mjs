@@ -64,10 +64,10 @@ test("Linux report validator rejects incomplete coverage, wrong limits and OOM e
   const directory = mkdtempSync(join(tmpdir(), "rust-report-contract-"));
   const write = (file, value) => writeFileSync(join(directory, file), JSON.stringify(value));
   const memory = 384 * 1024 ** 2;
-  for (const mode of ["regular", "pve"]) for (const backend of ["typescript", "rust"]) {
+  for (const mode of ["regular", "pve", "arena", "seasonal"]) for (const backend of ["typescript", "rust"]) {
     const results = ["matched", "population"].flatMap((scenario) => ["median", "trimmed_mean"].flatMap((statistic) =>
       [["miss", 1], ["miss", 4], ["hit", 4]].map(([cache, concurrency]) => ({ backend, scenario, statistic, cache, concurrency,
-        errors: [], cacheHits: cache === "hit" ? 4 : 0, http: { samples: 4, p50Ms: 2, p95Ms: 4 }, workerJobs: cache === "miss" ? 4 : 0,
+        errors: [], cacheHits: cache === "hit" ? 4 : 0, http: { samples: 4, p50Ms: 2, p95Ms: 4 }, server: { samples: 4, p50Ms: 1, p95Ms: 3 }, workerJobs: cache === "miss" ? 4 : 0,
         workerBackends: cache === "miss" ? [backend] : [] }))));
     results.unshift({ backend, scenario: "first_request_fresh_worker", coldHttpMs: 5 });
     write(`${mode}-round1-${backend}.json`, { fixture: { mode }, environment: { os: "linux" },
@@ -82,7 +82,7 @@ test("Linux report validator rejects incomplete coverage, wrong limits and OOM e
     encoding: "utf8", timeout: 5000, windowsHide: true, env: { ...process.env, GITHUB_STEP_SUMMARY: "" },
   });
   assert.equal(validate().status, 0);
-  assert.equal(JSON.parse(readFileSync(join(directory, "summary.json"), "utf8")).summaries.length, 4);
+  assert.equal(JSON.parse(readFileSync(join(directory, "summary.json"), "utf8")).summaries.length, 8);
   assert.notEqual(validate(2).status, 0, "missing repetitions must not look complete");
   const file = "pve-round1-rust.inspect.json";
   const original = JSON.parse(readFileSync(join(directory, file), "utf8"));
@@ -97,6 +97,7 @@ test("Linux report validator rejects incomplete coverage, wrong limits and OOM e
     (result) => { result.http.p95Ms = null; },
     (result) => { result.cacheHits = 1; },
     (result) => { result.http.p50Ms = -1; },
+    (result) => { result.server.samples = 0; },
   ]) {
     const invalid = structuredClone(report);
     change(invalid.results.find((result) => result.cache === "miss"));
@@ -108,30 +109,31 @@ test("Linux report validator rejects incomplete coverage, wrong limits and OOM e
   assert.notEqual(validate().status, 0, "missing API scenarios must not look complete");
 });
 
-test("Rust opt-in selects Regular and PvE independently, leaving other jobs on TypeScript", () => {
-  const saved = { REGULAR_COHORT_BACKEND: process.env.REGULAR_COHORT_BACKEND,
-    PVE_COHORT_BACKEND: process.env.PVE_COHORT_BACKEND };
+test("Rust opt-in selects all four comparison modes independently", () => {
+  const variables = ["REGULAR_COHORT_BACKEND", "PVE_COHORT_BACKEND", "ARENA_COHORT_BACKEND", "SEASONAL_COHORT_BACKEND"];
+  const saved = Object.fromEntries(variables.map((key) => [key, process.env[key]]));
+  const jobs = [cohortJob(), cohortJob({ mode: "pve" }),
+    { kind: "arena", args: [1, "overall"] }, { kind: "seasonal", args: [{ aid: 1, cycleId: "test" }] }];
   try {
-    for (const mode of ["regular", "pve"]) {
-      const input = cohortJob({ mode });
-      assert.equal(cohortComputeBackend(input, "typescript"), "typescript");
-      assert.equal(cohortComputeBackend(input, "invalid"), "typescript");
-      assert.equal(cohortComputeBackend(input, "rust"), "rust");
+    for (const job of [...jobs, { kind: "arena_population", args: [{}] }]) {
+      assert.equal(cohortComputeBackend(job, "typescript"), "typescript");
+      assert.equal(cohortComputeBackend(job, "invalid"), "typescript");
+      assert.equal(cohortComputeBackend(job, "rust"), "rust");
     }
-    for (const [regular, pve] of [["rust", "typescript"], ["typescript", "rust"], ["rust", "rust"]]) {
-      process.env.REGULAR_COHORT_BACKEND = regular;
-      process.env.PVE_COHORT_BACKEND = pve;
-      assert.equal(cohortComputeBackend(cohortJob()), regular);
-      assert.equal(cohortComputeBackend(cohortJob({ mode: "pve" })), pve);
-    }
-    delete process.env.REGULAR_COHORT_BACKEND;
-    delete process.env.PVE_COHORT_BACKEND;
-    assert.equal(cohortComputeBackend(cohortJob()), "typescript");
-    assert.equal(cohortComputeBackend(cohortJob({ mode: "pve" })), "typescript");
-    for (const kind of ["arena", "arena_population", "seasonal", "seasonal_average", "baseline", "average_metrics"]) {
-      assert.equal(cohortComputeBackend({ kind, mode: "pve", args: [] }, "rust"), "typescript");
+    for (const key of variables) delete process.env[key];
+    for (const job of jobs) assert.equal(cohortComputeBackend(job), "typescript");
+    for (let selected = 0; selected < variables.length; selected++) {
+      for (const key of variables) process.env[key] = "typescript";
+      process.env[variables[selected]] = "rust";
+      for (let index = 0; index < jobs.length; index++) {
+        assert.equal(cohortComputeBackend(jobs[index]), selected === index ? "rust" : "typescript");
+      }
+      assert.equal(cohortComputeBackend({ kind: "arena_population", args: [{}] }), selected === 2 ? "rust" : "typescript");
     }
     assert.equal(cohortComputeBackend({ ...cohortJob(), mode: "arena" }, "rust"), "typescript");
+    for (const kind of ["seasonal_average", "baseline", "average_metrics"]) {
+      assert.equal(cohortComputeBackend({ kind, mode: "pve", args: [] }, "rust"), "typescript");
+    }
   } finally {
     for (const [key, value] of Object.entries(saved)) {
       if (value === undefined) delete process.env[key]; else process.env[key] = value;
