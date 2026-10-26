@@ -1,14 +1,16 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { registerHooks } from "node:module";
-import { resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { DatabaseSync } from "node:sqlite";
-import { readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { runInNewContext } from "node:vm";
 import ts from "typescript";
 import { browserPage, browserEndpoint, parseBrowserSamples, resourceSamples } from "../lib/observability/browser-performance.ts";
 import { createAnalyticsStore, getAnalyticsStore } from "../lib/admin/analytics-db.ts";
+import { createBrowserPerformanceStore } from "../lib/admin/browser-performance-db.ts";
 import { healthOperationEntry, healthReport } from "../lib/admin/health-report.ts";
 import { createRequire } from "node:module";
 import React from "react";
@@ -195,6 +197,61 @@ test("browser aggregates keep domains, window bounds, missing data and retention
   assert.equal(store.browserPerformanceSummary("15m", "all", now).samples, 3);
   store.cleanup(now);
   assert.equal(db.prepare("SELECT COUNT(*) AS n FROM browser_performance WHERE value = 5").get().n, 0);
+});
+
+test("a busy outermost browser batch releases its transaction before the backup reader closes", () => {
+  const directory = mkdtempSync(join(tmpdir(), "browser-batch-busy-"));
+  assert.equal(dirname(resolve(directory)), resolve(tmpdir()));
+  const connections = [];
+  try {
+    const file = join(directory, "analytics.db");
+    const writer = new DatabaseSync(file); connections.push(writer);
+    writer.exec("PRAGMA journal_mode=DELETE; PRAGMA busy_timeout=0");
+    const store = createBrowserPerformanceStore(writer);
+    const reader = new DatabaseSync(file); connections.push(reader);
+    const third = new DatabaseSync(file); connections.push(third);
+    reader.exec("PRAGMA busy_timeout=0; BEGIN");
+    third.exec("PRAGMA busy_timeout=0");
+    assert.equal(reader.prepare("SELECT COUNT(*) AS n FROM browser_performance").get().n, 0);
+    assert.throws(() => store.record("tarkovstats.ru", "/", [
+      { metric: "lcp", endpoint: null, value: 10 }, { metric: "lcp", endpoint: null, value: 20 },
+    ], 1), /locked|busy/i);
+    assert.equal(writer.isTransaction, false, "failed commit must not retain an outer transaction or PENDING lock");
+    assert.equal(third.prepare("SELECT COUNT(*) AS n FROM browser_performance").get().n, 0);
+    reader.exec("ROLLBACK");
+    third.prepare("INSERT INTO browser_performance(occurred_at,host,path,endpoint,metric,value) VALUES(1,'tarkovstats.ru','/',NULL,'lcp',40)").run();
+    store.record("tarkovstats.ru", "/", [{ metric: "lcp", endpoint: null, value: 50 }], 1);
+    assert.deepEqual(third.prepare("SELECT value FROM browser_performance ORDER BY value").all().map((row) => row.value), [40, 50]);
+  } finally {
+    for (const db of connections.reverse()) db.close();
+    rmSync(directory, { recursive: true });
+  }
+});
+
+test("a failed nested browser batch preserves its caller's transaction and unrelated writes", () => {
+  const directory = mkdtempSync(join(tmpdir(), "browser-batch-nested-"));
+  assert.equal(dirname(resolve(directory)), resolve(tmpdir()));
+  const connections = [];
+  try {
+    const file = join(directory, "analytics.db");
+    const writer = new DatabaseSync(file); connections.push(writer);
+    writer.exec("PRAGMA journal_mode=DELETE; PRAGMA busy_timeout=0; CREATE TABLE unrelated(value TEXT)");
+    const store = createBrowserPerformanceStore(writer);
+    writer.exec("BEGIN; INSERT INTO unrelated VALUES('keep')");
+    assert.throws(() => store.record("tarkovstats.ru", "/", [
+      { metric: "lcp", endpoint: null, value: 10 }, { metric: "lcp", endpoint: null, value: null },
+    ], 1), /NOT NULL constraint failed: browser_performance\.value/);
+    assert.equal(writer.isTransaction, true, "the caller still owns its outer transaction");
+    assert.equal(writer.prepare("SELECT COUNT(*) AS n FROM browser_performance").get().n, 0);
+    assert.equal(writer.prepare("SELECT value FROM unrelated").get().value, "keep");
+    writer.exec("COMMIT");
+    const observer = new DatabaseSync(file); connections.push(observer);
+    assert.equal(observer.prepare("SELECT value FROM unrelated").get().value, "keep");
+    assert.equal(observer.prepare("SELECT COUNT(*) AS n FROM browser_performance").get().n, 0);
+  } finally {
+    for (const db of connections.reverse()) db.close();
+    rmSync(directory, { recursive: true });
+  }
 });
 
 test("health export preserves failure phases, outliers, series and publication age without private fields", (t) => {

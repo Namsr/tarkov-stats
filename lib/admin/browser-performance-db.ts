@@ -18,12 +18,17 @@ export function createBrowserPerformanceStore(db: any) {
   const insert = db.prepare("INSERT INTO browser_performance(occurred_at,host,path,endpoint,metric,value) VALUES (?,?,?,?,?,?)");
   return {
     record(host: string, path: string, samples: BrowserSample[], now = Date.now()) {
+      const ownsTransaction = !db.isTransaction;
       db.exec("SAVEPOINT browser_performance_batch");
       try {
         for (const sample of samples) insert.run(now, host, path, sample.endpoint, sample.metric, sample.value);
         db.exec("RELEASE browser_performance_batch");
       } catch (error) {
-        db.exec("ROLLBACK TO browser_performance_batch; RELEASE browser_performance_batch");
+        try {
+          // RELEASE commits an outermost savepoint. If that commit is busy,
+          // releasing it again can retain a PENDING lock on this cached handle.
+          db.exec(ownsTransaction ? "ROLLBACK" : "ROLLBACK TO browser_performance_batch; RELEASE browser_performance_batch");
+        } catch { /* Preserve the original write/commit error if cleanup also fails. */ }
         throw error;
       }
     },
