@@ -140,3 +140,7 @@ next-env.d.ts
 
 !/docs/rust-ui-migration.md
 !/docs/rust-home-showcase.md
+
+/public/_rust/
+
+!/docs/rust-arena-ui.md

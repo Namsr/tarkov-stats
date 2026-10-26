@@ -1,9 +1,11 @@
+pub mod arena;
 mod cache;
 mod compute;
 mod config;
 mod http;
 mod showcase;
 mod storage;
+mod ui;
 
 use axum::{
     Json, Router,
@@ -35,13 +37,25 @@ async fn main() {
     }
 }
 async fn serve() -> Result<(), Box<dyn std::error::Error>> {
+    let ui_enabled = match env::var("ARENA_UI_UPSTREAM").as_deref() {
+        Err(_) | Ok("") | Ok("web:3000") => false,
+        Ok("web:3001") => true,
+        _ => return Err("ARENA_UI_UPSTREAM must be web:3000 or web:3001".into()),
+    };
     let worker = compute::Worker::start().map_err(std::io::Error::other)?;
     let storage = storage::Storage::start();
     let config = config::Config::from_env();
     let showcase = showcase::Showcase::start(config.clone());
+    let cache = cache::Cache::new(storage.clone(), worker.clone());
+    let arena = arena::ArenaService::new(cache.clone(), storage.clone());
+    let arena_ui = if ui_enabled {
+        Some(ui::Ui::start(arena.clone(), &config).map_err(std::io::Error::other)?)
+    } else {
+        None
+    };
     let state = Arc::new(http::App {
         config,
-        cache: cache::Cache::new(storage.clone(), worker.clone()),
+        cache,
         storage,
     });
     let app = Router::new()
@@ -60,6 +74,17 @@ async fn serve() -> Result<(), Box<dyn std::error::Error>> {
         .merge(
             Router::new()
                 .route(
+                    "/api/average",
+                    get(arena::get)
+                        .options(http::options)
+                        .fallback(http::method_not_allowed),
+                )
+                .route("/api/average/", any(http::trailing))
+                .with_state(arena),
+        )
+        .merge(
+            Router::new()
+                .route(
                     "/api/home/showcase",
                     get(showcase::get)
                         .options(http::options)
@@ -68,6 +93,29 @@ async fn serve() -> Result<(), Box<dyn std::error::Error>> {
                 .route("/api/home/showcase/", any(http::trailing))
                 .with_state(showcase),
         );
+    let app = if let Some(state) = arena_ui {
+        app.merge(
+            Router::new()
+                .route(
+                    "/population/arena",
+                    get(ui::page)
+                        .options(http::options)
+                        .fallback(http::method_not_allowed),
+                )
+                .route("/population/arena/", any(http::trailing))
+                .route("/average/arena", any(ui::alias))
+                .route("/average/arena/", any(http::trailing))
+                .route(
+                    "/_rust/arena/{version}/{name}",
+                    get(ui::asset)
+                        .options(http::options)
+                        .fallback(http::method_not_allowed),
+                )
+                .with_state(state),
+        )
+    } else {
+        app
+    };
     let app = http::secure(app);
     let bind = env::var("RUST_API_BIND").unwrap_or_else(|_| "127.0.0.1:3001".into());
     let listener = tokio::net::TcpListener::bind(bind).await?;

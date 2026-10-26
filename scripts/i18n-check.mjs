@@ -1,6 +1,6 @@
 // i18n guard. Fails (exit 1) if the UI could ship in only one language:
 //   1) a literal t("key") used in app/ or components/ has no dictionary entry;
-//   2) the `en` and `ru` key sets in lib/i18n/dictionary.ts have diverged.
+//   2) the `en` and `ru` key sets in lib/i18n/messages.json have diverged.
 //
 // Computed keys like t("metric." + x) are skipped (the literal ends with "."),
 // so add such namespaces to BOTH languages and rely on the parity check.
@@ -10,27 +10,27 @@
 import fs from "node:fs";
 import path from "node:path";
 
-const DICT = "lib/i18n/dictionary.ts";
-const SCAN_DIRS = ["app", "components"];
+const DICT = "lib/i18n/messages.json";
+const SCAN_DIRS = ["app", "components", "rust/ui/src"];
 
 function fail(msg) {
   console.error(`[31m✗ i18n-check: ${msg}[0m`);
 }
 
-const src = fs.readFileSync(DICT, "utf8");
-const ruIdx = src.indexOf("const ru: Dict = {");
-if (ruIdx < 0) {
-  fail(`could not find the ru object in ${DICT}`);
-  process.exit(1);
+const messages = JSON.parse(fs.readFileSync(DICT, "utf8"));
+for (const lang of ["en", "ru"]) {
+  if (!messages[lang] || Object.values(messages[lang]).some((value) => typeof value !== "string")) {
+    fail(`invalid ${lang} translations in ${DICT}`);
+    process.exit(1);
+  }
 }
-const keysOf = (s) => new Set([...s.matchAll(/^\s*"([^"]+)":/gm)].map((m) => m[1]));
-const enKeys = keysOf(src.slice(0, ruIdx));
-const ruKeys = keysOf(src.slice(ruIdx));
+const enKeys = new Set(Object.keys(messages.en));
+const ruKeys = new Set(Object.keys(messages.ru));
 const allKeys = new Set([...enKeys, ...ruKeys]);
 
 const walk = (dir) => fs.existsSync(dir)
   ? fs.readdirSync(dir, { withFileTypes: true, recursive: true })
-    .filter((e) => e.isFile() && /\.tsx?$/.test(e.name))
+    .filter((e) => e.isFile() && /\.(?:tsx?|rs)$/.test(e.name))
     .map((e) => path.join(e.parentPath, e.name))
   : [];
 

@@ -59,6 +59,50 @@ pub fn valid_lookup(value: &Value, input: &Value) -> bool {
                 && identity.get("cycleId").and_then(Value::as_str) == Some(cycle)
         })
 }
+#[derive(Clone, Copy)]
+pub enum Kind {
+    Seasonal,
+    ArenaPopulation,
+}
+impl Kind {
+    pub fn from_job(job: &Value) -> Option<Self> {
+        match job.get("kind")?.as_str()? {
+            "seasonal" => Some(Self::Seasonal),
+            "arena_population" => Some(Self::ArenaPopulation),
+            _ => None,
+        }
+    }
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Seasonal => "seasonal",
+            Self::ArenaPopulation => "arena_population",
+        }
+    }
+    pub fn ttl_ms(self) -> f64 {
+        match self {
+            Self::Seasonal => 300000.0,
+            Self::ArenaPopulation => 900000.0,
+        }
+    }
+    pub fn valid(self, value: &Value, job: &Value) -> bool {
+        let Some(input) = job.get("args").and_then(|args| args.get(0)) else {
+            return false;
+        };
+        match self {
+            Self::Seasonal => valid_lookup(value, input),
+            Self::ArenaPopulation => value.is_null() || crate::arena::valid_result(value, input),
+        }
+    }
+    pub fn accepted(self, value: &Value) -> bool {
+        match self {
+            Self::Seasonal => {
+                value.get("available").and_then(Value::as_bool) == Some(true)
+                    && value.get("result").is_some_and(|value| !value.is_null())
+            }
+            Self::ArenaPopulation => !value.is_null(),
+        }
+    }
+}
 struct Job {
     args: Value,
     queued: Instant,
@@ -131,14 +175,10 @@ impl Session {
         }
         match (reply.get("result"), reply.get("error")) {
             (Some(value), None) => {
-                if !args
-                    .get("args")
-                    .and_then(|args| args.get(0))
-                    .is_some_and(|input| valid_lookup(value, input))
-                {
+                if !Kind::from_job(args).is_some_and(|kind| kind.valid(value, args)) {
                     return Err(Failure::new(
                         "protocol",
-                        "Invalid Seasonal worker result identity or shape",
+                        "Invalid worker result identity or shape",
                     ));
                 }
                 Ok(value.clone())
@@ -241,7 +281,7 @@ impl Worker {
                     child.stop().await;
                 }
                 crate::log_json(
-                    &json!({"event":"cohort_job_v1","at":crate::now_ms(),"kind":"seasonal","backend":"rust","outcome":result.as_ref().map_or_else(|e|e.reason,|_|"success"),"elapsed_ms":job.queued.elapsed().as_millis()as u64,"queue_ms":queue_ms,"worker_ms":worker_ms}),
+                    &json!({"event":"cohort_job_v1","at":crate::now_ms(),"kind":Kind::from_job(&job.args).map(Kind::name),"backend":"rust","outcome":result.as_ref().map_or_else(|e|e.reason,|_|"success"),"elapsed_ms":job.queued.elapsed().as_millis()as u64,"queue_ms":queue_ms,"worker_ms":worker_ms}),
                 );
                 let _ = job.reply.send(result.map(|value| Computed {
                     value,

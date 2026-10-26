@@ -22,7 +22,7 @@ test("admin UI exposes the agreed tabs, manual refresh, and guarded moderation i
   const [dashboard, profile, dictionary, styles, accountsRoute] = await Promise.all([
     readFile("components/AdminDashboard.tsx", "utf8"),
     readFile("app/profile/page.tsx", "utf8"),
-    readFile("lib/i18n/dictionary.ts", "utf8"),
+    readFile("lib/i18n/messages.json", "utf8"),
     readFile("app/globals.css", "utf8"),
     readFile("app/api/admin/accounts/route.ts", "utf8"),
   ]);

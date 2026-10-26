@@ -8,6 +8,15 @@ enum Command {
     Read(String, oneshot::Sender<Option<Value>>),
     Write(String, Value, i64, oneshot::Sender<()>),
     Event(Value),
+    ArenaVersion(oneshot::Sender<u64>),
+    Publication(String, i64, oneshot::Sender<Option<Publication>>),
+}
+#[derive(Clone, Debug)]
+pub struct Publication {
+    pub generation: f64,
+    pub generated_at: f64,
+    pub stale: bool,
+    pub payload: Value,
 }
 #[derive(Clone)]
 pub struct Storage {
@@ -15,6 +24,8 @@ pub struct Storage {
 }
 struct State {
     cache_path: String,
+    players_path: String,
+    players: Option<Connection>,
     analytics_path: String,
     enabled: bool,
     reader: Option<Connection>,
@@ -28,6 +39,11 @@ impl State {
                 .ok()
                 .filter(|path| !path.is_empty())
                 .unwrap_or_else(|| "/data/average-publications.db".into()),
+            players_path: env::var("SQLITE_PATH")
+                .ok()
+                .filter(|p| !p.is_empty())
+                .unwrap_or_else(|| "/data/players.db".into()),
+            players: None,
             analytics_path: env::var("ADMIN_ANALYTICS_SQLITE_PATH")
                 .ok()
                 .filter(|path| !path.is_empty())
@@ -85,6 +101,66 @@ impl State {
         db.execute("DELETE FROM statistics_response_cache WHERE cache_key IN(SELECT cache_key FROM(SELECT cache_key,ROW_NUMBER()OVER(ORDER BY generated_at DESC,cache_key)AS position,SUM(payload_bytes)OVER(ORDER BY generated_at DESC,cache_key)AS bytes FROM statistics_response_cache)WHERE position>4096 OR bytes>67108864)",[])?;
         Ok(())
     }
+    fn arena_version(&mut self) -> u64 {
+        if self.players.is_none() {
+            let Ok(db) = Connection::open_with_flags(
+                &self.players_path,
+                OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+            ) else {
+                return 0;
+            };
+            if db
+                .busy_timeout(std::time::Duration::from_millis(100))
+                .is_err()
+            {
+                return 0;
+            }
+            self.players = Some(db);
+        }
+        self.players
+            .as_ref()
+            .unwrap()
+            .prepare_cached(
+                "SELECT value FROM arena_profile_sync_meta WHERE key='dynamic_cache_version'",
+            )
+            .ok()
+            .and_then(|mut stmt| {
+                stmt.query_row([], |row| Ok(sql_number(row.get_ref(0)?)))
+                    .optional()
+                    .ok()
+                    .flatten()
+                    .flatten()
+            })
+            .filter(|n| *n >= 0.0 && *n <= 9007199254740991.0 && n.fract() == 0.0)
+            .map_or(0, |n| n as u64)
+    }
+    fn publication(&mut self, variant: &str, now: i64) -> Option<Publication> {
+        let db = self.cache(false).ok()?;
+        let row=db.prepare_cached("SELECT p.generation,p.generated_at,p.payload_json,s.last_error FROM average_publication_current c JOIN average_publication_payloads p ON p.scope=c.scope AND p.generation=c.generation LEFT JOIN average_publication_state s ON s.scope=c.scope WHERE c.scope='arena' AND p.variant=? AND length(CAST(p.payload_json AS BLOB))<=1048576").ok()?.query_row([variant],|row|{
+            // node:sqlite's default decoder rejects unsafe INTEGERs even in
+            // selected columns which the caller later ignores (last_error).
+            for index in 0..4 {
+                if let rusqlite::types::ValueRef::Integer(n)=row.get_ref(index)?
+                    && !(-9007199254740991..=9007199254740991).contains(&n) {
+                    return Err(rusqlite::Error::IntegralValueOutOfRange(index,n));
+                }
+            }
+            Ok((sql_number(row.get_ref(0)?),sql_number(row.get_ref(1)?),row.get::<_,String>(2)?,!matches!(row.get_ref(3)?,rusqlite::types::ValueRef::Null)))
+        }).optional().ok()??;
+        let (Some(generation), Some(generated_at)) = (row.0, row.1) else {
+            return None;
+        };
+        let payload: Value = serde_json::from_str(&row.2).ok()?;
+        if payload.is_null() {
+            return None;
+        }
+        Some(Publication {
+            generation,
+            generated_at,
+            stale: now as f64 - generated_at > 23_400_000.0 || row.3,
+            payload,
+        })
+    }
     fn event(&mut self, event: &Value) -> rusqlite::Result<()> {
         if self.analytics.is_none() {
             let db = Connection::open_with_flags(
@@ -97,7 +173,9 @@ impl State {
         let db = self.analytics.as_mut().unwrap();
         let text = |key: &str| event.get(key).and_then(Value::as_str);
         let number = |key: &str| event.get(key).and_then(Value::as_i64);
-        db.prepare_cached("INSERT INTO request_events(occurred_at,host,operation,aid,mode,cycle_id,outcome,status,source,cache,storage,failure_stage,error_code,latency_ms,cohort_ms,queue_ms,worker_ms,request_id)VALUES(?,NULL,'average_cohort',?,'seasonal',?,?,?,?,?,?,?,?,?,?,?,?,?)")?.execute(params![number("at"),number("aid"),text("cycle"),text("outcome"),number("status"),text("source"),text("cache"),text("storage"),text("failure_stage"),text("error_code"),number("total_ms"),number("cohort_ms"),number("queue_ms"),number("worker_ms"),text("request_id")])?;
+        let operation = text("operation").unwrap_or("average_cohort");
+        let mode = text("mode").or_else(|| (operation == "average_cohort").then_some("seasonal"));
+        db.prepare_cached("INSERT INTO request_events(occurred_at,host,operation,aid,mode,cycle_id,outcome,status,source,cache,storage,failure_stage,error_code,latency_ms,cohort_ms,queue_ms,worker_ms,request_id,averages_ms)VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)")?.execute(params![number("at"),text("host"),operation,number("aid"),mode,text("cycle"),text("outcome"),number("status"),text("source"),text("cache"),text("storage"),text("failure_stage"),text("error_code"),number("total_ms"),number("cohort_ms"),number("queue_ms"),number("worker_ms"),text("request_id"),number("averages_ms")])?;
         Ok(())
     }
 }
@@ -119,6 +197,12 @@ impl Storage {
                                 eprintln!("Rust statistics cache write unavailable");
                             }
                             let _ = reply.send(());
+                        }
+                        Command::ArenaVersion(reply) => {
+                            let _ = reply.send(state.arena_version());
+                        }
+                        Command::Publication(variant, now, reply) => {
+                            let _ = reply.send(state.publication(&variant, now));
                         }
                         Command::Event(event) => {
                             if std::time::Instant::now() >= retry_analytics
@@ -150,6 +234,20 @@ impl Storage {
             let _ = answer.await;
         }
     }
+    pub async fn arena_version(&self) -> u64 {
+        let (reply, answer) = oneshot::channel();
+        if self.sender.try_send(Command::ArenaVersion(reply)).is_err() {
+            return 0;
+        }
+        answer.await.unwrap_or(0)
+    }
+    pub async fn publication(&self, variant: String, now: i64) -> Option<Publication> {
+        let (reply, answer) = oneshot::channel();
+        self.sender
+            .try_send(Command::Publication(variant, now, reply))
+            .ok()?;
+        answer.await.ok().flatten()
+    }
     pub fn event(&self, event: Value) {
         if self.sender.try_send(Command::Event(event)).is_err() {
             eprintln!("Rust analytics queue full");
@@ -157,6 +255,18 @@ impl Storage {
     }
 }
 
+fn sql_number(value: rusqlite::types::ValueRef<'_>) -> Option<f64> {
+    use rusqlite::types::ValueRef;
+    match value {
+        ValueRef::Null => Some(0.0),
+        ValueRef::Integer(n) => Some(n as f64),
+        ValueRef::Real(n) => n.is_finite().then_some(n),
+        ValueRef::Text(text) => crate::arena::number(std::str::from_utf8(text).ok()?),
+        ValueRef::Blob([]) => Some(0.0),
+        ValueRef::Blob([n]) => Some(*n as f64),
+        _ => None,
+    }
+}
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -170,6 +280,8 @@ mod tests {
         ));
         State {
             cache_path: path.to_string_lossy().into(),
+            players_path: path.to_string_lossy().into(),
+            players: None,
             analytics_path: String::new(),
             enabled: true,
             reader: None,
@@ -205,7 +317,7 @@ mod tests {
         let mut state = state();
         state.analytics_path = state.cache_path.clone();
         let db = Connection::open(&state.analytics_path).unwrap();
-        db.execute_batch("CREATE TABLE request_events(occurred_at INTEGER NOT NULL,host TEXT,operation TEXT,aid INTEGER,mode TEXT,cycle_id TEXT,outcome TEXT,status INTEGER,source TEXT,cache TEXT,storage TEXT,failure_stage TEXT,error_code TEXT,latency_ms INTEGER,cohort_ms INTEGER,queue_ms INTEGER,worker_ms INTEGER,request_id TEXT)").unwrap();
+        db.execute_batch("CREATE TABLE request_events(occurred_at INTEGER NOT NULL,host TEXT,operation TEXT,aid INTEGER,mode TEXT,cycle_id TEXT,outcome TEXT,status INTEGER,source TEXT,cache TEXT,storage TEXT,failure_stage TEXT,error_code TEXT,latency_ms INTEGER,cohort_ms INTEGER,queue_ms INTEGER,worker_ms INTEGER,request_id TEXT,averages_ms INTEGER)").unwrap();
         state.event(&serde_json::json!({"at":100,"aid":12,"cycle":"s1","outcome":"success","status":200,"source":"stored","cache":"miss","storage":"sqlite","total_ms":30,"cohort_ms":25,"queue_ms":5,"worker_ms":20})).unwrap();
         let row = db
             .query_row(
@@ -234,9 +346,127 @@ mod tests {
                 20
             )
         );
+        state.event(&serde_json::json!({"at":200,"operation":"average","mode":"arena","host":"tarkovstats.ru","outcome":"success","status":200,"total_ms":10,"averages_ms":7})).unwrap();
+        let row: (String, String, String, i64) = db
+            .query_row(
+                "SELECT operation,mode,host,averages_ms FROM request_events WHERE occurred_at=200",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .unwrap();
+        assert_eq!(
+            row,
+            ("average".into(), "arena".into(), "tarkovstats.ru".into(), 7)
+        );
         let path = state.analytics_path.clone();
         drop(state);
         drop(db);
         let _ = std::fs::remove_file(path);
+    }
+}
+
+#[cfg(test)]
+mod arena_tests {
+    use super::*;
+    #[test]
+    fn failed_version_read_retries_and_sees_external_revision_updates() {
+        let path = env::temp_dir().join(format!(
+            "arena-version-{}-{}.db",
+            std::process::id(),
+            crate::now_ms()
+        ));
+        let mut state = State::from_env();
+        state.players_path = path.to_string_lossy().into();
+        assert_eq!(state.arena_version(), 0);
+        assert!(!path.exists());
+        let db = Connection::open(&path).unwrap();
+        assert_eq!(state.arena_version(), 0);
+        db.execute_batch("CREATE TABLE arena_profile_sync_meta(key TEXT PRIMARY KEY,value TEXT);INSERT INTO arena_profile_sync_meta VALUES('dynamic_cache_version','0x10')").unwrap();
+        assert_eq!(state.arena_version(), 16);
+        db.execute("UPDATE arena_profile_sync_meta SET value='17'", [])
+            .unwrap();
+        assert_eq!(state.arena_version(), 17);
+        db.execute(
+            "UPDATE arena_profile_sync_meta SET value='9007199254740992'",
+            [],
+        )
+        .unwrap();
+        assert_eq!(state.arena_version(), 0);
+        drop(state);
+        drop(db);
+        let _ = std::fs::remove_file(path);
+    }
+    #[test]
+    fn publication_staleness_is_strictly_after_six_and_a_half_hours() {
+        let db = Connection::open_in_memory().unwrap();
+        db.execute_batch("CREATE TABLE average_publication_current(scope TEXT,generation INTEGER);CREATE TABLE average_publication_payloads(scope TEXT,generation INTEGER,variant TEXT,generated_at INTEGER,payload_json TEXT);CREATE TABLE average_publication_state(scope TEXT,last_error);INSERT INTO average_publication_current VALUES('arena',2);INSERT INTO average_publication_payloads VALUES('arena',2,'standard:teamFight:median',10,'{}');").unwrap();
+        let mut state = State::from_env();
+        state.reader = Some(db);
+        assert!(
+            !state
+                .publication("standard:teamFight:median", 23_400_010)
+                .unwrap()
+                .stale
+        );
+        assert!(
+            state
+                .publication("standard:teamFight:median", 23_400_011)
+                .unwrap()
+                .stale
+        );
+        state
+            .reader
+            .as_mut()
+            .unwrap()
+            .execute(
+                "INSERT INTO average_publication_state VALUES('arena','error')",
+                [],
+            )
+            .unwrap();
+        assert!(
+            state
+                .publication("standard:teamFight:median", 11)
+                .unwrap()
+                .stale
+        );
+        assert!(state.publication("missing", 11).is_none());
+        let db = state.reader.as_mut().unwrap();
+        db.execute(
+            "UPDATE average_publication_payloads SET generated_at=9007199254740993",
+            [],
+        )
+        .unwrap();
+        assert!(state.publication("standard:teamFight:median", 11).is_none());
+        state
+            .reader
+            .as_mut()
+            .unwrap()
+            .execute(
+                "UPDATE average_publication_payloads SET generated_at=10",
+                [],
+            )
+            .unwrap();
+        state
+            .reader
+            .as_mut()
+            .unwrap()
+            .execute(
+                "UPDATE average_publication_state SET last_error=9007199254740993",
+                [],
+            )
+            .unwrap();
+        assert!(state.publication("standard:teamFight:median", 11).is_none());
+        state
+            .reader
+            .as_mut()
+            .unwrap()
+            .execute(
+                "UPDATE average_publication_state SET last_error='9007199254740993'",
+                [],
+            )
+            .unwrap();
+        assert!(state.publication("standard:teamFight:median", 11).is_some());
+        state.reader.as_mut().unwrap().execute_batch("UPDATE average_publication_current SET generation=9007199254740993;UPDATE average_publication_payloads SET generation=9007199254740993").unwrap();
+        assert!(state.publication("standard:teamFight:median", 11).is_none());
     }
 }

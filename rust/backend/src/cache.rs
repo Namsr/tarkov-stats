@@ -1,5 +1,5 @@
 use crate::{
-    compute::{Computed, Failure, Worker},
+    compute::{Computed, Failure, Kind, Worker},
     storage::Storage,
 };
 use serde::{Deserialize, Serialize};
@@ -16,7 +16,6 @@ use tokio::sync::watch;
 
 const MAX_KEYS: usize = 2048;
 const MAX_BYTES: usize = 32 * 1024 * 1024;
-const TTL_MS: f64 = 300000.0;
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct Saved {
@@ -149,6 +148,10 @@ impl Cache {
         args: Value,
         now: i64,
     ) -> Result<Loaded, Failure> {
+        let kind = Kind::from_job(&args).ok_or_else(|| Failure {
+            reason: "protocol",
+            message: "Unsupported cache job".into(),
+        })?;
         let identity = format!("statistics-v1:{fallback}");
         let (entry, created) = self.entry(&identity);
         if created {
@@ -157,18 +160,15 @@ impl Cache {
             let storage = self.storage.clone();
             let identity = identity.clone();
             let cache = self.clone();
-            let expected_input = args
-                .get("args")
-                .and_then(|args| args.get(0))
-                .cloned()
-                .unwrap_or(Value::Null);
+            let expected_job = args.clone();
             tokio::spawn(async move {
                 if let Some(value) = storage.read(identity).await
                     && let Ok(saved) = serde_json::from_value::<Saved>(value)
                     && !saved.value.is_null()
                     && saved.generated_at.is_finite()
                     && saved.expires_at.is_finite()
-                    && crate::compute::valid_lookup(&saved.value, &expected_input)
+                    && kind.valid(&saved.value, &expected_job)
+                    && kind.accepted(&saved.value)
                 {
                     let mut state = target.state.lock().unwrap();
                     state.bytes = serde_json::to_vec(&saved).map_or(0, |v| v.len());
@@ -231,19 +231,14 @@ impl Cache {
                 let result = cache.worker.compute(args).await;
                 match &result {
                     Ok(result) => {
-                        let accepted = result.value.get("available").and_then(Value::as_bool)
-                            == Some(true)
-                            && result
-                                .value
-                                .get("result")
-                                .is_some_and(|value| !value.is_null());
+                        let accepted = kind.accepted(&result.value);
                         if accepted {
                             let generated_at = now + started.elapsed().as_millis() as f64;
                             let saved = Saved {
                                 key: job_key,
                                 value: result.value.clone(),
                                 generated_at,
-                                expires_at: generated_at + TTL_MS,
+                                expires_at: generated_at + kind.ttl_ms(),
                             };
                             if cache.publish(&identity, &target, id, &saved) {
                                 cache.bound();

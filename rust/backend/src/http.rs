@@ -291,7 +291,11 @@ pub fn secure(routes: axum::Router) -> axum::Router {
 pub async fn security(request: axum::extract::Request, next: axum::middleware::Next) -> Response {
     let early_redirect = matches!(
         request.uri().path(),
-        "/api/seasonal/cohort/" | "/api/home/showcase/"
+        "/api/seasonal/cohort/"
+            | "/api/home/showcase/"
+            | "/api/average/"
+            | "/population/arena/"
+            | "/average/arena/"
     );
     let mut response = next.run(request).await;
     // Next normalizes this path before application/global Next headers run.

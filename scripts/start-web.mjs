@@ -2,7 +2,7 @@ import { spawn } from "node:child_process";
 import { resolve } from "node:path";
 import { superviseWorker } from "./supervise-worker.mjs";
 
-const selectors = ["SEASONAL_API_UPSTREAM", "HOME_SHOWCASE_API_UPSTREAM"].map((name) => {
+const selectors = ["SEASONAL_API_UPSTREAM", "HOME_SHOWCASE_API_UPSTREAM", "ARENA_UI_UPSTREAM"].map((name) => {
   const value = process.env[name] || "web:3000";
   if (!["web:3000", "web:3001"].includes(value)) {
     throw new Error(`${name} must be web:3000 or web:3001`);

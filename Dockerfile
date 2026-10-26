@@ -7,10 +7,31 @@ WORKDIR /build
 COPY rust/cohort-worker/ ./
 RUN cargo build --release --locked
 
+FROM rust-builder AS rust-ui-builder
+ARG TARGETARCH
+RUN rustup target add wasm32-unknown-unknown
+WORKDIR /native
+COPY rust/ui/ ./rust/ui/
+COPY lib/i18n/messages.json ./lib/i18n/messages.json
+RUN cargo build --release --locked --manifest-path rust/ui/Cargo.toml --target wasm32-unknown-unknown --features hydrate
+# Official static musl CLI; version matches the locked wasm-bindgen dependency.
+RUN set -eu; case "$TARGETARCH" in \
+      amd64) arch=x86_64; sum=82d12bb940e2d4e72e0d5605387fc1b8ca179044e012b620f0ce4e7440e8320e ;; \
+      arm64) arch=aarch64; sum=2ed4351c35dd9440308bbb02767d47ea278efe851a52465300f3c94f5b6c2a87 ;; \
+      *) echo "Unsupported build architecture: $TARGETARCH" >&2; exit 1 ;; esac; \
+    name="wasm-bindgen-0.2.129-$arch-unknown-linux-musl"; \
+    wget -q "https://github.com/wasm-bindgen/wasm-bindgen/releases/download/0.2.129/$name.tar.gz" -O /tmp/wasm-bindgen.tar.gz; \
+    echo "$sum  /tmp/wasm-bindgen.tar.gz" | sha256sum -c -; \
+    tar -xzf /tmp/wasm-bindgen.tar.gz -C /tmp; \
+    "/tmp/$name/wasm-bindgen" rust/ui/target/wasm32-unknown-unknown/release/tarkov_ui.wasm \
+      --target web --no-typescript --out-name tarkov_ui --out-dir /native/wasm
+
 FROM rust-builder AS rust-api-builder
-WORKDIR /backend
-COPY rust/backend/ ./
-RUN cargo build --release --locked
+WORKDIR /native
+COPY rust/backend/ ./rust/backend/
+COPY rust/ui/ ./rust/ui/
+COPY lib/i18n/messages.json ./lib/i18n/messages.json
+RUN cargo build --release --locked --manifest-path rust/backend/Cargo.toml
 
 # ---------- 1. Установка зависимостей ----------
 FROM node:22-alpine AS deps
@@ -27,6 +48,8 @@ COPY . .
 
 ENV NEXT_TELEMETRY_DISABLED=1
 
+COPY --from=rust-ui-builder /native/wasm /rust-ui-wasm
+RUN node scripts/build-rust-ui.mjs --prebuilt /rust-ui-wasm
 RUN npm run build
 
 # ---------- 3. Финальный образ (минимальный) ----------
@@ -35,6 +58,7 @@ ARG SOURCE_REVISION=unknown
 LABEL org.opencontainers.image.revision=$SOURCE_REVISION
 LABEL org.tarkovstats.rust-http="seasonal-v1"
 LABEL org.tarkovstats.rust-home-showcase="v1"
+LABEL org.tarkovstats.rust-arena-ui="v1"
 WORKDIR /app
 ENV NODE_ENV=production
 ENV NEXT_TELEMETRY_DISABLED=1
@@ -49,7 +73,7 @@ COPY --from=builder /app/public ./public
 COPY --from=builder --chown=nextjs:nodejs /app/.next/standalone ./
 COPY --from=builder --chown=nextjs:nodejs /app/.next/static ./.next/static
 COPY --from=rust-builder --chown=nextjs:nodejs /build/target/release/tarkov-cohort-worker ./rust/cohort-worker/target/release/tarkov-cohort-worker
-COPY --from=rust-api-builder --chown=nextjs:nodejs /backend/target/release/tarkov-backend ./rust/backend/target/release/tarkov-backend
+COPY --from=rust-api-builder --chown=nextjs:nodejs /native/rust/backend/target/release/tarkov-backend ./rust/backend/target/release/tarkov-backend
 COPY --from=builder --chown=nextjs:nodejs /app/scripts/sync-player-index.mjs ./scripts/sync-player-index.mjs
 COPY --from=builder --chown=nextjs:nodejs /app/scripts/sync-pve-index.mjs ./scripts/sync-pve-index.mjs
 COPY --from=builder --chown=nextjs:nodejs /app/scripts/sync-pve-profiles.mjs ./scripts/sync-pve-profiles.mjs

@@ -29,6 +29,21 @@ jobs:
         run: |
           rustup toolchain install 1.98.1 --profile minimal --component rustfmt --component clippy
           rustup default 1.98.1
+          rustup target add wasm32-unknown-unknown --toolchain 1.98.1
+      - name: Install the verified WebAssembly binding CLI
+        run: |
+          curl --fail --silent --show-error --location --retry 3 --max-time 90 \
+            --output "$RUNNER_TEMP/wasm-bindgen.tar.gz" \
+            https://github.com/wasm-bindgen/wasm-bindgen/releases/download/0.2.129/wasm-bindgen-0.2.129-x86_64-unknown-linux-musl.tar.gz
+          printf '82d12bb940e2d4e72e0d5605387fc1b8ca179044e012b620f0ce4e7440e8320e  %s\n' "$RUNNER_TEMP/wasm-bindgen.tar.gz" | sha256sum --check
+          mkdir "$RUNNER_TEMP/wasm-bindgen"
+          tar -xzf "$RUNNER_TEMP/wasm-bindgen.tar.gz" -C "$RUNNER_TEMP/wasm-bindgen" --strip-components=1
+          test "$("$RUNNER_TEMP/wasm-bindgen/wasm-bindgen" --version)" = "wasm-bindgen 0.2.129"
+          echo "$RUNNER_TEMP/wasm-bindgen" >> "$GITHUB_PATH"
+          echo "WASM_BINDGEN_BIN=$RUNNER_TEMP/wasm-bindgen/wasm-bindgen" >> "$GITHUB_ENV"
+      - run: cargo fmt --manifest-path rust/ui/Cargo.toml -- --check
+      - run: cargo clippy --locked --all-targets --features ssr --manifest-path rust/ui/Cargo.toml -- -D warnings
+      - run: cargo clippy --locked --lib --features hydrate --target wasm32-unknown-unknown --manifest-path rust/ui/Cargo.toml -- -D warnings
       - run: cargo fmt --manifest-path rust/backend/Cargo.toml -- --check
       - run: cargo clippy --locked --all-targets --manifest-path rust/backend/Cargo.toml -- -D warnings
       - run: cargo fmt --manifest-path rust/cohort-worker/Cargo.toml -- --check
@@ -60,6 +75,10 @@ jobs:
       GH_REPO: ${{ github.repository }}
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: 22
+          cache: npm
       - name: Build the production image
         run: docker build --build-arg "SOURCE_REVISION=$GITHUB_SHA" --tag "tarkovstats-web:$GITHUB_SHA" .
       - name: Validate the VPS worker configuration
@@ -74,6 +93,8 @@ jobs:
             assert.equal(services.caddy.environment.SEASONAL_API_UPSTREAM, services.web.environment.SEASONAL_API_UPSTREAM);
             assert.equal(services.web.environment.HOME_SHOWCASE_API_UPSTREAM, "web:3000");
             assert.equal(services.caddy.environment.HOME_SHOWCASE_API_UPSTREAM, services.web.environment.HOME_SHOWCASE_API_UPSTREAM);
+            assert.equal(services.web.environment.ARENA_UI_UPSTREAM, "web:3000");
+            assert.equal(services.caddy.environment.ARENA_UI_UPSTREAM, services.web.environment.ARENA_UI_UPSTREAM);
             assert.equal(services.web.ports, undefined);
             assert.equal(Number(services.web.mem_limit), 896 * 1024 ** 2);
             assert.equal(Number(services.worker.mem_limit), 512 * 1024 ** 2);
@@ -84,6 +105,7 @@ jobs:
       - name: Verify the runtime image
         run: |
           test "$(docker image inspect --format '{{index .Config.Labels "org.opencontainers.image.revision"}}' "tarkovstats-web:$GITHUB_SHA")" = "$GITHUB_SHA"
+          test "$(docker image inspect --format '{{index .Config.Labels "org.tarkovstats.rust-arena-ui"}}' "tarkovstats-web:$GITHUB_SHA")" = "v1"
           docker run --rm --network none --entrypoint node "tarkovstats-web:$GITHUB_SHA" --experimental-strip-types --experimental-sqlite -e "require('node:sqlite'); require('discord.js'); require('node:fs').accessSync('/app/server.js'); require('node:fs').accessSync('/app/scripts/axis-discord-bot.mjs')"
           docker run --rm --network none --entrypoint /app/rust/cohort-worker/target/release/tarkov-cohort-worker "tarkovstats-web:$GITHUB_SHA" < /dev/null
           docker network create image-smoke
@@ -136,6 +158,21 @@ jobs:
             --env SEASONAL_ENABLED=false --name rust-http-smoke "tarkovstats-web:$GITHUB_SHA"
           trap 'docker logs rust-http-smoke; docker rm --force rust-http-smoke' EXIT
           docker exec rust-http-smoke node scripts/verify-rust-http-runtime.mjs
+      - name: Verify the independently enabled Rust Arena UI runtime
+        run: |
+          docker run --detach --network none --memory 896m --memory-swap 896m --read-only --pids-limit 256 \
+            --cap-drop ALL --security-opt no-new-privileges \
+            --tmpfs /data:rw,noexec,nosuid,nodev,size=64m,uid=1001,gid=1001,mode=0700 \
+            --tmpfs /tmp:rw,noexec,nosuid,nodev,size=32m,mode=1777 \
+            --tmpfs /app/.next/cache:rw,noexec,nosuid,nodev,size=32m,uid=1001,gid=1001,mode=0700 \
+            --env WEB_BACKGROUND_WORKERS=false --env SEASONAL_API_UPSTREAM=web:3000 \
+            --env HOME_SHOWCASE_API_UPSTREAM=web:3000 --env ARENA_UI_UPSTREAM=web:3001 \
+            --env SEASONAL_ENABLED=false --env AVERAGE_PUBLICATIONS_ENABLED=false \
+            --env RUST_UI_RUNTIME_FIXTURE=true --env SQLITE_PATH=/data/rust-arena-runtime-smoke.db \
+            --env AVERAGE_PUBLICATION_SQLITE_PATH=/data/rust-arena-runtime-cache.db \
+            --name rust-arena-ui-smoke "tarkovstats-web:$GITHUB_SHA"
+          trap 'docker logs rust-arena-ui-smoke; docker rm --force rust-arena-ui-smoke' EXIT
+          docker exec rust-arena-ui-smoke node --experimental-strip-types --experimental-sqlite scripts/verify-rust-http-runtime.mjs --arena-ui
       - name: Benchmark isolated TypeScript and Rust API workloads
         timeout-minutes: 20
         run: bash scripts/benchmark-rust-container.sh "tarkovstats-web:$GITHUB_SHA" "$RUNNER_TEMP/rust-linux-benchmark"
@@ -162,6 +199,33 @@ jobs:
             ${{ runner.temp }}/rust-http-benchmark/*.json
             ${{ runner.temp }}/rust-http-benchmark/*.log
             ${{ runner.temp }}/rust-http-benchmark/summary.md
+          if-no-files-found: warn
+          retention-days: 14
+      - name: Compare Arena interfaces on the isolated Linux browser runner
+        timeout-minutes: 10
+        env:
+          GH_TOKEN: ""
+        run: |
+          npm ci
+          curl --fail --silent --show-error --location --retry 3 --max-time 90 \
+            --output "$RUNNER_TEMP/arena-caddy.tar.gz" \
+            https://github.com/caddyserver/caddy/releases/download/v2.11.4/caddy_2.11.4_linux_amd64.tar.gz
+          printf '527fbf917c39189a1e3b31d34fa955601680b2d5c8055d2a87b8b9588dec7bb9  %s\n' "$RUNNER_TEMP/arena-caddy.tar.gz" | sha256sum --check
+          mkdir "$RUNNER_TEMP/arena-caddy-bin"
+          tar -xzf "$RUNNER_TEMP/arena-caddy.tar.gz" -C "$RUNNER_TEMP/arena-caddy-bin" caddy
+          export CADDY_BIN="$RUNNER_TEMP/arena-caddy-bin/caddy"
+          bash scripts/benchmark-rust-arena-browser-image.sh --image "tarkovstats-web:$GITHUB_SHA" --output "$RUNNER_TEMP/rust-arena-browser"
+      - name: Save Arena browser correctness and measurement evidence
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: rust-arena-browser-${{ github.sha }}
+          path: |
+            ${{ runner.temp }}/rust-arena-browser/image-provenance.json
+            ${{ runner.temp }}/rust-arena-browser/evidence/*.json
+            ${{ runner.temp }}/rust-arena-browser/evidence/*.md
+            ${{ runner.temp }}/rust-arena-browser/evidence/*.log
+            ${{ runner.temp }}/rust-arena-browser/evidence/*.png
           if-no-files-found: warn
           retention-days: 14
       - name: Publish a revision-specific image

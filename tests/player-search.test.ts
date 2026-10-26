@@ -238,7 +238,7 @@ test("fixed search filters recent and nickname profiles by the selected mode and
 test("search selection action is localized separately from profile navigation", async () => {
   const [component, dictionary] = await Promise.all([
     readFile("components/SearchBar.tsx", "utf8"),
-    readFile("lib/i18n/dictionary.ts", "utf8"),
+    readFile("lib/i18n/messages.json", "utf8"),
   ]);
 
   assert.match(component, /loading \? t\("common\.loading"\) : t\(onSelect \? "search\.select" : landing \? "home\.search" : "search\.view"\)/);

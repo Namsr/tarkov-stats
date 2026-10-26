@@ -87,7 +87,7 @@ test("Arena UI keeps the five modes in a fixed sequential order", () => {
   const average = read("components/ArenaAverage.tsx");
   const profile = read("components/ArenaPlayer.tsx");
   const arenaTypes = read("types/arena.ts");
-  const dictionary = read("lib/i18n/dictionary.ts");
+  const dictionary = read("lib/i18n/messages.json");
   for (const mode of ["teamFight", "lastHero", "checkpoint", "blastGang", "shootOutDuo"]) {
     assert.match(arenaTypes, new RegExp(`"${mode}"`));
     assert.match(dictionary, new RegExp(`arena\\.mode\\.${mode}`));

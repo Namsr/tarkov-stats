@@ -132,7 +132,12 @@ configuration read does not use the cohort/analytics write queue. Activation
 requires coordinated web/Caddy recreation and a rollback image labeled
 `org.tarkovstats.rust-home-showcase=v1`. See the [home endpoint contract](docs/rust-home-showcase.md).
 
-The [first complete Rust UI slice](docs/rust-ui-migration.md) is planned around
-the Arena population dashboard, including native data access, SSR, interactive
-controls and shared site behavior. That interface is not implemented by the
-home configuration endpoint or the Seasonal computation port.
+The Arena population dashboard now has a Rust SSR/WebAssembly implementation,
+including its native `/api/average?mode=arena` data path and shared public shell.
+`ARENA_UI_UPSTREAM=web:3000|web:3001` selects the complete route boundary; Next
+remains the default. Incoming Next links use document navigation when enabled.
+The compatible image must carry `org.tarkovstats.rust-arena-ui=v1` and verified
+immutable UI assets. See the [Arena implementation and validation](docs/rust-arena-ui.md)
+and the [full UI migration plan](docs/rust-ui-migration.md). Remaining pages,
+auth/support/telemetry endpoints and background tasks still require migration;
+this first interface does not complete the all-Rust goal.

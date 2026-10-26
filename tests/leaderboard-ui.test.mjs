@@ -210,7 +210,7 @@ test("leaderboard switches sorts smoothly without a skeleton flash", async () =>
 });
 
 test("leaderboard hours units and best ARP labels live in the dictionary", async () => {
-  const dict = await read("lib/i18n/dictionary.ts");
+  const dict = await read("lib/i18n/messages.json");
   assert.match(dict, /"leaderboard\.hoursValue": "\{v\} h"/);
   assert.match(dict, /"leaderboard\.hoursValue": "\{v\} ч"/);
   assert.match(dict, /"leaderboard\.column\.bestArp": "Best ARP"/);

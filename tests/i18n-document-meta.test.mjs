@@ -59,7 +59,7 @@ const withoutComments = (source) => source.replace(/^[ \t]*\/\/[^\r\n]*\r?\n/gm,
 test("a language switch rewrites the tab title and description, using the keys the root layout renders", async () => {
   const provider = withoutComments(await readFile("lib/i18n/context.tsx", "utf8"));
   const layout = withoutComments(await readFile("app/layout.tsx", "utf8"));
-  const dictionary = await readFile("lib/i18n/dictionary.ts", "utf8");
+  const dictionary = await readFile("lib/i18n/messages.json", "utf8");
 
   // Anchored on the setLang body. The provider is the only place that applies the
   // language to the document, and an effect keyed on [lang] would leave the write

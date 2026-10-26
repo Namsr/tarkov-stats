@@ -10,6 +10,7 @@ import PageviewBeacon from "@/components/PageviewBeacon";
 import PerformanceBeacon from "@/components/PerformanceBeacon";
 import { LanguageProvider } from "@/lib/i18n/context";
 import { FavoritesProvider } from "@/lib/favorites/context";
+import { NativeRoutesProvider } from "@/lib/native-routes-context";
 import { dict } from "@/lib/i18n/dictionary";
 import { resolveLang } from "@/lib/i18n/server";
 import "./globals.css";
@@ -39,6 +40,7 @@ export default async function RootLayout({
     .split(":")[0]
     .toLowerCase();
   const analyticsToken = analyticsTokens[hostname];
+  const nativeArena = process.env.ARENA_UI_UPSTREAM === "web:3001";
 
   return (
     <html lang={lang} className="h-full antialiased">
@@ -51,18 +53,20 @@ export default async function RootLayout({
         suppressHydrationWarning
       >
         <LanguageProvider initialLang={lang}>
-          <FavoritesProvider>
-            <SkipLink />
-            <SiteHeader />
-            <NavigationPendingTracker />
-            <div id="main-content" className="site-main" tabIndex={-1}>
-              {children}
-            </div>
-            <SiteFooter />
-            <FaqWidget />
-            <PageviewBeacon />
-            <PerformanceBeacon />
-          </FavoritesProvider>
+          <NativeRoutesProvider arena={nativeArena}>
+            <FavoritesProvider>
+              <SkipLink />
+              <SiteHeader />
+              <NavigationPendingTracker />
+              <div id="main-content" className="site-main" tabIndex={-1}>
+                {children}
+              </div>
+              <SiteFooter />
+              <FaqWidget />
+              <PageviewBeacon />
+              <PerformanceBeacon />
+            </FavoritesProvider>
+          </NativeRoutesProvider>
         </LanguageProvider>
         {analyticsToken ? (
           <Script

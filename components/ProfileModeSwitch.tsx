@@ -2,9 +2,10 @@
 
 import Link from "next/link";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type MouseEvent } from "react";
 import { useI18n } from "@/lib/i18n/context";
-import { handleActiveLinkClick } from "@/lib/active-link";
+import { handleActiveLinkClick, isPrimaryClick } from "@/lib/active-link";
+import { useNativeRoutes } from "@/lib/native-routes-context";
 import { warmPlayerProfileResponse } from "@/lib/client-profile-request";
 import {
   appRouteMode,
@@ -30,6 +31,7 @@ export default function ProfileModeSwitch({
   onBeforeNavigate?: (mode: GameMode) => void;
 }) {
   const { t } = useI18n();
+  const { arena: nativeArena } = useNativeRoutes();
   const router = useRouter();
   const pathname = usePathname();
   const searchParams = useSearchParams();
@@ -140,29 +142,34 @@ export default function ProfileModeSwitch({
           pendingNavigation.fromMode === current &&
           pendingNavigation.pathname === pathname &&
           mode !== current;
-        return (
-          <Link
-            key={mode}
-            href={href}
-            prefetch
-            scroll={false}
-            aria-current={mode === current ? "page" : undefined}
-            aria-busy={pending || undefined}
-            className={`mode-switch__item${pending ? " mode-switch__item--pending" : ""}`}
-            onNavigate={() => {
-              if (mode !== current) {
-                warmProfile(mode);
-                warmTimeline(mode);
-                setPendingNavigation({ mode, fromMode: current, pathname });
-                onBeforeNavigate?.(mode);
-                window.dispatchEvent(new Event("profile-mode-navigate"));
-              }
-            }}
-            onClick={(event) => {
-              handleActiveLinkClick(event, mode === current, router);
-            }}
-          >
-            {t("fav.mode." + mode)}
+        const documentNavigation = nativeArena && page === "average" && mode === "arena";
+        const onNavigate = () => {
+          if (mode !== current) {
+            warmProfile(mode);
+            warmTimeline(mode);
+            setPendingNavigation({ mode, fromMode: current, pathname });
+            onBeforeNavigate?.(mode);
+            window.dispatchEvent(new Event("profile-mode-navigate"));
+          }
+        };
+        const linkProps = {
+          href,
+          "aria-current": mode === current ? "page" as const : undefined,
+          "aria-busy": pending || undefined,
+          className: `mode-switch__item${pending ? " mode-switch__item--pending" : ""}`,
+          onClick(event: MouseEvent<HTMLAnchorElement>) {
+            handleActiveLinkClick(event, mode === current, router);
+            // Native anchors have no Next onNavigate. Match its primary-click
+            // semantics without intercepting the browser's document request.
+            if (documentNavigation && !event.defaultPrevented && isPrimaryClick(event)) onNavigate();
+          },
+        };
+        const label = t("fav.mode." + mode);
+        return documentNavigation ? (
+          <a key={mode} {...linkProps}>{label}</a>
+        ) : (
+          <Link key={mode} {...linkProps} prefetch scroll={false} onNavigate={onNavigate}>
+            {label}
           </Link>
         );
       })}
