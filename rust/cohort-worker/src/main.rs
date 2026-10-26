@@ -1,4 +1,4 @@
-use rusqlite::{Connection, OpenFlags, params};
+use rusqlite::{Connection, OpenFlags};
 use serde::Deserialize;
 use serde_json::{Map, Value, json};
 use std::env;
@@ -8,7 +8,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 const MAX_FRAME: usize = 65_536;
 const TARGET: usize = 20;
 const MAX_VECTOR_BYTES: usize = 128 * 1024 * 1024;
-const MEMORY_LIMIT_ERROR: &str = "Regular cohort exceeds 128 MiB computation budget";
+const MEMORY_LIMIT_ERROR: &str = "Cohort exceeds 128 MiB computation budget";
 const PERCENTAGES: [u32; 4] = [10, 15, 20, 30];
 const METRICS: [&str; 7] = [
     "kd_ratio",
@@ -19,7 +19,7 @@ const METRICS: [&str; 7] = [
     "longest_win_streak",
     "level",
 ];
-const ELIGIBLE: &str = "hours > 0 AND pmc_raids > 0 AND aid != ?1 AND pvp_stats_known = 1 AND profile_updated_at >= ?2 AND NOT EXISTS (SELECT 1 FROM excluded_players tombstone WHERE tombstone.aid = players.aid)";
+const REGULAR_ELIGIBLE: &str = "hours > 0 AND pmc_raids > 0 AND aid != ?1 AND pvp_stats_known = 1 AND profile_updated_at >= ?2 AND NOT EXISTS (SELECT 1 FROM excluded_players tombstone WHERE tombstone.aid = players.aid)";
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -37,7 +37,31 @@ struct Job {
     args: Vec<Value>,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Mode {
+    Regular,
+    Pve,
+}
+
+impl Mode {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Regular => "regular",
+            Self::Pve => "pve",
+        }
+    }
+
+    fn source(self) -> (&'static str, &'static str) {
+        match self {
+            Self::Regular => ("players", "idx_players_cohort"),
+            Self::Pve => ("mode_players", "idx_mode_players_cohort"),
+        }
+    }
+}
+
 struct Input {
+    mode: Mode,
+    recent: bool,
     hours: f64,
     raids: f64,
     aid: i64,
@@ -48,9 +72,14 @@ struct Input {
 
 impl Input {
     fn parse(job: &Job) -> Result<Self, String> {
-        if job.kind != "persistent" || job.mode != "regular" {
-            return Err("Only persistent Regular cohorts are supported".into());
+        if job.kind != "persistent" {
+            return Err("Only persistent cohorts are supported".into());
         }
+        let mode = match job.mode.as_str() {
+            "regular" => Mode::Regular,
+            "pve" => Mode::Pve,
+            _ => return Err("Only Regular and PvE cohorts are supported".into()),
+        };
         if !(3..=7).contains(&job.args.len()) {
             return Err("Expected 3 to 7 cohort arguments".into());
         }
@@ -102,6 +131,8 @@ impl Input {
                 .filter(|n| n.is_finite() && *n >= 0.0)
         });
         Ok(Self {
+            mode,
+            recent: period == "90d",
             hours,
             raids,
             aid,
@@ -203,30 +234,73 @@ impl VectorBudget {
         Ok(())
     }
 }
+// Identifiers are selected only by the validated mode enum; no request text is
+// interpolated into SQL. Regular retains its existing last-90-days filter.
+fn eligibility(input: &Input, cutoff: i64) -> (String, Vec<rusqlite::types::Value>) {
+    let mut parameters = vec![rusqlite::types::Value::Integer(input.aid)];
+    if input.mode == Mode::Regular {
+        parameters.push(rusqlite::types::Value::Integer(cutoff));
+        return (REGULAR_ELIGIBLE.into(), parameters);
+    }
+    let recent = if input.recent {
+        parameters.push(rusqlite::types::Value::Integer(cutoff));
+        " AND profile_updated_at >= ?2"
+    } else {
+        ""
+    };
+    (
+        format!(
+            "mode = 'pve' AND hours > 0 AND pmc_raids > 0 AND aid != ?1{recent} AND NOT EXISTS (SELECT 1 FROM excluded_players tombstone WHERE tombstone.aid = mode_players.aid)"
+        ),
+        parameters,
+    )
+}
+
+fn range_clause(first: usize) -> String {
+    format!(
+        " AND hours >= ?{first} AND hours <= ?{} AND pmc_raids >= ?{} AND pmc_raids <= ?{}",
+        first + 1,
+        first + 2,
+        first + 3
+    )
+}
+
+fn append_range(parameters: &mut Vec<rusqlite::types::Value>, input: &Input, percent: u32) {
+    let h = bounds(input.hours, percent, true);
+    let r = bounds(input.raids, percent, false);
+    parameters.extend([h.min, h.max, r.min, r.max].map(rusqlite::types::Value::Real));
+}
+
 fn read_population(
     db: &Connection,
     input: &Input,
     cutoff: i64,
     percent: Option<u32>,
 ) -> Result<Population, String> {
-    let range_sql = if percent.is_some() {
-        " AND hours >= ?3 AND hours <= ?4 AND pmc_raids >= ?5 AND pmc_raids <= ?6"
+    let (table, index) = input.mode.source();
+    let (eligible, mut parameters) = eligibility(input, cutoff);
+    let range_sql = if let Some(percent) = percent {
+        let clause = range_clause(parameters.len() + 1);
+        append_range(&mut parameters, input, percent);
+        clause
     } else {
-        ""
+        String::new()
+    };
+    // PvE peers without known PvP still contribute ordinary metrics. The
+    // pmc_kd_ratio metric alone needs known PvP among the direct scalar fields.
+    let pmc_kd = if input.mode == Mode::Pve {
+        "CASE WHEN pvp_stats_known = 1 THEN pmc_kd_ratio END"
+    } else {
+        "pmc_kd_ratio"
     };
     // Match the existing covering-index read, avoiding profile JSON/table lookups.
     let sql = format!(
-        "SELECT hours, pmc_raids, kd_ratio, pmc_kd_ratio, kills_per_raid, CASE WHEN pvp_stats_known = 1 AND pvp_stats_version = 1 AND pmc_raids > 0 THEN 1.0 * pmc_killed_pmc / pmc_raids END, pmc_survival_rate, longest_win_streak, level FROM players INDEXED BY idx_players_cohort WHERE {ELIGIBLE}{range_sql}"
+        "SELECT hours, pmc_raids, kd_ratio, {pmc_kd}, kills_per_raid, CASE WHEN pvp_stats_known = 1 AND pvp_stats_version = 1 AND pmc_raids > 0 THEN 1.0 * pmc_killed_pmc / pmc_raids END, pmc_survival_rate, longest_win_streak, level FROM {table} INDEXED BY {index} WHERE {eligible}{range_sql}"
     );
     let mut statement = db.prepare_cached(&sql).map_err(|e| e.to_string())?;
-    let mut rows = if let Some(percent) = percent {
-        let h = bounds(input.hours, percent, true);
-        let r = bounds(input.raids, percent, false);
-        statement.query(params![input.aid, cutoff, h.min, h.max, r.min, r.max])
-    } else {
-        statement.query(params![input.aid, cutoff])
-    }
-    .map_err(|e| e.to_string())?;
+    let mut rows = statement
+        .query(rusqlite::params_from_iter(parameters))
+        .map_err(|e| e.to_string())?;
     let mut population = Population::empty();
     let mut budget = VectorBudget {
         used: 0,
@@ -256,27 +330,18 @@ fn read_population(
 }
 
 fn selected_percent(db: &Connection, input: &Input, cutoff: i64) -> Result<Option<u32>, String> {
-    let wide_h = bounds(input.hours, 30, true);
-    let wide_r = bounds(input.raids, 30, false);
+    let (table, _) = input.mode.source();
+    let (eligible, mut sql_parameters) = eligibility(input, cutoff);
+    let wide_range = range_clause(sql_parameters.len() + 1);
+    append_range(&mut sql_parameters, input, 30);
+    let first_count = sql_parameters.len() + 1;
     let clauses = PERCENTAGES.iter().enumerate().map(|(index, _)| {
-        let first = 7 + index * 4;
+        let first = first_count + index * 4;
         format!("SUM(CASE WHEN hours >= ?{first} AND hours <= ?{} AND pmc_raids >= ?{} AND pmc_raids <= ?{} THEN 1 ELSE 0 END)", first + 1, first + 2, first + 3)
     }).collect::<Vec<_>>().join(", ");
-    let sql = format!(
-        "SELECT {clauses} FROM players WHERE {ELIGIBLE} AND hours >= ?3 AND hours <= ?4 AND pmc_raids >= ?5 AND pmc_raids <= ?6"
-    );
-    let mut sql_parameters = vec![
-        rusqlite::types::Value::Integer(input.aid),
-        rusqlite::types::Value::Integer(cutoff),
-        rusqlite::types::Value::Real(wide_h.min),
-        rusqlite::types::Value::Real(wide_h.max),
-        rusqlite::types::Value::Real(wide_r.min),
-        rusqlite::types::Value::Real(wide_r.max),
-    ];
+    let sql = format!("SELECT {clauses} FROM {table} WHERE {eligible}{wide_range}");
     for percent in PERCENTAGES {
-        let h = bounds(input.hours, percent, true);
-        let r = bounds(input.raids, percent, false);
-        sql_parameters.extend([h.min, h.max, r.min, r.max].map(rusqlite::types::Value::Real));
+        append_range(&mut sql_parameters, input, percent);
     }
     let mut statement = db.prepare_cached(&sql).map_err(|e| e.to_string())?;
     let counts = statement
@@ -385,8 +450,8 @@ fn result(
         Some("insufficient_cohort")
     });
     json!({
-        "mode": "regular", "cycleId": "persistent", "aid": input.aid,
-        "identity": { "aid": input.aid, "mode": "regular", "cycleId": "persistent" },
+        "mode": input.mode.as_str(), "cycleId": "persistent", "aid": input.aid,
+        "identity": { "aid": input.aid, "mode": input.mode.as_str(), "cycleId": "persistent" },
         "center": if input.dimension == "hours" { input.hours } else { input.raids },
         "dimension": input.dimension,
         "bounds": if input.dimension == "hours" { h.json() } else { r.json() },
@@ -533,6 +598,8 @@ mod tests {
 
     fn input() -> Input {
         Input {
+            mode: Mode::Regular,
+            recent: false,
             hours: 100.0,
             raids: 100.0,
             aid: 1,
@@ -545,6 +612,7 @@ mod tests {
     fn database() -> Connection {
         let db = Connection::open_in_memory().unwrap();
         db.execute_batch("CREATE TABLE players (aid INTEGER PRIMARY KEY, hours REAL, pmc_raids INTEGER, pvp_stats_known INTEGER, profile_updated_at INTEGER, kd_ratio REAL, pmc_kd_ratio REAL, kills_per_raid REAL, pmc_survival_rate REAL, longest_win_streak INTEGER, level INTEGER, pvp_stats_version INTEGER, pmc_killed_pmc INTEGER); CREATE TABLE excluded_players (aid INTEGER PRIMARY KEY); CREATE INDEX idx_players_cohort ON players(hours,pmc_raids,pvp_stats_known,profile_updated_at,aid,kd_ratio,pmc_kd_ratio,kills_per_raid,pmc_survival_rate,longest_win_streak,level,pvp_stats_version,pmc_killed_pmc);").unwrap();
+        db.execute_batch("CREATE TABLE mode_players (mode TEXT NOT NULL, aid INTEGER NOT NULL, hours REAL, pmc_raids INTEGER, pvp_stats_known INTEGER, profile_updated_at INTEGER, kd_ratio REAL, pmc_kd_ratio REAL, kills_per_raid REAL, pmc_survival_rate REAL, longest_win_streak INTEGER, level INTEGER, pvp_stats_version INTEGER, pmc_killed_pmc INTEGER, PRIMARY KEY(mode,aid)); CREATE INDEX idx_mode_players_cohort ON mode_players(mode,hours,pmc_raids,pvp_stats_known,profile_updated_at,aid,kd_ratio,pmc_kd_ratio,kills_per_raid,pmc_survival_rate,longest_win_streak,level,pvp_stats_version,pmc_killed_pmc);").unwrap();
         db
     }
 
@@ -599,7 +667,7 @@ mod tests {
     fn input_rejects_unsupported_modes_and_invalid_identifiers() {
         let job = Job {
             kind: "persistent".into(),
-            mode: "pve".into(),
+            mode: "arena".into(),
             args: vec![json!(100), json!(100), json!(1)],
         };
         assert!(Input::parse(&job).is_err());
@@ -710,5 +778,76 @@ mod tests {
             serde_json::to_string(&bounds(0.0, 30, false).json()).unwrap(),
             "{\"max\":-0.0,\"min\":0.0}"
         );
+    }
+    #[test]
+    fn pve_selection_isolates_modes_with_equal_account_ids_and_tombstones() {
+        let db = database();
+        db.execute_batch("INSERT INTO players(aid,hours,pmc_raids,pvp_stats_known,profile_updated_at,kd_ratio) VALUES (2,100,100,1,100,99); INSERT INTO mode_players(mode,aid,hours,pmc_raids,pvp_stats_known,profile_updated_at,kd_ratio) VALUES ('pve',1,100,100,0,100,999),('pve',2,100,100,0,100,2),('arena',2,100,100,1,100,999),('pve',3,100,100,0,100,999); INSERT INTO excluded_players VALUES (3);").unwrap();
+        let pve = Input {
+            mode: Mode::Pve,
+            ..input()
+        };
+        let population = read_population(&db, &pve, 50, None).unwrap();
+        assert_eq!(population.n, 1);
+        assert_eq!(population.values[0], vec![2.0]);
+        let answer = result(&pve, 30, population, "population", None);
+        assert_eq!(answer["identity"]["mode"], "pve");
+        assert_eq!(answer["mode"], "pve");
+        let population = read_population(&db, &input(), 50, None).unwrap();
+        assert_eq!(population.n, 1);
+        assert_eq!(population.values[0], vec![99.0]);
+    }
+
+    #[test]
+    fn pve_all_includes_old_and_undated_profiles_while_90d_filters_them() {
+        let db = database();
+        db.execute_batch("INSERT INTO mode_players(mode,aid,hours,pmc_raids,pvp_stats_known,profile_updated_at) VALUES ('pve',2,100,100,0,0),('pve',3,100,100,0,NULL),('pve',4,100,100,0,100);").unwrap();
+        let mut pve = Input {
+            mode: Mode::Pve,
+            ..input()
+        };
+        assert_eq!(read_population(&db, &pve, 50, None).unwrap().n, 3);
+        pve.recent = true;
+        assert_eq!(read_population(&db, &pve, 50, None).unwrap().n, 1);
+        assert_eq!(read_population(&db, &pve, 50, Some(10)).unwrap().n, 1);
+        for aid in 5..=23 {
+            db.execute("INSERT INTO mode_players(mode,aid,hours,pmc_raids,pvp_stats_known,profile_updated_at) VALUES ('pve',?1,100,100,0,0)", [aid]).unwrap();
+        }
+        assert_eq!(selected_percent(&db, &pve, 50).unwrap(), None);
+        pve.recent = false;
+        assert_eq!(selected_percent(&db, &pve, 50).unwrap(), Some(10));
+    }
+
+    #[test]
+    fn pve_unknown_pvp_is_eligible_for_ordinary_metrics_only() {
+        let db = database();
+        db.execute_batch("INSERT INTO mode_players VALUES ('pve',2,100,100,0,100,2,20,3,50,4,5,1,20),('pve',3,100,100,1,100,4,4,3,50,4,5,0,20),('pve',4,100,100,1,100,6,6,3,50,4,5,1,20);").unwrap();
+        let pve = Input {
+            mode: Mode::Pve,
+            ..input()
+        };
+        let population = read_population(&db, &pve, 50, None).unwrap();
+        assert_eq!(population.n, 3);
+        assert_eq!(population.values[0], vec![2.0, 4.0, 6.0]);
+        assert_eq!(population.values[1], vec![4.0, 6.0]);
+        assert_eq!(population.values[3], vec![0.2]);
+        assert_eq!(population.values[4], vec![50.0; 3]);
+        let answer = result(&pve, 30, population, "population", None);
+        assert_eq!(answer["averages"]["kd_ratio"]["count"], 3);
+        assert_eq!(answer["averages"]["pmc_kd_ratio"]["count"], 2);
+        assert_eq!(answer["averages"]["killed_pmc_per_raid"]["count"], 1);
+    }
+
+    #[test]
+    fn pve_null_period_defaults_to_all() {
+        let job: Job = serde_json::from_value(
+            json!({ "kind":"persistent", "mode":"pve", "args":[100,100,1,null,null,null] }),
+        )
+        .unwrap();
+        let input = Input::parse(&job).unwrap();
+        assert!(input.mode == Mode::Pve);
+        assert!(!input.recent);
+        assert_eq!(input.dimension, "hours");
+        assert!(!input.median);
     }
 }

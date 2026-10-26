@@ -1,8 +1,8 @@
-# Regular cohort worker
+# Persistent cohort worker
 
-A long-lived, single-threaded Rust worker for the existing Regular comparison
-cohort calculation. The Node parent owns HTTP validation, caching, the bounded
-FIFO, timeouts and process restart. This binary opens `SQLITE_PATH` (default
+A long-lived, single-threaded Rust worker for the existing Regular and PvE
+comparison cohort calculations. The Node parent owns HTTP validation, caching,
+the bounded FIFO, timeouts and process restart. This binary opens `SQLITE_PATH` (default
 `/data/players.db`) read-only and never initializes or changes the schema.
 
 Build and check from the repository root:
@@ -29,20 +29,28 @@ through the next newline without retaining the whole input.
 A successful response is `{"id":1,"result":<ComparisonCohortResult>}`. Failures
 return `{"id":1,"error":"..."}`. Invalid/unrecoverable request IDs are `null`.
 Only protocol version 1 and positive safe integer IDs are accepted. The job is
-restricted to `persistent` / `regular`; PvE, Seasonal, Arena and risk calculations
-stay with their existing implementations.
+restricted to `persistent` jobs in `regular` or `pve` mode; Seasonal, Arena and
+risk calculations stay with their existing implementations.
 
 The job arguments are hours, PMC raids, excluded account ID, dimension,
 statistic, period and optional player metrics, matching `PlayerStore.cohort2d`.
 The last four arguments default to hours, trimmed_mean, all and absent metrics.
 Omitted or null optional arguments preserve JavaScript undefined defaults.
 Regular selection always uses the last 90 days, including when period is all,
-as required by the existing implementation. Invalid or negative player metric
-values become absent evidence rather than an error or a zero.
+as required by the existing implementation. PvE respects `all` or `90d` and
+includes peers with unknown PvP statistics. `pmc_kd_ratio` includes only peers
+with known PvP; `killed_pmc_per_raid` additionally requires parser version 1.
+Invalid or negative player metric values become absent evidence rather than
+an error or a zero.
 
 ## Calculation and storage
 
 Each request opens a read transaction over the existing covering-index queries.
+Regular uses `players` / `idx_players_cohort`. PvE uses `mode_players` /
+`idx_mode_players_cohort` with `mode = pve`; all identifiers come from a trusted
+mode enum. Neither reader accesses `stats_json`. Equal account IDs in different
+modes cannot mix their cohort populations or results.
+
 The same eligible population, owner/tombstone exclusions and 10/15/20/30 percent
 windows determine the selected cohort. Below 20 matched players the calculation
 uses the eligible population. All selected metric values are read once, then

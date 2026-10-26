@@ -2,23 +2,44 @@ import assert from "node:assert/strict";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import test from "node:test";
+import { snapshotWorkerResources, resourceDelta } from "../scripts/benchmark-worker-resources.mjs";
 import { DAY_MS, PLAYER_METRICS, assertCohortParity, cohortJob, createCohortFixture,
   rustCohortBinary, syntheticCohortRows } from "./fixtures/rust-cohort-data.mjs";
 
-const { CohortComputeWorker, computeCohortInBackground, regularCohortBackend, stopCohortWorkersForTests } = await import("../lib/cohort-worker.ts");
+const { CohortComputeWorker, computeCohortInBackground, cohortComputeBackend, stopCohortWorkersForTests } = await import("../lib/cohort-worker.ts");
 
-test("Rust opt-in only selects persistent Regular jobs", () => {
-  const regular = cohortJob();
-  assert.equal(regularCohortBackend(regular, "typescript"), "typescript");
-  assert.equal(regularCohortBackend(regular, "invalid"), "typescript");
-  assert.equal(regularCohortBackend(regular, "rust"), "rust");
-  assert.equal(regularCohortBackend({ ...regular, mode: "pve" }, "rust"), "typescript");
-  for (const kind of ["arena", "arena_population", "seasonal", "seasonal_average", "baseline", "average_metrics"]) {
-    assert.equal(regularCohortBackend({ kind, args: [] }, "rust"), "typescript");
+test("Rust opt-in selects Regular and PvE independently, leaving other jobs on TypeScript", () => {
+  const saved = { REGULAR_COHORT_BACKEND: process.env.REGULAR_COHORT_BACKEND,
+    PVE_COHORT_BACKEND: process.env.PVE_COHORT_BACKEND };
+  try {
+    for (const mode of ["regular", "pve"]) {
+      const input = cohortJob({ mode });
+      assert.equal(cohortComputeBackend(input, "typescript"), "typescript");
+      assert.equal(cohortComputeBackend(input, "invalid"), "typescript");
+      assert.equal(cohortComputeBackend(input, "rust"), "rust");
+    }
+    for (const [regular, pve] of [["rust", "typescript"], ["typescript", "rust"], ["rust", "rust"]]) {
+      process.env.REGULAR_COHORT_BACKEND = regular;
+      process.env.PVE_COHORT_BACKEND = pve;
+      assert.equal(cohortComputeBackend(cohortJob()), regular);
+      assert.equal(cohortComputeBackend(cohortJob({ mode: "pve" })), pve);
+    }
+    delete process.env.REGULAR_COHORT_BACKEND;
+    delete process.env.PVE_COHORT_BACKEND;
+    assert.equal(cohortComputeBackend(cohortJob()), "typescript");
+    assert.equal(cohortComputeBackend(cohortJob({ mode: "pve" })), "typescript");
+    for (const kind of ["arena", "arena_population", "seasonal", "seasonal_average", "baseline", "average_metrics"]) {
+      assert.equal(cohortComputeBackend({ kind, mode: "pve", args: [] }, "rust"), "typescript");
+    }
+    assert.equal(cohortComputeBackend({ ...cohortJob(), mode: "arena" }, "rust"), "typescript");
+  } finally {
+    for (const [key, value] of Object.entries(saved)) {
+      if (value === undefined) delete process.env[key]; else process.env[key] = value;
+    }
   }
 });
 
-test("Rust Regular cohorts preserve TypeScript results on the same SQLite data", async (t) => {
+test("Rust persistent cohorts preserve TypeScript results on the same SQLite data", async (t) => {
   const binary = rustCohortBinary();
   assert.ok(existsSync(binary), `build the native worker before running parity tests: ${binary}`);
   const fixture = await createCohortFixture();
@@ -149,6 +170,24 @@ test("Rust Regular cohorts preserve TypeScript results on the same SQLite data",
     assert.equal(after.n, before.n + 1, "a reused read-only connection must see committed changes");
   });
 
+  await t.test("resource snapshots observe both worker transports and preserve CPU deltas", {
+    skip: !["win32", "linux"].includes(process.platform),
+  }, async () => {
+    const before = snapshotWorkerResources();
+    assert.equal(before.available, true, before.reason);
+    assert.ok(before.children.some((child) => child.name === "node"));
+    assert.ok(before.children.some((child) => child.name.startsWith("tarkov-cohort")));
+    for (const child of before.children) {
+      assert.ok(child.workingSetBytes > 0);
+      assert.ok(child.peakWorkingSetBytes > 0);
+    }
+    await compare({ hours: 1e8, raids: 1e8, aid: 6000 });
+    const after = snapshotWorkerResources();
+    const delta = resourceDelta(before, after);
+    assert.equal(delta.available, true, delta.reason);
+    assert.ok(Number.isFinite(delta.workerCpuMs) && delta.workerCpuMs >= 0);
+    assert.ok(Number.isFinite(delta.parentLifetimePeakRssBytes) && delta.parentLifetimePeakRssBytes >= 0);
+  });
   await t.test("opening an absent database fails without creating a file", async () => {
     const saved = process.env.SQLITE_PATH;
     const missing = join(fixture.directory, "never-created.db");
@@ -177,6 +216,146 @@ test("Rust Regular cohorts preserve TypeScript results on the same SQLite data",
       else process.env.REGULAR_COHORT_BACKEND = savedBackend;
       if (savedBinary === undefined) delete process.env.RUST_COHORT_BIN;
       else process.env.RUST_COHORT_BIN = savedBinary;
+    }
+  });
+
+  await t.test("PvE empty groups, zero activity and exact window boundaries preserve identity", async () => {
+    fixture.clear();
+    const empty = await compare({ mode: "pve" });
+    assert.equal(empty.mode, "pve");
+    assert.equal(empty.identity.mode, "pve");
+    assert.equal(empty.reason, "insufficient_cohort");
+    assert.equal((await compare({ mode: "pve", hours: 0 })).reason, "no_activity");
+    for (const percent of [10, 15, 20, 30]) {
+      fixture.clear();
+      fixture.seed([...Array.from({ length: 19 }, (_, i) => ({ aid: i + 2, pvp_stats_known: 0 })),
+        { aid: 21, hours: 100 + percent, pmc_raids: 100 + percent, pvp_stats_known: 0 },
+        { aid: 1, kd_ratio: 99999 }], Date.now(), "pve");
+      const result = await compare({ mode: "pve" });
+      assert.equal(result.percent, percent);
+      assert.equal(result.strategy, "matched");
+      assert.equal(result.n, 20, "unknown PvP does not remove PvE peers from the group");
+      assert.deepEqual(result.averages.kd_ratio, { value: 2.5, count: 20 });
+      assert.deepEqual(result.averages.pmc_kd_ratio, { value: null, count: 0 });
+      await variants({ mode: "pve" });
+    }
+  });
+
+  await t.test("PvE all and 90d differ while profile recency, zero-activity and tombstone rules remain exact", async () => {
+    fixture.clear();
+    const now = Date.now();
+    fixture.seed([
+      ...Array.from({ length: 24 }, (_, i) => ({ aid: i + 2, pvp_stats_known: 0,
+        last_played_at: now - 120 * DAY_MS })),
+      ...Array.from({ length: 7 }, (_, i) => ({ aid: i + 26, pvp_stats_known: 0,
+        profile_updated_at: now - 120 * DAY_MS, last_played_at: now })),
+      { aid: 33, kd_ratio: 99999 }, { aid: 34, hours: 0 }, { aid: 35, pmc_raids: 0 },
+    ], now, "pve");
+    fixture.db.prepare("INSERT INTO excluded_players(aid,reason,created_at) VALUES (33,'synthetic',?)").run(now);
+    assert.equal((await compare({ mode: "pve", period: "all" })).n, 31);
+    assert.equal((await compare({ mode: "pve", period: "90d" })).n, 24);
+    await variants({ mode: "pve" });
+  });
+
+  await t.test("PvE per-metric eligibility preserves unknown PvP peers and exact PMC kill ratios", async () => {
+    fixture.clear();
+    fixture.seed(Array.from({ length: 30 }, (_, i) => ({ aid: i + 2,
+      pvp_stats_known: i % 2, pvp_stats_version: i % 3 === 0 ? 0 : 1,
+      pmc_killed_pmc: i % 7 === 0 ? null : 50,
+      pmc_survival_rate: i < 10 ? 0 : 50,
+    })), Date.now(), "pve");
+    const matched = await compare({ mode: "pve" });
+    assert.equal(matched.n, 30);
+    assert.deepEqual(matched.averages.kd_ratio, { value: 2.5, count: 30 });
+    assert.deepEqual(matched.averages.kills_per_raid, { value: 3, count: 30 });
+    assert.deepEqual(matched.averages.pmc_kd_ratio, { value: null, count: 15 });
+    assert.deepEqual(matched.averages.killed_pmc_per_raid, { value: null, count: 9 });
+    assert.deepEqual(matched.averages.pmc_survival_rate, { value: 50, count: 20 });
+    await variants({ mode: "pve" });
+    const population = await compare({ mode: "pve", hours: 1e8, raids: 1e8 });
+    assert.equal(population.strategy, "population");
+    assert.deepEqual(population.averages.pmc_kd_ratio, { value: 0.8, count: 15 });
+    assert.deepEqual(population.averages.killed_pmc_per_raid, { value: 0.5, count: 9 });
+    await variants({ mode: "pve", hours: 1e8, raids: 1e8 });
+    await compare({ mode: "pve", metrics: { ...PLAYER_METRICS, pmc_kd_ratio: null, level: -1 } });
+  });
+
+  await t.test("PvE never mixes Regular or Arena rows with colliding account IDs", async () => {
+    fixture.clear();
+    const rows = Array.from({ length: 31 }, (_, i) => ({ aid: i + 1 }));
+    fixture.seed(rows, Date.now(), "pve");
+    fixture.seed(rows.map((row) => ({ ...row, kd_ratio: 10000, pmc_raids: 999 })), Date.now(), "regular");
+    fixture.seed(rows.map((row) => ({ ...row, kd_ratio: 20000 })), Date.now(), "arena");
+    const isolated = await compare({ mode: "pve" });
+    assert.equal(isolated.n, 30);
+    assert.deepEqual(isolated.averages.kd_ratio, { value: 2.5, count: 30 });
+    await variants({ mode: "pve", hours: 1e8, raids: 1e8 });
+    fixture.db.exec("UPDATE mode_players SET kd_ratio=30000 WHERE mode='arena'; UPDATE players SET kd_ratio=40000");
+    assertCohortParity(await compare({ mode: "pve" }), isolated);
+    fixture.db.exec("INSERT INTO excluded_players(aid,reason,created_at) VALUES (2,'synthetic',1)");
+    assert.equal((await compare({ mode: "pve" })).n, 29);
+  });
+
+  await t.test("PvE population fallback accepts small samples and decimal bounds match", async () => {
+    fixture.clear();
+    fixture.seed([{ aid: 2, hours: 500, kd_ratio: 1, pvp_stats_known: 0 },
+      { aid: 3, hours: 600, kd_ratio: 5 },
+      { aid: 4, hours: 700, kd_ratio: 9, pvp_stats_known: 0 }], Date.now(), "pve");
+    const result = await compare({ mode: "pve" });
+    assert.equal(result.strategy, "population");
+    assert.equal(result.n, 3);
+    assert.equal(result.quality, "sufficient");
+    assert.deepEqual(result.averages.pmc_kd_ratio, { value: 0.8, count: 1 });
+    assert.equal(result.percentiles.pmc_kd_ratio.percentile, null);
+    await variants({ mode: "pve" });
+    fixture.clear();
+    fixture.seed(Array.from({ length: 61 }, (_, i) => ({ aid: i + 2, hours: 0.3, pmc_raids: 10,
+      kd_ratio: i % 7 === 0 ? 1000 : i % 5, kills_per_raid: i / 7,
+      pmc_kd_ratio: i / 13, pmc_killed_pmc: i, pmc_survival_rate: i % 13 === 0 ? null : i,
+    })), Date.now(), "pve");
+    await variants({ mode: "pve", hours: 0.3, raids: 10 });
+  });
+
+  await t.test("PvE larger data matches and reused native readers see committed updates", async () => {
+    fixture.clear();
+    fixture.seed(syntheticCohortRows(5000), Date.now(), "pve");
+    await variants({ mode: "pve", hours: 1000, raids: 500, aid: 6000 });
+    await variants({ mode: "pve", hours: 1e8, raids: 1e8, aid: 6000 });
+    const before = await compare({ mode: "pve", hours: 1e8, raids: 1e8, aid: 6000 });
+    assert.equal(before.n, 5000);
+    fixture.seed([{ aid: 6001, hours: 4000, pmc_raids: 1000 }], Date.now(), "pve");
+    const after = await compare({ mode: "pve", hours: 1e8, raids: 1e8, aid: 6000 });
+    assert.equal(after.n, before.n + 1);
+  });
+
+  await t.test("PvE cannot create an absent SQLite database", async () => {
+    const saved = process.env.SQLITE_PATH;
+    const missing = join(fixture.directory, "never-created-pve.db");
+    process.env.SQLITE_PATH = missing;
+    const absent = new CohortComputeWorker({ executable: binary });
+    try {
+      await assert.rejects(absent.compute(cohortJob({ mode: "pve" })), /open|database|SQLite|sqlite/i);
+      assert.equal(existsSync(missing), false);
+    } finally { absent.stop(); process.env.SQLITE_PATH = saved; }
+  });
+
+  await t.test("the configured PvE entry point runs Rust independently of the Regular flag", async () => {
+    const saved = { REGULAR_COHORT_BACKEND: process.env.REGULAR_COHORT_BACKEND,
+      PVE_COHORT_BACKEND: process.env.PVE_COHORT_BACKEND, RUST_COHORT_BIN: process.env.RUST_COHORT_BIN };
+    process.env.REGULAR_COHORT_BACKEND = "typescript";
+    process.env.PVE_COHORT_BACKEND = "rust";
+    process.env.RUST_COHORT_BIN = binary;
+    const input = cohortJob({ mode: "pve", hours: 1e8, raids: 1e8, aid: 6000 });
+    try {
+      assertCohortParity(await computeCohortInBackground(input), await typescript.compute(input));
+      stopCohortWorkersForTests();
+      process.env.RUST_COHORT_BIN = join(fixture.directory, "no-pve-worker-executable");
+      await assert.rejects(computeCohortInBackground(input), /ENOENT|spawn/i);
+    } finally {
+      stopCohortWorkersForTests();
+      for (const [key, value] of Object.entries(saved)) {
+        if (value === undefined) delete process.env[key]; else process.env[key] = value;
+      }
     }
   });
 

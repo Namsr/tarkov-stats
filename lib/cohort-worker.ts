@@ -17,13 +17,15 @@ export class CohortComputeWorker extends ComputeWorker<[CohortJob], CohortResult
   }
 }
 
-/** Only Regular comparisons opt in; the remaining jobs keep their existing worker. */
-export function regularCohortBackend(job: CohortJob, backend = process.env.REGULAR_COHORT_BACKEND): "rust" | "typescript" {
-  return backend === "rust" && job.kind === "persistent" && job.mode === "regular" ? "rust" : "typescript";
+/** Persistent comparisons opt in independently; other jobs keep their existing worker. */
+export function cohortComputeBackend(job: CohortJob, backend = job.kind === "persistent" && job.mode === "pve"
+  ? process.env.PVE_COHORT_BACKEND : process.env.REGULAR_COHORT_BACKEND): "rust" | "typescript" {
+  return backend === "rust" && job.kind === "persistent" && (job.mode === "regular" || job.mode === "pve")
+    ? "rust" : "typescript";
 }
 
 const worker = new CohortComputeWorker({
-  executableForArgs: ([job]) => regularCohortBackend(job) === "rust"
+  executableForArgs: ([job]) => cohortComputeBackend(job) === "rust"
     ? process.env.RUST_COHORT_BIN || resolve("rust/cohort-worker/target/release", `tarkov-cohort-worker${process.platform === "win32" ? ".exe" : ""}`)
     : undefined,
 });
@@ -44,7 +46,7 @@ export function computeCohortInBackground<Job extends CohortJob>(job: Job,
   const report = (outcome: string) => {
     try {
       console.info(JSON.stringify({ event: "cohort_job_v1", at: Date.now(), kind: job.kind,
-        outcome, backend: regularCohortBackend(job), elapsed_ms: Date.now() - startedAt,
+        outcome, backend: cohortComputeBackend(job), elapsed_ms: Date.now() - startedAt,
         ...(phases ? { queue_ms: phases.queueMs, worker_ms: phases.workerMs } : {}),
       }));
     } catch { /* Diagnostics must not change the compute result. */ }

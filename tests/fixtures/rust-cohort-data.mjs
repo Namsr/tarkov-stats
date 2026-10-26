@@ -27,13 +27,13 @@ export function rustCohortBinary() {
     `tarkov-cohort-worker${process.platform === "win32" ? ".exe" : ""}`);
 }
 
-export function cohortJob({ hours = 100, raids = 100, aid = 1, dimension = "hours",
+export function cohortJob({ hours = 100, raids = 100, aid = 1, dimension = "hours", mode = "regular",
   statistic = "median", period = "all", metrics = PLAYER_METRICS } = {}) {
-  return { kind: "persistent", mode: "regular",
+  return { kind: "persistent", mode,
     args: [hours, raids, aid, dimension, statistic, period, metrics] };
 }
 
-export async function createCohortFixture(prefix = "rust-cohort-") {
+export async function createCohortFixture(prefix = "rust-cohort-", mode = "regular") {
   const directory = mkdtempSync(join(tmpdir(), prefix));
   for (const [key, name] of Object.entries({ SQLITE_PATH: "players", BANS_SQLITE_PATH: "bans",
     PROGRESSION_SQLITE_PATH: "progression", ADMIN_ANALYTICS_SQLITE_PATH: "admin",
@@ -46,11 +46,15 @@ export async function createCohortFixture(prefix = "rust-cohort-") {
   const columns = ["aid", "nickname", "hours", "pmc_raids", "total_raids", "profile_updated_at",
     "last_played_at", "pvp_stats_known", "pvp_stats_version", "pmc_killed_pmc", "fetched_at",
     "kd_ratio", "pmc_kd_ratio", "kills_per_raid", "pmc_survival_rate", "longest_win_streak", "level"];
-  const insert = db.prepare(`INSERT INTO players (${columns.join(",")}) VALUES (${columns.map(() => "?").join(",")})`);
+  const inserts = new Map([["regular", db.prepare(`INSERT INTO players (${columns.join(",")}) VALUES (${columns.map(() => "?").join(",")})`)]]);
+  for (const playerMode of ["pve", "arena"]) {
+    inserts.set(playerMode, db.prepare(`INSERT INTO mode_players (mode,${columns.join(",")},stats_json) VALUES ('${playerMode}',${columns.map(() => "?").join(",")},?)`));
+  }
   return {
-    directory, db,
-    clear() { db.exec("DELETE FROM excluded_players; DELETE FROM players"); },
-    seed(rows, now = Date.now()) {
+    directory, db, mode,
+    clear() { db.exec("DELETE FROM excluded_players; DELETE FROM players; DELETE FROM mode_players"); },
+    seed(rows, now = Date.now(), rowMode = mode) {
+      assert.ok(inserts.has(rowMode), "fixture mode must be regular, pve or arena");
       db.exec("BEGIN");
       try {
         for (const row of rows) {
@@ -59,7 +63,9 @@ export async function createCohortFixture(prefix = "rust-cohort-") {
             pvp_stats_version: 1, pmc_killed_pmc: 50, fetched_at: now,
             kd_ratio: 2.5, pmc_kd_ratio: 0.8, kills_per_raid: 3, pmc_survival_rate: 50,
             longest_win_streak: 4, level: 25, ...row };
-          insert.run(...columns.map((key) => complete[key]));
+          const values = columns.map((key) => complete[key]);
+          if (rowMode !== "regular") values.push(row.stats_json ?? "{}");
+          inserts.get(rowMode).run(...values);
         }
         db.exec("COMMIT");
       } catch (error) { db.exec("ROLLBACK"); throw error; }
@@ -82,9 +88,9 @@ export function* syntheticCohortRows(count) {
   };
 }
 
-export async function seedRouteOwners(startAid, count = 4) {
+export async function seedRouteOwners(startAid, count = 4, mode = "regular") {
   const { getProgressionStore } = await import("../../lib/progression-db.ts");
-  const store = await getProgressionStore("regular");
+  const store = await getProgressionStore(mode);
   assert.ok(store);
   const groups = { matched: [], population: [] };
   const now = Date.now() - DAY_MS;
