@@ -126,6 +126,11 @@
 	# Match path segments, including decoded escapes, without blocking .well-known.
 	@privateFiles path_regexp privateFiles (?i)(^|/)(\.env([./_-]|$)|\.(git|svn|hg|aws|ssh|terraform)(/|$)|wp-config\.php($|[./])|terraform\.tfstate($|[./])|docker-compose[^/]*\.ya?ml$)
 	respond @privateFiles 404
+	# Select the complete Seasonal endpoint explicitly. The default still uses Next.
+	@seasonalCohort path /api/seasonal/cohort /api/seasonal/cohort/
+	reverse_proxy @seasonalCohort {$SEASONAL_API_UPSTREAM:web:3000} {
+		import web_upstream
+	}
 	reverse_proxy web:3000 {
 		import web_upstream
 	}
@@ -135,13 +140,27 @@
 		import response_headers
 		@refused expression `{err.status_code} == 502 && {err.message}.matches('^dial tcp .*: (connect: connection refused|connectex: .*actively refused it.*)$')`
 		handle @refused {
-			reverse_proxy web:3000 {
-				import web_upstream
-				lb_try_duration 4s
-				lb_try_interval 100ms
-				# Never replay a request after a successful connection, including GET.
-				lb_retry_match {
-					expression false
+			@retrySeasonal path /api/seasonal/cohort /api/seasonal/cohort/
+			handle @retrySeasonal {
+				# A refused Rust dial retries Rust; it never falls back to Next.
+				reverse_proxy {$SEASONAL_API_UPSTREAM:web:3000} {
+					import web_upstream
+					lb_try_duration 4s
+					lb_try_interval 100ms
+					lb_retry_match {
+						expression false
+					}
+				}
+			}
+			handle {
+				reverse_proxy web:3000 {
+					import web_upstream
+					lb_try_duration 4s
+					lb_try_interval 100ms
+					# Never replay a request after a successful connection, including GET.
+					lb_retry_match {
+						expression false
+					}
 				}
 			}
 		}

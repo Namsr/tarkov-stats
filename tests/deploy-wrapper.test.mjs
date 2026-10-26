@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { basename, dirname, join, resolve } from 'node:path';
 import test from 'node:test';
 const shell = process.platform === 'win32'
   ? resolve(execFileSync('git', ['--exec-path'], { encoding: 'utf8' }).trim(), '../../../bin/bash.exe') : '/bin/sh';
@@ -33,7 +33,7 @@ test('deploy consumes verified CI images and preserves recovery and rollback', a
   assert.match(compose, /image: tarkovstats-web:latest\s+pull_policy: never/);
   const { createHash } = await import('node:crypto');
   const checksum = createHash('sha256').update('fixture').digest('hex');
-  const scenarios = ['current', 'current-sick', 'current-redirect', 'current-no-ip',
+  const scenarios = ['routing-to-rust', 'routing-invalid', 'unsupported-rollback', 'native-candidate-incompatible', 'native-upgrade', 'current-rust', 'current-rust-sick', 'current', 'current-sick', 'current-redirect', 'current-no-ip',
     'current-unreachable', 'current-sync-busy', 'current-isolated-sync-busy', 'current-restart-fail', 'checkout-ahead',
     'tag-fail', 'sync-busy', 'image-missing', 'download-fail', 'checksum-fail',
     'invalid-checksum', 'multiline-checksum', 'load-fail', 'revision-mismatch', 'tag-target-fail', 'merge-fail',
@@ -53,12 +53,28 @@ test('deploy consumes verified CI images and preserves recovery and rollback', a
         echo "docker $*" >> "$APP/calls"
         case "$*" in
           *'ps -q web') echo web;;
-          'image inspect '*) if [ "$SCENARIO" = revision-mismatch ]; then echo wrong; else echo remote; fi;;
+          *'config --environment')
+            case "$SCENARIO" in
+              routing-invalid) echo SEASONAL_API_UPSTREAM=invalid;;
+              routing-to-rust|unsupported-rollback|native-*|current-rust*) echo SEASONAL_API_UPSTREAM=web:3001;;
+            esac;;
+          'image inspect '*)
+            case "$*" in
+              *org.tarkovstats.rust-http*)
+                if [ "$SCENARIO" != unsupported-rollback ]; then
+                  case "$SCENARIO:$*" in native-candidate-incompatible:*tarkovstats-web:remote) ;; *) echo seasonal-v1;; esac
+                fi;;
+              *) if [ "$SCENARIO" = revision-mismatch ]; then echo wrong; else echo remote; fi;;
+            esac;;
           *inspect*)
             case "$*" in
               *'.NetworkSettings.Networks'*) if [ "$SCENARIO" != current-no-ip ]; then echo 172.18.0.3; fi;;
               *'.Image'*) echo old-image;;
-              *'.Config.Env'*) if [ "$SCENARIO" = current-isolated-sync-busy ]; then echo WEB_BACKGROUND_WORKERS=false; fi;;
+              *'.Config.Env'*)
+                case "$SCENARIO" in
+                  unsupported-rollback|native-*|current-rust*) echo rust;;
+                  current-isolated-sync-busy) echo WEB_BACKGROUND_WORKERS=false;;
+                esac;;
               *) case "$SCENARIO" in current*) echo remote;; *) if [ -f "$APP/started" ]; then echo remote; else echo old; fi;; esac;;
             esac;;
           'image load '*)
@@ -74,6 +90,7 @@ test('deploy consumes verified CI images and preserves recovery and rollback', a
       }
       curl() {
         echo "curl $*" >> "$APP/calls"
+        case "$SCENARIO:$*" in current-rust-sick:*:3001/healthz) echo 503; return 0;; esac
         output=
         while [ "$#" -gt 0 ]; do
           case "$1" in --output) output=$2; shift;; esac
@@ -92,6 +109,7 @@ test('deploy consumes verified CI images and preserves recovery and rollback', a
           /dev/null)
             case "$SCENARIO" in
               current-redirect) echo 308;; current-unreachable) return 7;;
+              current-rust|current-rust-sick) echo 200;;
               current-*|health-fail) echo 503;; *) echo 200;;
             esac;;
           *) return 90;;
@@ -110,8 +128,17 @@ test('deploy consumes verified CI images and preserves recovery and rollback', a
       const result = run();
       assert.ifError(result.error);
       const calls = await readFile(join(dir, 'calls'), 'utf8');
+      if (['routing-to-rust', 'routing-invalid', 'unsupported-rollback'].includes(scenario)) {
+        assert.equal(result.status, 75, `${scenario}: ${result.stderr}\n${calls}`);
+        assert.doesNotMatch(calls, /releases\/download|git reset --hard|git merge|up -d/);
+        assert.match(calls, /deploy deferred:/);
+        continue;
+      }
+      if (scenario === 'current-rust' || scenario === 'current-rust-sick' || scenario === 'native-upgrade') {
+        assert.match(calls, /curl .*http:\/\/172\.18\.0\.3:3001\/healthz/);
+      }
       const current = scenario.startsWith('current');
-      const succeeds = current || ['checkout-ahead', 'tag-fail', 'image-missing'].includes(scenario);
+      const succeeds = current || ['checkout-ahead', 'tag-fail', 'image-missing', 'native-upgrade'].includes(scenario);
       assert.equal(result.status === 0, succeeds, `${scenario}: ${result.stderr}\n${calls}`);
       assert.doesNotMatch(calls, /compose .*build --|buildx|docker pull|exec -T web node/);
       if ((current && scenario !== 'current-no-ip') || ['checkout-ahead', 'tag-fail', 'health-fail'].includes(scenario)) {
@@ -132,14 +159,14 @@ test('deploy consumes verified CI images and preserves recovery and rollback', a
           assert.equal((repeated.match(/container-remote\/web.tar.gz.sha256/g) ?? []).length, 2);
         } else if (['download-fail', 'checksum-fail', 'invalid-checksum', 'multiline-checksum'].includes(scenario)) {
           assert.doesNotMatch(calls, /image load|git merge|up -d/);
-        } else if (['load-fail', 'revision-mismatch', 'tag-target-fail', 'signal'].includes(scenario)) {
+        } else if (['load-fail', 'revision-mismatch', 'tag-target-fail', 'signal', 'native-candidate-incompatible'].includes(scenario)) {
           assert.doesNotMatch(calls, /git merge|up -d/);
         } else {
           assert.match(calls, /image tag tarkovstats-web:remote tarkovstats-web:latest/);
           assert.ok(calls.indexOf('image inspect') < calls.indexOf('git merge'));
         }
       }
-      if (['checkout-ahead', 'tag-fail'].includes(scenario)) {
+      if (['checkout-ahead', 'tag-fail', 'native-upgrade'].includes(scenario)) {
         assert.match(calls, /image tag old-image tarkovstats-web-previous/);
         if (scenario === 'tag-fail') assert.doesNotMatch(calls, /^docker image prune/m);
         else assert.match(calls, /image prune -f --filter until=24h/);
@@ -156,7 +183,7 @@ test('deploy consumes verified CI images and preserves recovery and rollback', a
         const { readdir } = await import('node:fs/promises');
         assert.deepEqual((await readdir(join(dir, 'state'))).filter((name) => name.startsWith('image.')), [], 'download staging must be cleaned');
       }
-      if (current && scenario !== 'current') {
+      if (current && scenario !== 'current' && scenario !== 'current-rust') {
         for (let probe = 2; probe <= 6; probe++) {
           const retry = run();
           assert.ifError(retry.error);
@@ -173,7 +200,11 @@ test('deploy consumes verified CI images and preserves recovery and rollback', a
         const { access } = await import('node:fs/promises');
         await assert.rejects(access(join(dir, 'state', 'unhealthy')), { code: 'ENOENT' });
       }
-    } finally { await rm(dir, { recursive: true, force: true }); }
+    } finally {
+      assert.equal(dirname(resolve(dir)), resolve(tmpdir()));
+      assert.ok(basename(dir).startsWith('deploy-behavior-'));
+      await rm(dir, { recursive: true, force: true });
+    }
   }
 });
 

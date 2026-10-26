@@ -61,8 +61,7 @@ its own opt-in switch: `REGULAR_COHORT_BACKEND`, `PVE_COHORT_BACKEND`,
 to use native computation, or `typescript` (the default) to use the existing
 worker. Arena includes both player cohorts and dynamic population averages;
 Seasonal includes player cohorts. Seasonal average publication, baselines and
-other jobs retain their TypeScript implementation. All jobs share the same
-bounded FIFO and deadline policy. Calculation failures use the existing
+other jobs retain their TypeScript implementation. Jobs dispatched by Next share the same bounded FIFO and deadline policy. Calculation failures use the existing
 retryable API error path; there is no automatic retry on the other backend.
 
 The worker reads the existing `SQLITE_PATH` players database and, for Seasonal,
@@ -98,3 +97,29 @@ CI runs the same command, preserves JSON/logs as a 14-day artifact, and writes a
 step summary. See [Linux benchmark methodology](docs/rust-linux-cohort-performance.md).
 `--backend typescript|rust|both` selects one implementation in the underlying
 Node benchmark; the default remains `both`.
+
+## Rust HTTP migration
+
+The target is all application logic in Rust, including the API, background work,
+storage ownership and frontend SSR/client behavior. Node.js and Next.js remain
+migration dependencies until their application responsibilities are replaced.
+
+The first full HTTP endpoint is `/api/seasonal/cohort`. It has its own Rust
+request validation, cycle gate, memory/durable cache, compute admission, response
+format, security headers and analytics. The request path does not call a
+TypeScript handler or forward business logic to Next. Its compute child is also
+Rust, preserving killable deadlines without duplicating the calculation.
+
+The image includes both servers. `SEASONAL_API_UPSTREAM=web:3000` keeps the current
+Next route (the default). `web:3001` starts the Rust HTTP server and lets Caddy
+route exactly that endpoint directly to it. The existing web memory budget is
+retained; port 3001 is internal. Changing this selector requires coordinated
+web/Caddy recreation and a compatible rollback image, not just a web image
+update. Nothing enables the user-disabled deployment timer.
+
+The Rust HTTP process has its own bounded queue and cache. Legacy Next helpers,
+including leaderboard preview, keep their queue during coexistence. Caddy's
+32-request bound is per upstream address, so mixed routing can admit 32 requests
+to each server. Mixed-load and production readiness must be checked before
+activation; worker-only results do not establish that the HTTP migration is
+faster. See [HTTP migration, validation and rollout](docs/rust-http-backend.md).

@@ -135,3 +135,5 @@ next-env.d.ts
 !/docs/rust-pve-cohort-performance.md
 !/docs/rust-pve-cohort-benchmark.json
 !/docs/rust-linux-cohort-performance.md
+
+!/docs/rust-http-backend.md
