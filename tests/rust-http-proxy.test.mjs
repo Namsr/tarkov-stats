@@ -49,7 +49,7 @@ test("production proxy selects the Rust endpoint, bounds each upstream and never
   const path = join(directory, "Caddyfile"); await writeFile(path, config);
   const child = spawn(caddy, ["run", "--config", path, "--adapter", "caddyfile"], {
     cwd: directory, windowsHide: true, stdio: ["ignore", "ignore", "pipe"],
-    env: { ...process.env, SEASONAL_API_UPSTREAM: `127.0.0.1:${rustPort}`, HOME_SHOWCASE_API_UPSTREAM: `127.0.0.1:${rustPort}`, GOMEMLIMIT: "192MiB",
+    env: { ...process.env, SEASONAL_API_UPSTREAM: `127.0.0.1:${rustPort}`, HOME_SHOWCASE_API_UPSTREAM: `127.0.0.1:${rustPort}`, ARENA_UI_UPSTREAM: `127.0.0.1:${rustPort}`, GOMEMLIMIT: "192MiB",
       APPDATA: directory, XDG_DATA_HOME: directory, XDG_CONFIG_HOME: directory },
   });
   let logs = ""; child.stderr.setEncoding("utf8"); child.stderr.on("data", (chunk) => { logs = `${logs}${chunk}`.slice(-16000); });
@@ -68,7 +68,7 @@ test("production proxy selects the Rust endpoint, bounds each upstream and never
     try { await request(port, "/proxy-ready"); break; } catch { assert.ok(Date.now() < deadline, logs); await delay(20); }
   }
   for (const host of ["tarkovstats.ru", "tarkovstats.online"]) {
-    for (const path of ["/api/seasonal/cohort?aid=1", "/api/seasonal/cohort/?aid=1", "/api/home/showcase", "/api/home/showcase/?x=1"]) {
+    for (const path of ["/api/seasonal/cohort?aid=1", "/api/seasonal/cohort/?aid=1", "/api/home/showcase", "/api/home/showcase/?x=1", "/population/arena", "/average/arena?x=1", "/_rust/arena/hash/tarkov_ui.js", "/api/average?mode=arena", "/api/average?mode=arena&mode=pve", "/api/average?m%6Fde=%61r%65%6Ea"]) {
       const result = await request(port, path, host);
       assert.equal(result.status, 200); assert.equal(JSON.parse(result.body).backend, "rust");
       assert.equal(JSON.parse(result.body).path, path);
@@ -76,7 +76,7 @@ test("production proxy selects the Rust endpoint, bounds each upstream and never
       assert.equal(result.headers.server, undefined);
       assert.match(result.headers["strict-transport-security"], /max-age=31536000/);
     }
-    for (const path of ["/api/seasonal/profile", "/api/seasonal/cohort-extra", "/api/home/showcase-extra", "/api/home/coverage", "/healthz"]) {
+    for (const path of ["/api/seasonal/profile", "/api/seasonal/cohort-extra", "/api/home/showcase-extra", "/api/home/coverage", "/healthz", "/population/pve", "/api/average?mode=pve&mode=arena", "/api/average?mode=&mode=arena", "/api/average?MODE=arena", "/api/average?mode=arenax", "/api/average?mode=arena%20", "/api/average?mode=pve"]) {
       assert.equal(JSON.parse((await request(port, path, host)).body).backend, "next");
     }
   }
@@ -94,7 +94,8 @@ test("production proxy selects the Rust endpoint, bounds each upstream and never
   // The two real upstream addresses have separate 32-request bounds. Confirm
   // the mixed limit instead of retaining the former one-address global claim.
   hold = true;
-  const heldRequests = Array.from({ length: 32 }, (_, i) => request(port, "/api/seasonal/cohort", i % 2 ? "tarkovstats.online" : "tarkovstats.ru"));
+  const heldPaths = ["/api/seasonal/cohort", "/api/home/showcase", "/api/average?mode=arena", "/population/arena", "/_rust/arena/hash/tarkov_ui.js"];
+  const heldRequests = Array.from({ length: 32 }, (_, i) => request(port, heldPaths[i % heldPaths.length], i % 2 ? "tarkovstats.online" : "tarkovstats.ru"));
   const nextRequests = Array.from({ length: 32 }, (_, i) => request(port, "/api/seasonal/profile", i % 2 ? "tarkovstats.online" : "tarkovstats.ru"));
   while (heldRust.length !== 32 || heldNext.length !== 32) {
     assert.ok(Date.now() < deadline + 10000, `mixed admission did not fill both pools: ${heldRust.length}/${heldNext.length} ${logs}`);

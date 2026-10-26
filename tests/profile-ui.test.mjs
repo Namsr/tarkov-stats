@@ -545,7 +545,7 @@ test("profile achievements use sortable desktop columns and readable mobile card
   const achievements = await readFile("components/ProfileAchievements.tsx", "utf8");
   const collapsible = await readFile("components/ProfileCollapsible.tsx", "utf8");
   const styles = await readFile("app/globals.css", "utf8");
-  const dictionary = await readFile("lib/i18n/dictionary.ts", "utf8");
+  const dictionary = await readFile("lib/i18n/messages.json", "utf8");
 
   assert.match(achievements, /<table className="achievement-table">/);
   assert.match(achievements, /achievement\.col\.description/);
@@ -597,7 +597,7 @@ test("average profiles always reuse the responsive profile achievements section"
   const breakdown = await readFile("components/AchievementBreakdown.tsx", "utf8");
   const achievements = await readFile("components/ProfileAchievements.tsx", "utf8");
   const route = await readFile("app/api/average/achievements/route.ts", "utf8");
-  const dictionary = await readFile("lib/i18n/dictionary.ts", "utf8");
+  const dictionary = await readFile("lib/i18n/messages.json", "utf8");
 
   assert.doesNotMatch(page, /showAch|openBreakdown|average\.showAchBreakdown/);
   assert.match(page, /mode !== "arena" && \([\s\S]*<AchievementBreakdown[\s\S]*mode=\{mode\}[\s\S]*cycleId=\{cycleId\}/);
@@ -694,12 +694,13 @@ test("profile mode switch stays below profile actions and is available before pr
   assert.match(shell, /ProfileShellLoading[\s\S]*<ProfileModeSwitch current=\{mode\}/);
   assert.match(modes, /prefetch/);
   assert.match(modes, /scroll=\{false\}/);
-  assert.match(modes, /aria-current=\{mode === current \? "page" : undefined\}/);
-  assert.match(modes, /aria-busy=\{pending \|\| undefined\}/);
+  assert.match(modes, /"aria-current": mode === current \? "page" as const : undefined/);
+  assert.match(modes, /"aria-busy": pending \|\| undefined/);
   assert.match(modes, /const pathname = usePathname\(\)/);
   assert.match(modes, /pendingNavigation\.fromMode === current &&[\s\S]*pendingNavigation\.pathname === pathname/);
   assert.match(modes, /window\.setTimeout\(\(\) => setPendingNavigation\(null\), PENDING_TIMEOUT_MS\)/);
-  assert.match(modes, /onNavigate=\{\(\) => \{[\s\S]*warmProfile\(mode\)[\s\S]*window\.dispatchEvent\(new Event\("profile-mode-navigate"\)\)/);
+  assert.match(modes, /const onNavigate = \(\) => \{[\s\S]*warmProfile\(mode\)[\s\S]*window\.dispatchEvent\(new Event\("profile-mode-navigate"\)\)/);
+  assert.match(modes, /onNavigate=\{onNavigate\}/);
   assert.match(modes, /warmPlayerProfileResponse\(`\/api\/player\/profile\?\$\{params\}`(?:,\s*controller\.signal)?\)/);
   assert.doesNotMatch(modes, /event\.preventDefault\(\)[\s\S]*router\.push\(target/);
   assert.equal((modes.match(/profile-mode-navigate/g) ?? []).length, 1);
@@ -987,7 +988,7 @@ test("active navigation links go back only for an unmodified click at their dest
   assert.match(compare, /href="\/compare"/);
   assert.match(compare, /t\("nav\.compare"\)/);
   assert.match(compare, /handleActiveLinkClick\(event, active, router\)/);
-  assert.match(modes, /onNavigate=\{\(\) => \{/);
+  assert.match(modes, /onNavigate=\{onNavigate\}/);
   assert.match(modes, /prefetch/);
   assert.match(modes, /onBeforeNavigate\?\.\(mode\)/);
   assert.match(averagePage, /averageRequestRef\.current\?\.abort\(\)/);
@@ -995,7 +996,7 @@ test("active navigation links go back only for an unmodified click at their dest
   assert.match(averagePage, /progressionRequestRef\.current\?\.abort\(\)/);
   assert.match(averagePage, /requestRef=\{progressionRequestRef\}/);
   assert.match(modes, /handleActiveLinkClick\(event, mode === current, router\)/);
-  assert.match(modes, /aria-current=\{mode === current \? "page" : undefined\}/);
+  assert.match(modes, /"aria-current": mode === current \? "page" as const : undefined/);
 });
 
 test("regular average period switch keeps URL state and masks stale responses", async () => {
@@ -1090,7 +1091,7 @@ test("profile refresh checks automatically after returning without requiring F5"
 test("Seasonal missing profiles keep the shell and refresh after returning", async () => {
   const seasonal = await readFile("components/SeasonalPlayer.tsx", "utf8");
   const shell = await readFile("components/ProfileShell.tsx", "utf8");
-  const dictionary = await readFile("lib/i18n/dictionary.ts", "utf8");
+  const dictionary = await readFile("lib/i18n/messages.json", "utf8");
 
   assert.match(seasonal, /body\.code === "mode_profile_unavailable"/);
   assert.match(seasonal, /const unknownValue = t\("common\.unknown"\)/);
@@ -1194,7 +1195,7 @@ test("an unknown seasonal PMC survival rate is never rendered as a percentage", 
   const seasonal = await readFile("components/SeasonalPlayer.tsx", "utf8");
   const shell = await readFile("components/ProfileShell.tsx", "utf8");
   const card = await readFile("components/StatCard.tsx", "utf8");
-  const dictionary = await readFile("lib/i18n/dictionary.ts", "utf8");
+  const dictionary = await readFile("lib/i18n/messages.json", "utf8");
 
   // The seasonal placeholder is `?` in both languages, so the defect reads `?%`
   // either way. The sibling regular fix guards a different key, `common.notAvailable`.
@@ -1228,7 +1229,7 @@ test("regular PvP progression precedes the single risk card and radar", async ()
   const panel = await readFile("components/ProgressionPanel.tsx", "utf8");
   const chart = await readFile("components/ProgressionTimelineChart.tsx", "utf8");
   const score = await readFile("components/CheaterScore.tsx", "utf8");
-  const dictionary = await readFile("lib/i18n/dictionary.ts", "utf8");
+  const dictionary = await readFile("lib/i18n/messages.json", "utf8");
 
   const progression = profile.indexOf("<ProgressionPanel");
   const cheatingRisk = profile.indexOf("<CheaterScore");
@@ -1393,7 +1394,7 @@ test("regular average mounts median raid progression and cumulative tooltips inc
   const progression = await readFile("components/RegularAverageProgression.tsx", "utf8");
   const chart = await readFile("components/SeasonalProgressionChart.tsx", "utf8");
   const route = await readFile("app/api/progression/average/route.ts", "utf8");
-  const dictionary = await readFile("lib/i18n/dictionary.ts", "utf8");
+  const dictionary = await readFile("lib/i18n/messages.json", "utf8");
 
   assert.match(canonical, /PLAYER_LEVELS_V2026_07_22/);
   assert.match(canonical, /levelBands=\{levelBands\}/);
@@ -1506,7 +1507,7 @@ test("PVP Season uses one canonical public route and keeps the internal seasonal
   const averageRoute = await readFile("app/average/[mode]/page.tsx", "utf8");
   const playerRoute = await readFile("app/player/[[...segments]]/page.tsx", "utf8");
   const switcher = await readFile("components/ProfileModeSwitch.tsx", "utf8");
-  const dictionary = await readFile("lib/i18n/dictionary.ts", "utf8");
+  const dictionary = await readFile("lib/i18n/messages.json", "utf8");
 
   assert.match(modes, /SEASON_ROUTE_MODE = "pvp-season"/);
   assert.match(modes, /function appRouteMode\(mode: GameMode\)/);
@@ -1763,5 +1764,144 @@ test("report actions follow the current game mode while keeping a global mark", 
     assert.equal(addition.options.method, "POST");
     assert.deepEqual(JSON.parse(addition.options.body), { aid: 7, mode, cycle });
     await ui.answer(addition, { count: 3 });
+  }
+});
+
+
+test("the runtime Arena rollout changes only population ingress to document navigation", async () => {
+  const require = createRequire(import.meta.url);
+  const ts = require("typescript");
+  const React = require("react");
+  const { renderToStaticMarkup } = require("react-dom/server");
+  const originalJsx = require("react/jsx-runtime");
+  const native = [], nextLinks = [], before = [], events = [], warms = [], history = [];
+  let pathname = "/population/regular";
+  let query = "statistic=median&period=90d";
+  const runtime = Object.fromEntries(["jsx", "jsxs"].map((name) => [name, (type, props, key) => {
+    if (type === "a") native.push(props);
+    return originalJsx[name](type, props, key);
+  }]));
+  runtime.Fragment = originalJsx.Fragment;
+  function NextLink(props) {
+    nextLinks.push(props);
+    return React.createElement("a", { href: props.href, className: props.className,
+      "aria-current": props["aria-current"], "aria-busy": props["aria-busy"] }, props.children);
+  }
+  const router = { back: () => history.push("back"), replace: (url) => history.push(url) };
+  const compile = async (path, bindings = {}) => {
+    const source = await readFile(path, "utf8");
+    const output = ts.transpileModule(source, { compilerOptions: {
+      module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022,
+      jsx: ts.JsxEmit.ReactJSX, esModuleInterop: true,
+    } }).outputText;
+    const compiledModule = { exports: {} };
+    new Function("require", "module", "exports", output)((name) => {
+      if (name in bindings) return bindings[name];
+      if (name === "react/jsx-runtime") return runtime;
+      if (name.startsWith("@/components/") || name === "next/script") return () => null;
+      if (name === "./globals.css") return {};
+      return require(name);
+    }, compiledModule, compiledModule.exports);
+    return compiledModule.exports;
+  };
+  const bridge = await compile("lib/native-routes-context.tsx");
+  const active = await compile("lib/active-link.ts");
+  const modes = await compile("types/seasonal.ts");
+  const { default: Switcher } = await compile("components/ProfileModeSwitch.tsx", {
+    "next/link": NextLink,
+    "next/navigation": { usePathname: () => pathname, useRouter: () => router,
+      useSearchParams: () => new URLSearchParams(query) },
+    "@/lib/i18n/context": { useI18n: () => ({ t: (key) => key }) },
+    "@/lib/native-routes-context": bridge,
+    "@/lib/active-link": active,
+    "@/lib/client-profile-request": { warmPlayerProfileResponse: (url) => warms.push(url) },
+    "@/types/seasonal": modes,
+  });
+  const passthrough = ({ children }) => children;
+  const { default: RootLayout } = await compile("app/layout.tsx", {
+    "next/headers": { headers: async () => new Headers({ host: "localhost" }) },
+    "@/lib/i18n/context": { LanguageProvider: passthrough },
+    "@/lib/favorites/context": { FavoritesProvider: passthrough },
+    "@/lib/native-routes-context": bridge,
+    "@/lib/i18n/server": { resolveLang: async () => "en" },
+    "@/lib/i18n/dictionary": { dict: {} },
+  });
+  const previousEnv = process.env.ARENA_UI_UPSTREAM;
+  const previousWindow = Object.getOwnPropertyDescriptor(globalThis, "window");
+  const previousFetch = globalThis.fetch;
+  Object.defineProperty(globalThis, "window", { configurable: true, value: {
+    history: { length: 4 }, dispatchEvent: (event) => { events.push(event.type); return true; },
+  } });
+  globalThis.fetch = async () => ({ ok: true });
+  const click = (extra = {}) => ({ button: 0, metaKey: false, ctrlKey: false, shiftKey: false,
+    altKey: false, defaultPrevented: false, preventDefault() { this.defaultPrevented = true; }, ...extra });
+  async function render(upstream, props = { current: "regular", page: "average" }, layout = true) {
+    if (upstream === undefined) delete process.env.ARENA_UI_UPSTREAM;
+    else process.env.ARENA_UI_UPSTREAM = upstream;
+    native.length = 0; nextLinks.length = 0; before.length = 0; events.length = 0; warms.length = 0;
+    active.resetActiveLinkStateForTests();
+    const child = React.createElement(Switcher, { ...props, onBeforeNavigate: (mode) => before.push(mode) });
+    return renderToStaticMarkup(layout ? await RootLayout({ children: child }) : child);
+  }
+  try {
+    for (const upstream of [undefined, "web:3000", "127.0.0.1:3001"]) {
+      const html = await render(upstream);
+      assert.equal(native.length, 0, "off keeps every existing Next Link");
+      assert.equal(nextLinks.length, 4);
+      assert.ok(nextLinks.every((link) => link.prefetch === true && link.scroll === false));
+      assert.ok(html.includes('href="/population/arena"'));
+      const arena = nextLinks.find((link) => link.href === "/population/arena");
+      arena.onClick(click());
+      assert.deepEqual(before, [], "onClick alone is not Next navigation");
+      arena.onNavigate();
+      assert.deepEqual(before, ["arena"]);
+    }
+    const html = await render("web:3001");
+    assert.equal(native.length, 1);
+    assert.equal(nextLinks.length, 3);
+    const arena = native[0];
+    assert.equal(arena.href, "/population/arena", "population links retain their existing query-free URL");
+    assert.equal(arena.children, "fav.mode.arena");
+    assert.equal(arena.className, "mode-switch__item");
+    assert.equal(arena["aria-busy"], undefined);
+    assert.equal(arena["aria-current"], undefined);
+    assert.equal(arena.prefetch, undefined);
+    assert.equal(arena.onNavigate, undefined);
+    assert.ok(html.includes('aria-current="page"'));
+    assert.ok(!html.includes("web:3001"), "the server serializes a boolean, not its environment");
+    const plain = click(); arena.onClick(plain);
+    assert.equal(plain.defaultPrevented, false, "the browser owns the document navigation");
+    assert.deepEqual(before, ["arena"]);
+    assert.deepEqual(events, ["profile-mode-navigate"]);
+    assert.deepEqual(warms, [], "population navigation never starts player warmups");
+    for (const extra of [{ ctrlKey: true }, { metaKey: true }, { shiftKey: true }, { altKey: true }, { button: 1 }, { defaultPrevented: true }]) {
+      before.length = 0; events.length = 0; active.resetActiveLinkStateForTests();
+      arena.onClick(click(extra));
+      assert.deepEqual(before, [], "modified/prevented clicks leave cleanup and navigation alone");
+      assert.deepEqual(events, []);
+    }
+    pathname = "/population/arena";
+    await render("web:3001", { current: "arena", page: "average" });
+    assert.equal(native[0]["aria-current"], "page");
+    const activeClick = click(); native[0].onClick(activeClick);
+    assert.equal(activeClick.defaultPrevented, true, "an active destination keeps the existing back affordance");
+    assert.equal(history.at(-1), "back");
+    assert.deepEqual(before, []);
+    assert.deepEqual(events, []);
+    pathname = "/player/pvp-season/42"; query = "radarDemo=1&cycle=old";
+    await render("web:3001", { current: "seasonal", page: "player", aid: 42, seasonalCycleId: "s1" });
+    assert.equal(native.length, 0, "Arena profiles remain Next pages");
+    assert.equal(nextLinks.find((link) => link.href.startsWith("/player/arena/")).href, "/player/arena/42");
+    assert.equal(nextLinks.find((link) => link.href.startsWith("/player/regular/")).href, "/player/regular/42?radarDemo=1");
+    assert.equal(nextLinks.find((link) => link.href.startsWith("/player/pvp-season/")).href, "/player/pvp-season/42?radarDemo=1&cycle=s1");
+    await render("web:3001", { current: "regular", page: "average" }, false);
+    assert.equal(native.length, 0, "a missing provider defaults to the legacy router even with a server env flag");
+    assert.equal(nextLinks.length, 4);
+    const clientSources = await Promise.all(["lib/native-routes-context.tsx", "components/ProfileModeSwitch.tsx"].map((file) => readFile(file, "utf8")));
+    assert.ok(clientSources.every((source) => !source.includes("process.env")));
+  } finally {
+    if (previousEnv === undefined) delete process.env.ARENA_UI_UPSTREAM; else process.env.ARENA_UI_UPSTREAM = previousEnv;
+    if (previousWindow) Object.defineProperty(globalThis, "window", previousWindow); else delete globalThis.window;
+    globalThis.fetch = previousFetch;
   }
 });

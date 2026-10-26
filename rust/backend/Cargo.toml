@@ -6,6 +6,12 @@ rust-version = "1.89"
 publish = false
 
 [dependencies]
+tarkov-ui = { path = "../ui", features = ["ssr"] }
+leptos = { version = "=0.8.22", default-features = false, features = ["ssr", "islands"] }
+leptos_axum = { version = "=0.8.10", default-features = false }
+sha2 = "0.10.9"
+percent-encoding = "2.3"
+any_spawner = { version = "0.3.0", features = ["tokio"] }
 axum = { version = "0.8.9", default-features = false, features = ["http1", "json", "query", "tokio"] }
 tokio = { version = "1.54.1", features = ["rt-multi-thread", "macros", "net", "signal", "sync", "time", "process", "io-util"] }
 chrono = { version = "0.4.45", default-features = false, features = ["std", "clock"] }

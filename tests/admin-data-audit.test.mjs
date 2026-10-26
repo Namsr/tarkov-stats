@@ -44,7 +44,7 @@ test("manual admin data audit is guarded, explicit, durable, and does not redown
     readFile("app/api/admin/data-audit/route.ts", "utf8"),
     readFile("lib/admin/data-audit.ts", "utf8"),
     readFile("components/AdminDashboard.tsx", "utf8"),
-    readFile("lib/i18n/dictionary.ts", "utf8"),
+    readFile("lib/i18n/messages.json", "utf8"),
   ]);
   assert.match(route, /requireAdmin/);
   assert.match(route, /rejectInvalidAdminMutation/);

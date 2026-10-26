@@ -16,7 +16,7 @@ healthy() {
   [ "$health_status" = 200 ] || return 1
   # Inspect the actual container, including rollback images, rather than the
   # checkout's desired environment. Next alone cannot prove an opted-in API ready.
-  health_native=$(docker inspect --format '{{range .Config.Env}}{{if or (eq . "SEASONAL_API_UPSTREAM=web:3001") (eq . "HOME_SHOWCASE_API_UPSTREAM=web:3001")}}rust{{end}}{{end}}' "$health_cid") || return 1
+  health_native=$(docker inspect --format '{{range .Config.Env}}{{if or (eq . "SEASONAL_API_UPSTREAM=web:3001") (eq . "HOME_SHOWCASE_API_UPSTREAM=web:3001") (eq . "ARENA_UI_UPSTREAM=web:3001")}}rust{{end}}{{end}}' "$health_cid") || return 1
   if [ -n "$health_native" ]; then
     health_rust_status=$(curl --silent --show-error --noproxy '*' --connect-timeout 2 --max-time 5 \
       --header 'Host: tarkovstats.ru' --output /dev/null --write-out '%{http_code}' \
@@ -45,7 +45,8 @@ if ! interpolation=$(compose config --environment); then
 fi
 desired_native=false
 desired_showcase=false
-for selector in SEASONAL_API_UPSTREAM HOME_SHOWCASE_API_UPSTREAM; do
+desired_ui=false
+for selector in SEASONAL_API_UPSTREAM HOME_SHOWCASE_API_UPSTREAM ARENA_UI_UPSTREAM; do
   desired_api=$(printf '%s\n' "$interpolation" | sed -n "s/^$selector=//p")
   desired_api=${desired_api:-web:3000}
   case "$desired_api" in
@@ -62,7 +63,7 @@ for selector in SEASONAL_API_UPSTREAM HOME_SHOWCASE_API_UPSTREAM; do
     fi
   fi
   if [ "$desired_api" = web:3001 ]; then
-    if [ "$selector" = SEASONAL_API_UPSTREAM ]; then desired_native=true; else desired_showcase=true; fi
+    case "$selector" in SEASONAL_API_UPSTREAM) desired_native=true;; HOME_SHOWCASE_API_UPSTREAM) desired_showcase=true;; ARENA_UI_UPSTREAM) desired_ui=true;; esac
   fi
 done
 unset interpolation
@@ -73,9 +74,12 @@ image_supports_routing() {
   if [ "$desired_showcase" = true ]; then
     [ "$(docker image inspect --format '{{index .Config.Labels "org.tarkovstats.rust-home-showcase"}}' "$1")" = v1 ] || return 1
   fi
+  if [ "$desired_ui" = true ]; then
+    [ "$(docker image inspect --format '{{index .Config.Labels "org.tarkovstats.rust-arena-ui"}}' "$1")" = v1 ] || return 1
+  fi
   return 0
 }
-if [ "$desired_native" = true ] || [ "$desired_showcase" = true ]; then
+if [ "$desired_native" = true ] || [ "$desired_showcase" = true ] || [ "$desired_ui" = true ]; then
   # Both requested listeners/routes must remain usable after an image rollback.
   if [ -z "$previous_image" ] || ! image_supports_routing "$previous_image"; then
     logger -t tarkovstats-deploy "deploy deferred: Rust routing requires a compatible running rollback image"

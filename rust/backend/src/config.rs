@@ -63,6 +63,7 @@ pub fn timestamp(value: &str) -> Option<i64> {
 #[derive(Clone)]
 pub struct Config {
     pub cycle: Option<String>,
+    pub available_cycle: Option<String>,
     ready: bool,
     starts: i64,
     ends: Option<i64>,
@@ -100,15 +101,15 @@ impl Config {
                     .is_some_and(|url| valid_url(url, Some("updated.json")))
                 && get("SEASONAL_PROFILE_INDEX_URL")
                     .is_some_and(|url| valid_url(url, Some("index.json"))));
-        let ready = cycle.is_some()
+        let configured = cycle.is_some()
             && starts.is_some()
             && valid_ends
             && contract
-            && (operator || json_feed)
-            && profile_url
-            && json_ready
-            && get("SEASONAL_ENABLED") == Some("true");
+            && (operator || json_feed);
+        let ready =
+            configured && profile_url && json_ready && get("SEASONAL_ENABLED") == Some("true");
         Self {
+            available_cycle: if configured { cycle.clone() } else { None },
             cycle,
             ready,
             starts: starts.unwrap_or(0),
