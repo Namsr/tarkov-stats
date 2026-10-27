@@ -1,4 +1,8 @@
 @import "tailwindcss";
+@source "../rust/ui/src";
+
+/* Rust islands retain the existing body flex layout. */
+body > leptos-island { display: contents; }
 
 :root {
   --background: #090909;

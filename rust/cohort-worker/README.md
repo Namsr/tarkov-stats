@@ -1,7 +1,7 @@
-# Persistent cohort worker
+# Cohort worker
 
-A long-lived, single-threaded Rust worker for the existing Regular and PvE
-comparison cohort calculations. The Node parent owns HTTP validation, caching,
+A long-lived, single-threaded Rust worker for Regular, PvE, Seasonal and Arena
+comparison cohorts and Arena population statistics. The Node parent owns HTTP validation, caching,
 the bounded FIFO, timeouts and process restart. This binary opens `SQLITE_PATH` (default
 `/data/players.db`) read-only and never initializes or changes the schema.
 
@@ -28,11 +28,16 @@ through the next newline without retaining the whole input.
 
 A successful response is `{"id":1,"result":<ComparisonCohortResult>}`. Failures
 return `{"id":1,"error":"..."}`. Invalid/unrecoverable request IDs are `null`.
-Only protocol version 1 and positive safe integer IDs are accepted. The job is
-restricted to `persistent` jobs in `regular` or `pve` mode; Seasonal, Arena and
-risk calculations stay with their existing implementations.
+Only protocol version 1 and positive safe integer IDs are accepted.
 
-The job arguments are hours, PMC raids, excluded account ID, dimension,
+Supported jobs are `persistent` (`regular`/`pve`), `arena` (cohort),
+`arena_population` (the complete Arena average result) and `seasonal` (cohort).
+The last three omit the top-level `mode` property. Their argument arrays match
+`getArenaCohort`, `getArenaAverage` and `computeSeasonalComparisonCohort`.
+Seasonal requires its explicit second `now` argument. `seasonal_average`,
+`average_metrics`, baselines and risk jobs remain in TypeScript.
+
+For `persistent` jobs, arguments are hours, PMC raids, excluded account ID, dimension,
 statistic, period and optional player metrics, matching `PlayerStore.cohort2d`.
 The last four arguments default to hours, trimmed_mean, all and absent metrics.
 Omitted or null optional arguments preserve JavaScript undefined defaults.
@@ -45,20 +50,22 @@ an error or a zero.
 
 ## Calculation and storage
 
-Each request opens a read transaction over the existing covering-index queries.
+Each request opens a read transaction over normalized scalar columns.
 Regular uses `players` / `idx_players_cohort`. PvE uses `mode_players` /
 `idx_mode_players_cohort` with `mode = pve`; all identifiers come from a trusted
 mode enum. Neither reader accesses `stats_json`. Equal account IDs in different
 modes cannot mix their cohort populations or results.
 
 The same eligible population, owner/tombstone exclusions and 10/15/20/30 percent
-windows determine the selected cohort. Below 20 matched players the calculation
-uses the eligible population. All selected metric values are read once, then
+windows determine the selected cohort. Below 20 matched players, persistent and Seasonal calculations
+use their eligible population; named Arena modes never fall back. Arena overall
+always uses its eligible population. All selected metric values are read once, then
 sorted and aggregated in Rust, replacing the SQL materialization and per-metric
 sorts. The vectors are released after every request. Their aggregate capacity is
 limited to 128 MiB, with geometric checked allocation. Exceeding this budget
 returns an explicit error; rows are never silently truncated. Roughly two
-million fully populated rows fit, depending on vector capacity growth. This
+million fully populated persistent rows fit, depending on capacity growth.
+Arena averages also hold bucket samples and fit fewer rows. This
 limit covers vector capacity, not total RSS; SQLite and runtime memory are
 additional. Use the TypeScript backend for populations exceeding this limit.
 
@@ -73,3 +80,24 @@ The database connection is reused, with a 250 ms busy timeout. No results or
 population rows are cached inside the worker; subsequent requests observe new
 committed database state. Both the database and any SQLite WAL sidecars must be
 accessible to the runtime user on the same host.
+
+Arena reads `arena_mode_stats` in the players database, uses the current parser
+version 5, and preserves its separate target/peer match thresholds and raw
+proportional bounds. Finite zero and negative metric values remain samples;
+TEXT, BLOB and nonfinite values are unknown. Arena population results include
+all metric summaries, buckets, coverage, ranges and global population counts.
+
+Seasonal reads a separate lazy connection using `PROGRESSION_SQLITE_PATH`, then
+`PROGRESSION_DB_PATH`, then `/data/progression.db`. All queries bind the cycle.
+Its target may be excluded while peers cannot be; survival zero remains valid
+and percentile distributions remain empty. Target conversion preserves the
+TypeScript `Number()` behavior while NULL/invalid targets remain unavailable.
+
+Native storage must already be initialized by the existing TypeScript setup.
+The native worker never creates databases, migrates schema or falls back to
+writes. Missing/uninitialized Seasonal storage returns
+`{ "available": false, "result": null }`; Arena returns `null`. This deliberately
+differs from TypeScript's first-ever lazy creation of an empty database. Failed
+opens/readiness checks are not retained, so a later external initialization is
+visible without restarting. Errors after established readiness remain errors.
+The players and progression handles fail independently.

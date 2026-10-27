@@ -83,6 +83,25 @@ The private chunk table is expected storage metadata, so `schemaUnchanged` may b
 false while `coreSchemaUnchanged` is true. Its referenced data is verified through
 the resolved history values, not by comparing physical chunk layouts.
 
+The converter records `sourceJournalMode` and `outputJournalMode` in its report.
+It temporarily uses DELETE for rewriting and VACUUM, then restores the source's
+persistent journal mode after verification: WAL inputs produce WAL outputs in
+both compression and decompression; DELETE inputs stay DELETE. WAL is fully
+checkpointed and the connection closed before publication. A non-empty staged
+WAL prevents publication, so the published `.db` is self-contained for transfer.
+
+Before starting production readers or writers, explicitly verify the replacement's
+journal mode against the expected mode for that database. `players.db` and
+`progression.db` require WAL for concurrent HTTP readers and background writes.
+A `VACUUM INTO` backup can be DELETE even when its live source uses WAL; the
+converter preserves that backup's mode and cannot infer the live database's
+requirement. In that case set and verify `PRAGMA journal_mode=WAL` on the offline
+replacement, checkpoint and close it before recording final file checksums and
+transferring it. Do not blanket-switch every database: admin and bans databases
+intentionally use rollback journals for their attached-database atomicity contract.
+See SQLite's [WAL persistence](https://www.sqlite.org/wal.html#persistence_of_wal_mode)
+and [attached-database transactions](https://www.sqlite.org/lang_attach.html).
+
 The preflight requires three times the source database size plus 1 GiB of free
 space for the copied database, rollback journal and VACUUM temporary data. Do not
 run conversion against the almost-full production volume. Replacing production

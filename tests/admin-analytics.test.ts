@@ -13,6 +13,31 @@ import { createAnalyticsStore } from "../lib/admin/analytics-db.ts";
 
 const DAY = 86_400_000;
 
+test("cold analytics storage fails soft without a long HTTP stall under an exclusive lock", () => {
+  const directory = mkdtempSync(join(tmpdir(), "analytics-busy-"));
+  const file = join(directory, "admin.db");
+  const setup = new DatabaseSync(file);
+  createAnalyticsStore(setup); setup.close();
+  const locker = new DatabaseSync(file);
+  locker.exec("BEGIN EXCLUSIVE");
+  try {
+    const result = spawnSync(process.execPath, [
+      "--experimental-strip-types", "--experimental-sqlite", "--input-type=module", "-e",
+      `const { getAnalyticsStore } = await import('./lib/admin/analytics-db.ts');
+       const started = performance.now(); const store = await getAnalyticsStore();
+       console.log(JSON.stringify({ unavailable: store === null, elapsedMs: performance.now() - started }));`,
+    ], { cwd: process.cwd(), encoding: "utf8", timeout: 8_000,
+      env: { ...process.env, NODE_NO_WARNINGS: "1", ADMIN_ANALYTICS_SQLITE_PATH: file } });
+    assert.equal(result.status, 0, result.stderr || String(result.error));
+    const report = JSON.parse(result.stdout.trim());
+    assert.equal(report.unavailable, true);
+    assert.ok(report.elapsedMs < 1_500, `analytics blocked for ${report.elapsedMs}ms`);
+  } finally {
+    locker.exec("ROLLBACK"); locker.close();
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
 test("batched timing queries preserve nearest ranks, zeroes, null phases, failures and domain bounds", (t) => {
   const db = new DatabaseSync(":memory:"); t.after(() => db.close());
   const store = createAnalyticsStore(db); const now = 50 * DAY;

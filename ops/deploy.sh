@@ -13,7 +13,16 @@ healthy() {
   health_status=$(curl --silent --show-error --noproxy '*' --connect-timeout 2 --max-time 5 \
     --header 'Host: tarkovstats.ru' --output /dev/null --write-out '%{http_code}' \
     "http://$health_ip:3000/healthz") || return 1
-  [ "$health_status" = 200 ]
+  [ "$health_status" = 200 ] || return 1
+  # Inspect the actual container, including rollback images, rather than the
+  # checkout's desired environment. Next alone cannot prove an opted-in API ready.
+  health_native=$(docker inspect --format '{{range .Config.Env}}{{if or (eq . "SEASONAL_API_UPSTREAM=web:3001") (eq . "HOME_SHOWCASE_API_UPSTREAM=web:3001") (eq . "ARENA_UI_UPSTREAM=web:3001")}}rust{{end}}{{end}}' "$health_cid") || return 1
+  if [ -n "$health_native" ]; then
+    health_rust_status=$(curl --silent --show-error --noproxy '*' --connect-timeout 2 --max-time 5 \
+      --header 'Host: tarkovstats.ru' --output /dev/null --write-out '%{http_code}' \
+      "http://$health_ip:3001/healthz") || return 1
+    [ "$health_rust_status" = 200 ] || return 1
+  fi
 }
 
 # Never discard operator edits. Untracked secrets and local compose are retained.
@@ -28,6 +37,54 @@ previous_image=
 if [ -n "$cid" ]; then
   deployed=$(docker inspect --format '{{index .Config.Labels "org.opencontainers.image.revision"}}' "$cid")
   previous_image=$(docker inspect --format '{{.Image}}' "$cid")
+fi
+# The updater must not apply only half of a web/Caddy routing change.
+if ! interpolation=$(compose config --environment); then
+  logger -t tarkovstats-deploy "deploy deferred: cannot inspect routing configuration"
+  exit 75
+fi
+desired_native=false
+desired_showcase=false
+desired_ui=false
+for selector in SEASONAL_API_UPSTREAM HOME_SHOWCASE_API_UPSTREAM ARENA_UI_UPSTREAM; do
+  desired_api=$(printf '%s\n' "$interpolation" | sed -n "s/^$selector=//p")
+  desired_api=${desired_api:-web:3000}
+  case "$desired_api" in
+    web:3000|web:3001) ;;
+    *) logger -t tarkovstats-deploy "deploy deferred: invalid $selector selector"; exit 75 ;;
+  esac
+  if [ -n "$cid" ]; then
+    current_native=$(docker inspect --format "{{range .Config.Env}}{{if eq . \"$selector=web:3001\"}}rust{{end}}{{end}}" "$cid")
+    current_api=web:3000
+    if [ "$current_native" = rust ]; then current_api=web:3001; fi
+    if [ "$current_api" != "$desired_api" ]; then
+      logger -t tarkovstats-deploy "deploy deferred: routing changes require coordinated web and Caddy recreation"
+      exit 75
+    fi
+  fi
+  if [ "$desired_api" = web:3001 ]; then
+    case "$selector" in SEASONAL_API_UPSTREAM) desired_native=true;; HOME_SHOWCASE_API_UPSTREAM) desired_showcase=true;; ARENA_UI_UPSTREAM) desired_ui=true;; esac
+  fi
+done
+unset interpolation
+image_supports_routing() {
+  if [ "$desired_native" = true ]; then
+    [ "$(docker image inspect --format '{{index .Config.Labels "org.tarkovstats.rust-http"}}' "$1")" = seasonal-v1 ] || return 1
+  fi
+  if [ "$desired_showcase" = true ]; then
+    [ "$(docker image inspect --format '{{index .Config.Labels "org.tarkovstats.rust-home-showcase"}}' "$1")" = v1 ] || return 1
+  fi
+  if [ "$desired_ui" = true ]; then
+    [ "$(docker image inspect --format '{{index .Config.Labels "org.tarkovstats.rust-arena-ui"}}' "$1")" = v1 ] || return 1
+  fi
+  return 0
+}
+if [ "$desired_native" = true ] || [ "$desired_showcase" = true ] || [ "$desired_ui" = true ]; then
+  # Both requested listeners/routes must remain usable after an image rollback.
+  if [ -z "$previous_image" ] || ! image_supports_routing "$previous_image"; then
+    logger -t tarkovstats-deploy "deploy deferred: Rust routing requires a compatible running rollback image"
+    exit 75
+  fi
 fi
 state=/var/lib/tarkovstats-deploy
 mkdir -p "$state"
@@ -157,6 +214,7 @@ curl --fail --silent --show-error --location --proto '=https' --proto-redir '=ht
 docker image load --input "$download_dir/web.tar.gz"
 image_revision=$(docker image inspect --format '{{index .Config.Labels "org.opencontainers.image.revision"}}' "$candidate")
 [ "$image_revision" = "$remote" ]
+image_supports_routing "$candidate"
 docker image tag "$candidate" tarkovstats-web:latest
 git merge --ff-only origin/main
 starting=1

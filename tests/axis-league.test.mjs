@@ -904,12 +904,10 @@ test("match attribution renders Google names safely in both languages and hides 
   const component = ts.transpileModule(await readFile(new URL("../components/AxisMatchAttribution.tsx", import.meta.url), "utf8"), {
     compilerOptions: { module: ts.ModuleKind.CommonJS, jsx: ts.JsxEmit.ReactJSX, esModuleInterop: true },
   }).outputText;
-  const dictionary = { exports: {} };
-  const translated = ts.transpileModule(await readFile(new URL("../lib/i18n/dictionary.ts", import.meta.url), "utf8"), { compilerOptions: { module: ts.ModuleKind.CommonJS } }).outputText;
-  new Function("exports", translated)(dictionary.exports);
+  const { dict } = await import("../lib/i18n/dictionary.ts");
   for (const lang of ["ru", "en"]) {
     const attributionModule = { exports: {} };
-    const t = (key, vars = {}) => dictionary.exports.dict[lang][key].replace(/\{(\w+)\}/g, (_, name) => vars[name] ?? `{${name}}`);
+    const t = (key, vars = {}) => dict[lang][key].replace(/\{(\w+)\}/g, (_, name) => vars[name] ?? `{${name}}`);
     new Function("require", "module", "exports", component)((name) => name === "@/lib/i18n/context" ? { useI18n: () => ({ lang, t }) } : require(name), attributionModule, attributionModule.exports);
     const Attribution = attributionModule.exports.default;
     assert.equal(renderToStaticMarkup(Attribution({ edited: null, canView: true })), "");

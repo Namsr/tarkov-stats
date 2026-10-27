@@ -1,0 +1,29 @@
+[package]
+name = "tarkov-ui"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.89"
+publish = false
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[features]
+default = []
+ssr = ["dep:leptos", "leptos/ssr"]
+hydrate = ["dep:leptos", "leptos/hydrate", "dep:wasm-bindgen", "dep:wasm-bindgen-futures", "dep:web-sys", "dep:js-sys"]
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["float_roundtrip"] }
+url = "2.5.8"
+leptos = { version = "=0.8.22", default-features = false, features = ["islands"], optional = true }
+wasm-bindgen = { version = "=0.2.129", optional = true }
+wasm-bindgen-futures = { version = "0.4", optional = true }
+js-sys = { version = "0.3", optional = true }
+web-sys = { version = "0.3", optional = true, features = ["Window", "Document", "HtmlElement", "HtmlInputElement", "HtmlSelectElement", "HtmlDialogElement", "Response", "Request", "RequestInit", "Headers", "AbortController", "AbortSignal", "History", "Location", "Storage", "KeyboardEvent", "PointerEvent", "ResizeObserver", "ResizeObserverEntry", "DomRectReadOnly", "Element", "Navigator", "EventTarget", "HtmlAnchorElement", "HtmlCollection", "Node", "NodeList", "Event", "MouseEvent", "FocusEvent", "Performance", "PerformanceEntry", "PerformanceNavigationTiming", "PerformanceResourceTiming", "PerformanceServerTiming", "PerformanceObserver", "PerformanceObserverEntryList", "PerformanceObserverInit", "Blob", "BlobPropertyBag", "Crypto", "RequestCredentials", "RequestCache", "VisibilityState", "HtmlDocument", "AnimationEvent", "HtmlScriptElement", "DomRect"] }
+
+[profile.release]
+opt-level = "s"
+lto = "thin"
+strip = true

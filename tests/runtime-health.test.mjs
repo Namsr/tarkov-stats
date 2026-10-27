@@ -79,7 +79,7 @@ test("the production preload does not keep a stopped server alive and can be dis
     assert.equal(observed.stdout.trim(), enabled === "true" ? "monitor-started" : "");
   }
   const startup = await readFile("scripts/start-web.mjs", "utf8");
-  assert.match(startup, /const server = spawn\([^;]*"--import", "\.\/scripts\/web-runtime-health\.mjs", "server\.js"/);
+  assert.match(startup, /launchCritical\("Next\.js", process\.execPath, \["--experimental-sqlite", "--import", "\.\/scripts\/web-runtime-health\.mjs", "server\.js"\]/);
   const dockerfile = await readFile("Dockerfile", "utf8");
   assert.match(dockerfile, /COPY[^\n]*scripts\/web-runtime-health\.mjs/);
 });

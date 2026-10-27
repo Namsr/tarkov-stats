@@ -1,37 +1,139 @@
 import assert from "node:assert/strict";
-import { existsSync } from "node:fs";
-import { join } from "node:path";
+import { spawnSync } from "node:child_process";
+import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
 import test from "node:test";
-import { snapshotWorkerResources, resourceDelta } from "../scripts/benchmark-worker-resources.mjs";
+import { snapshotWorkerResources, resourceDelta, snapshotContainerResources } from "../scripts/benchmark-worker-resources.mjs";
 import { DAY_MS, PLAYER_METRICS, assertCohortParity, cohortJob, createCohortFixture,
   rustCohortBinary, syntheticCohortRows } from "./fixtures/rust-cohort-data.mjs";
 
 const { CohortComputeWorker, computeCohortInBackground, cohortComputeBackend, stopCohortWorkersForTests } = await import("../lib/cohort-worker.ts");
 
-test("Rust opt-in selects Regular and PvE independently, leaving other jobs on TypeScript", () => {
-  const saved = { REGULAR_COHORT_BACKEND: process.env.REGULAR_COHORT_BACKEND,
-    PVE_COHORT_BACKEND: process.env.PVE_COHORT_BACKEND };
+test("benchmark rejects an invalid backend before opening a fixture or requiring Rust", () => {
+  const result = spawnSync(process.execPath, ["--experimental-strip-types", "--experimental-sqlite",
+    resolve("scripts/benchmark-rust-cohort.mjs"), "--backend", "invalid"], {
+    encoding: "utf8", timeout: 10000,
+    env: { ...process.env, RUST_COHORT_BIN: resolve("missing-native-benchmark-worker") },
+    windowsHide: true,
+  });
+  assert.equal(result.error, undefined);
+  assert.equal(result.signal, null);
+  assert.equal(result.status, 1);
+  assert.equal(result.stdout, "");
+  assert.match(result.stderr, /--backend must be typescript, rust or both/);
+  assert.doesNotMatch(result.stderr, /build the native worker first|ENOENT/);
+});
+
+test("container resource counters use cgroup v2 on Linux and remain unavailable elsewhere", (t) => {
+  const snapshot = snapshotContainerResources();
+  if (process.platform !== "linux") {
+    assert.equal(snapshot.available, false);
+    assert.equal(snapshot.reason, "unsupported_platform");
+    assert.equal(snapshot.memory, null);
+    assert.equal(snapshot.cpu, null);
+    assert.equal(snapshot.memoryEvents, null);
+    return;
+  }
+  if (!snapshot.available) {
+    assert.equal(typeof snapshot.reason, "string");
+    t.diagnostic(`cgroup counters unavailable: ${snapshot.reason}`);
+    if (snapshot.memory === null) assert.equal(snapshot.cpu, null);
+    else assert.ok(snapshot.unavailableCounters.length > 0);
+    return;
+  }
+  assert.equal(snapshot.version, 2);
+  assert.equal(snapshot.reason, null);
+  assert.deepEqual(snapshot.unavailableCounters, []);
+  assert.ok(Number.isSafeInteger(snapshot.memory.currentBytes) && snapshot.memory.currentBytes > 0);
+  assert.ok(Number.isSafeInteger(snapshot.memory.peakBytes) && snapshot.memory.peakBytes >= snapshot.memory.currentBytes);
+  for (const [value, unlimited] of [[snapshot.memory.maxBytes, snapshot.memory.maxUnlimited],
+    [snapshot.memory.swapMaxBytes, snapshot.memory.swapUnlimited]]) {
+    if (unlimited) assert.equal(value, null);
+    else assert.ok(Number.isSafeInteger(value) && value >= 0);
+  }
+  for (const value of [snapshot.cpu.usageUs, snapshot.cpu.userUs, snapshot.cpu.systemUs, snapshot.memoryEvents.oomKill]) {
+    assert.ok(Number.isSafeInteger(value) && value >= 0);
+  }
+  if (snapshot.cpu.unlimited) assert.equal(snapshot.cpu.quotaUs, null);
+  else assert.ok(Number.isSafeInteger(snapshot.cpu.quotaUs) && snapshot.cpu.quotaUs > 0);
+  assert.ok(Number.isSafeInteger(snapshot.cpu.periodUs) && snapshot.cpu.periodUs > 0);
+  assert.match(snapshot.scope, /lifetime/);
+});
+test("Linux report validator rejects incomplete coverage, wrong limits and OOM evidence", () => {
+  const directory = mkdtempSync(join(tmpdir(), "rust-report-contract-"));
+  const write = (file, value) => writeFileSync(join(directory, file), JSON.stringify(value));
+  const memory = 384 * 1024 ** 2;
+  for (const mode of ["regular", "pve", "arena", "seasonal"]) for (const backend of ["typescript", "rust"]) {
+    const results = ["matched", "population"].flatMap((scenario) => ["median", "trimmed_mean"].flatMap((statistic) =>
+      [["miss", 1], ["miss", 4], ["hit", 4]].map(([cache, concurrency]) => ({ backend, scenario, statistic, cache, concurrency,
+        errors: [], cacheHits: cache === "hit" ? 4 : 0, http: { samples: 4, p50Ms: 2, p95Ms: 4 }, server: { samples: 4, p50Ms: 1, p95Ms: 3 }, workerJobs: cache === "miss" ? 4 : 0,
+        workerBackends: cache === "miss" ? [backend] : [] }))));
+    results.unshift({ backend, scenario: "first_request_fresh_worker", coldHttpMs: 5 });
+    write(`${mode}-round1-${backend}.json`, { fixture: { mode }, environment: { os: "linux" },
+      methodology: { iterations: 4, backendOrder: [backend] }, results,
+      resourceResults: [{ available: true, workerCpuMs: 10, workers: [{ peakWorkingSetBytes: 1024 }] }],
+      containerResources: { available: true, memory: { maxBytes: memory, swapMaxBytes: 0, peakBytes: 1024 },
+        cpu: { quotaUs: 50000, periodUs: 100000, usageUs: 10000 }, memoryEvents: { oomKill: 0 } } });
+    write(`${mode}-round1-${backend}.inspect.json`, { exitCode: 0, oomKilled: false, network: "none", readOnly: true,
+      memory, memorySwap: memory, nanoCpus: 500_000_000, user: "nextjs", mounts: [{ Type: "bind", RW: false }] });
+  }
+  const validate = (rounds = 1) => spawnSync(process.execPath, [resolve("scripts/summarize-rust-container-benchmark.mjs"), directory, String(rounds)], {
+    encoding: "utf8", timeout: 5000, windowsHide: true, env: { ...process.env, GITHUB_STEP_SUMMARY: "" },
+  });
+  assert.equal(validate().status, 0);
+  assert.equal(JSON.parse(readFileSync(join(directory, "summary.json"), "utf8")).summaries.length, 8);
+  assert.notEqual(validate(2).status, 0, "missing repetitions must not look complete");
+  const file = "pve-round1-rust.inspect.json";
+  const original = JSON.parse(readFileSync(join(directory, file), "utf8"));
+  for (const change of [{ oomKilled: true }, { memory: memory / 2 }, { network: "host" }, { readOnly: false }, { user: "root" }]) {
+    write(file, { ...original, ...change });
+    assert.notEqual(validate().status, 0, JSON.stringify(change));
+  }
+  write(file, original);
+  const reportFile = "pve-round1-rust.json";
+  const report = JSON.parse(readFileSync(join(directory, reportFile), "utf8"));
+  for (const change of [
+    (result) => { result.http.p95Ms = null; },
+    (result) => { result.cacheHits = 1; },
+    (result) => { result.http.p50Ms = -1; },
+    (result) => { result.server.samples = 0; },
+  ]) {
+    const invalid = structuredClone(report);
+    change(invalid.results.find((result) => result.cache === "miss"));
+    write(reportFile, invalid);
+    assert.notEqual(validate().status, 0, "invalid timings/cache evidence must not pass");
+  }
+  report.results.pop();
+  write(reportFile, report);
+  assert.notEqual(validate().status, 0, "missing API scenarios must not look complete");
+});
+
+test("Rust opt-in selects all four comparison modes independently", () => {
+  const variables = ["REGULAR_COHORT_BACKEND", "PVE_COHORT_BACKEND", "ARENA_COHORT_BACKEND", "SEASONAL_COHORT_BACKEND"];
+  const saved = Object.fromEntries(variables.map((key) => [key, process.env[key]]));
+  const jobs = [cohortJob(), cohortJob({ mode: "pve" }),
+    { kind: "arena", args: [1, "overall"] }, { kind: "seasonal", args: [{ aid: 1, cycleId: "test" }] }];
   try {
-    for (const mode of ["regular", "pve"]) {
-      const input = cohortJob({ mode });
-      assert.equal(cohortComputeBackend(input, "typescript"), "typescript");
-      assert.equal(cohortComputeBackend(input, "invalid"), "typescript");
-      assert.equal(cohortComputeBackend(input, "rust"), "rust");
+    for (const job of [...jobs, { kind: "arena_population", args: [{}] }]) {
+      assert.equal(cohortComputeBackend(job, "typescript"), "typescript");
+      assert.equal(cohortComputeBackend(job, "invalid"), "typescript");
+      assert.equal(cohortComputeBackend(job, "rust"), "rust");
     }
-    for (const [regular, pve] of [["rust", "typescript"], ["typescript", "rust"], ["rust", "rust"]]) {
-      process.env.REGULAR_COHORT_BACKEND = regular;
-      process.env.PVE_COHORT_BACKEND = pve;
-      assert.equal(cohortComputeBackend(cohortJob()), regular);
-      assert.equal(cohortComputeBackend(cohortJob({ mode: "pve" })), pve);
-    }
-    delete process.env.REGULAR_COHORT_BACKEND;
-    delete process.env.PVE_COHORT_BACKEND;
-    assert.equal(cohortComputeBackend(cohortJob()), "typescript");
-    assert.equal(cohortComputeBackend(cohortJob({ mode: "pve" })), "typescript");
-    for (const kind of ["arena", "arena_population", "seasonal", "seasonal_average", "baseline", "average_metrics"]) {
-      assert.equal(cohortComputeBackend({ kind, mode: "pve", args: [] }, "rust"), "typescript");
+    for (const key of variables) delete process.env[key];
+    for (const job of jobs) assert.equal(cohortComputeBackend(job), "typescript");
+    for (let selected = 0; selected < variables.length; selected++) {
+      for (const key of variables) process.env[key] = "typescript";
+      process.env[variables[selected]] = "rust";
+      for (let index = 0; index < jobs.length; index++) {
+        assert.equal(cohortComputeBackend(jobs[index]), selected === index ? "rust" : "typescript");
+      }
+      assert.equal(cohortComputeBackend({ kind: "arena_population", args: [{}] }), selected === 2 ? "rust" : "typescript");
     }
     assert.equal(cohortComputeBackend({ ...cohortJob(), mode: "arena" }, "rust"), "typescript");
+    for (const kind of ["seasonal_average", "baseline", "average_metrics"]) {
+      assert.equal(cohortComputeBackend({ kind, mode: "pve", args: [] }, "rust"), "typescript");
+    }
   } finally {
     for (const [key, value] of Object.entries(saved)) {
       if (value === undefined) delete process.env[key]; else process.env[key] = value;

@@ -1124,7 +1124,9 @@ export function getAnalyticsStore(): Promise<AnalyticsStore | null> {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const sqlite = await import("node:sqlite" as string) as any;
       db = new sqlite.DatabaseSync(process.env.ADMIN_ANALYTICS_SQLITE_PATH || "/data/admin-analytics.db");
-      db.exec("PRAGMA busy_timeout = 5000;");
+      // This connection also records best-effort public telemetry. Waiting for
+      // a backup reader must not block the HTTP event loop for seconds.
+      db.exec("PRAGMA busy_timeout = 100;");
       const fs = await import("node:fs");
       const progressionPath = process.env.PROGRESSION_SQLITE_PATH || process.env.PROGRESSION_DB_PATH || "/data/progression.db";
       return createAnalyticsStore(db, {

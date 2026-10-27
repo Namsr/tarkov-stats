@@ -48,7 +48,7 @@ test("the admin support form guards the mutation route and offers per-row switch
     readFile("components/AdminSupport.tsx", "utf8"),
     readFile("app/api/admin/support/route.ts", "utf8"),
     readFile("components/AdminDashboard.tsx", "utf8"),
-    readFile("lib/i18n/dictionary.ts", "utf8"),
+    readFile("lib/i18n/messages.json", "utf8"),
   ]);
   assert.match(panel, /fetch\("\/api\/admin\/support"/);
   assert.match(panel, /"Content-Type": "application\/json"/);

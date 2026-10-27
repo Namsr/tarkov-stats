@@ -461,7 +461,7 @@ test("compare integrates progression for the three raid-based modes", async () =
 });
 
 test("comparison navigation, graph state, and honest capability copy are bilingual", async () => {
-  const dictionary = await readFile("lib/i18n/dictionary.ts", "utf8");
+  const dictionary = await readFile("lib/i18n/messages.json", "utf8");
 
   assert.match(dictionary, /"compare\.benchmarkOnly": "The cohort benchmark is available for this mode; percentiles are not\."/);
   assert.match(dictionary, /"compare\.benchmarkOnly": "Для этого режима доступен эталон когорты, но процентили недоступны\."/);
