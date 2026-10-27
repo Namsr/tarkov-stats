@@ -10,6 +10,7 @@ export default function AxisMatchSubmission({ matchNumber, onSaved }: { matchNum
   const { t } = useI18n();
   const photo = useRef<AxisMatchPhotoHandle>(null);
   const [image, setImage] = useState<AxisOcrImage | null>(null);
+  const [editing, setEditing] = useState(false);
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("");
   const [retry, setRetry] = useState(0);
@@ -53,11 +54,15 @@ export default function AxisMatchSubmission({ matchNumber, onSaved }: { matchNum
     return () => controller.abort();
   }, [image, matchNumber, retry]);
 
-  return <section className="axis-match-edit-form" aria-label={t("axis.submission.title", { n: matchNumber })}
-    onPaste={event => photo.current?.paste(event)} aria-busy={busy}>
-    <AxisMatchPhoto key={`${matchNumber}:${version}`} ref={photo} matchNumber={matchNumber} busy={busy}
-      uploadOnly onImageChange={imageChanged} />
-    {(busy || message) && <p className="admin-notice" role="status" aria-live="polite">{t(busy ? "axis.submission.running" : message)}</p>}
-    {!busy && message === "axis.submission.error" && <button type="button" className="ghost-button" onClick={() => setRetry(value => value + 1)}>{t("admin.retry")}</button>}
-  </section>;
+  return <>
+    {editing && <section className="axis-match-edit-form" aria-label={t("axis.submission.title", { n: matchNumber })}
+      onPaste={event => photo.current?.paste(event)} aria-busy={busy}>
+      <AxisMatchPhoto key={`${matchNumber}:${version}`} ref={photo} matchNumber={matchNumber} busy={busy}
+        uploadOnly onImageChange={imageChanged} />
+      {(busy || message) && <p className="admin-notice" role="status" aria-live="polite">{t(busy ? "axis.submission.running" : message)}</p>}
+      {!busy && message === "axis.submission.error" && <button type="button" className="ghost-button" onClick={() => setRetry(value => value + 1)}>{t("admin.retry")}</button>}
+    </section>}
+    <div className="axis-kda-editor"><button type="button" className="ghost-button" disabled={busy} aria-expanded={editing}
+      onClick={() => { setImage(null); setMessage(""); setEditing(value => !value); }}>{t(editing ? "axis.kda.cancel" : "axis.kda.edit")}</button></div>
+  </>;
 }

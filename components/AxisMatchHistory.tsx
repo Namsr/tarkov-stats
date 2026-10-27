@@ -248,7 +248,7 @@ export default function AxisMatchHistory({ active = true, canEditKda = false, ca
           <summary onClick={toggleMatch}>
             <span className="axis-match-summary-meta">
             <strong>{t("axis.history.match", { n: String(match.number) })}</strong>
-            {canEditKda && reviews[match.number] && axisReviewNeedsAttention(reviews[match.number], match.rounds == null) && <span className="axis-review-badge">{t("axis.review.attention")}</span>}
+            {canEditKda && reviews[match.number] && axisReviewNeedsAttention(reviews[match.number]) && <span className="axis-review-badge">{t("axis.review.attention")}</span>}
             {match.time == null ? <span>{t("axis.history.noTime")}</span> : <time dateTime={new Date(match.time).toISOString()}>{new Date(match.time).toLocaleString(locale)}</time>}
             <span className="axis-match-queue">{match.queue ?? t("axis.history.unknownQueue")}</span>
             <span>{match.maps.length ? match.maps.join(", ") : t("axis.history.noMap")}</span>
@@ -260,8 +260,7 @@ export default function AxisMatchHistory({ active = true, canEditKda = false, ca
           </summary>
           <AxisMatchProbability match={match} />
           <AxisMatchAttribution edited={match.edited} canView={canEditKda} />
-          {canEditKda && reviews[match.number] && <AxisMatchReview review={reviews[match.number]} roundsMissing={match.rounds == null} />}
-          {canSubmitScreenshot && (openMatches[match.number] ?? index === 0) && <AxisMatchSubmission matchNumber={match.number} onSaved={() => { setCachedPages([]); setRetry(value => value + 1); }} />}
+          {canEditKda && reviews[match.number] && <AxisMatchReview review={reviews[match.number]} />}
           <AxisMatchStatsEditor match={match} canEdit={canEditKda} onConflict={() => { setCachedPages([]); setRetry((value) => value + 1); }} onSaved={(players, rounds, edited) => {
             setCachedPages([]);
             const saved = new Map(players.map((entry) => [entry.discordId, entry.kda]));
@@ -290,6 +289,8 @@ export default function AxisMatchHistory({ active = true, canEditKda = false, ca
             </li>)}</ul>
           </section>)}</div>}
           </AxisArenaNicknames>}</AxisMatchStatsEditor>
+          {canSubmitScreenshot && !canEditKda && (openMatches[match.number] ?? index === 0) && <AxisMatchSubmission matchNumber={match.number}
+            onSaved={() => { setCachedPages([]); setRetry(value => value + 1); }} />}
         </details>)}</div>}
     </>}
   </section>;
