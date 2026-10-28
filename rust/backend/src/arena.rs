@@ -377,15 +377,12 @@ impl ArenaService {
             && std::env::var("SQLITE_PATH").is_ok_and(|v| !v.is_empty())
             && (enabled.as_deref() == Some("true")
                 || std::env::var("NODE_ENV").as_deref() == Ok("production"));
-        let header = std::env::var("TRUSTED_IP_HEADER")
-            .ok()
-            .filter(|v| !v.is_empty())
-            .unwrap_or_else(|| "x-real-ip".into());
+        let header = std::env::var("TRUSTED_IP_HEADER").ok();
         Self {
             cache,
             storage,
             publication_enabled,
-            trusted_header: config::trim(&header).to_lowercase(),
+            trusted_header: config::trusted_ip_header(header.as_deref()),
             limiter: Arc::new(Mutex::new(Limiter::default())),
         }
     }

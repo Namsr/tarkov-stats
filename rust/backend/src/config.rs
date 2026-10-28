@@ -7,6 +7,15 @@ pub fn trim(value: &str) -> &str {
     value.trim_matches(|ch: char| matches!(ch, '\u{0009}'..='\u{000d}' | '\u{0020}' | '\u{00a0}' | '\u{1680}' | '\u{2000}'..='\u{200a}' | '\u{2028}' | '\u{2029}' | '\u{202f}' | '\u{205f}' | '\u{3000}' | '\u{feff}'))
 }
 
+pub fn trusted_ip_header(value: Option<&str>) -> String {
+    trim(
+        value
+            .filter(|value| !value.is_empty())
+            .unwrap_or("x-real-ip"),
+    )
+    .to_lowercase()
+}
+
 pub fn cycle(value: &str) -> Option<String> {
     let value = trim(value);
     (!value.is_empty()
@@ -223,5 +232,19 @@ mod tests {
         assert!(Config::from_map(&values).ready("s1", 1));
         values.insert("SEASONAL_COLLECTION_SOURCE".into(), "json_feed".into());
         assert!(!Config::from_map(&values).ready("s1", 1));
+    }
+    #[test]
+    fn trusted_header_empty_configuration_keeps_default_per_client_keys() {
+        assert_eq!(trusted_ip_header(None), "x-real-ip");
+        assert_eq!(trusted_ip_header(Some("")), "x-real-ip");
+        assert_eq!(trusted_ip_header(Some(" X-Trusted-IP ")), "x-trusted-ip");
+        // As in TypeScript, only the empty raw value defaults before trimming.
+        assert_eq!(trusted_ip_header(Some(" ")), "");
+        let mut first = axum::http::HeaderMap::new();
+        let mut second = axum::http::HeaderMap::new();
+        first.insert("x-real-ip", "198.51.100.1".parse().unwrap());
+        second.insert("x-real-ip", "198.51.100.2".parse().unwrap());
+        let header = trusted_ip_header(Some(""));
+        assert_ne!(first.get(&header), second.get(&header));
     }
 }

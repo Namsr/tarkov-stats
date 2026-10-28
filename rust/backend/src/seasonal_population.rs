@@ -324,10 +324,9 @@ impl SeasonalService {
                 && (enabled.as_deref() == Some("true")
                     || std::env::var("NODE_ENV").as_deref() == Ok("production")),
             limiter: Arc::new(Mutex::new(arena::Limiter::default())),
-            trusted_header: config::trim(
-                &std::env::var("TRUSTED_IP_HEADER").unwrap_or_else(|_| "x-real-ip".into()),
-            )
-            .to_lowercase(),
+            trusted_header: config::trusted_ip_header(
+                std::env::var("TRUSTED_IP_HEADER").ok().as_deref(),
+            ),
         }
     }
     pub fn ready(&self, now: i64) -> bool {
