@@ -112,10 +112,13 @@ shared admission and compatible rollback labels.
 The production-image CI verifier checks Regular, PvE and Seasonal independently
 with private 30-row real SQLite fixtures and shipped asset hashes/entrypoints.
 The Seasonal fixture uses its own progression database and does not exercise
-browser hydration or external reference-network access. Full browser
-acceptance must use actual production-image Next and Rust implementations,
-identical fixtures and real hydration; compilation or SSR strings alone do not
-prove it. No timing/load/browser performance experiments run on the user's
+browser hydration or external reference-network access. The separate Seasonal browser CI suite extracts the exact image and runs actual
+production Next and Rust/WASM through independently configured Caddy fronts on
+the same private latest-snapshot/live-profile data, scheduled progression and
+validated bilingual metadata. It records four browser-cold and six warm pairs,
+raw observations, provenance and asset bytes; functional checks follow timing.
+Image CI results are required before claiming browser acceptance or a speedup:
+compilation, SSR strings and local source checks alone do not prove either. No timing/load/browser performance experiments run on the user's
 active gaming PC. Synthetic CI, production observations and artifact byte sizes
 must remain separate evidence. There is no claimed production speedup for
 these population pages before measured rollout.
@@ -141,3 +144,11 @@ results. Linux TLS/network reference refresh also needs a real cold-reference
 check before production activation; a fresh local metadata fixture does not prove
 that path. Shared UI references are fixture-isolated using a deny proxy where
 applicable, not a claimed OS firewall.
+
+Seasonal browser evidence is synthetic Linux CI data. Browser-cold means a new
+Chrome profile, not a cold OS or compilation cache; raw transfer counts are not
+artifact sizes and host measurements do not establish whole-VPS resource use.
+Fresh reference metadata is verified through the real TypeScript parser with a
+rejecting fetch, and a loopback deny proxy detects native fallback; this is not
+an OS firewall. A successful seeded run does not establish cold production
+HTTPS/TLS reference refresh, which remains required before activation.

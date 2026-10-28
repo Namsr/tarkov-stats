@@ -3,6 +3,8 @@ import assert from "node:assert/strict";
 import {readFile,writeFile} from "node:fs/promises";
 import {join} from "node:path";
 import {runRustUiBrowser} from "./lib/benchmark-rust-ui-browser.mjs";
+import {checkSeasonalFunctional} from "./lib/check-rust-seasonal-functional.mjs";
+const seasonal = process.env.RUST_SEASONAL_BROWSER === "true";
 const messages=JSON.parse(await readFile(new URL("../lib/i18n/messages.json",import.meta.url),"utf8"));
 const conditions = {
   viewport: { width: 1280, height: 900, deviceScaleFactor: 1, mobile: false }, locale: "ru-RU", cookie: "lang=ru", cpuSlowdown: 4,
@@ -17,6 +19,10 @@ const conditions = {
   baseline: "current production Next artifact with the migration ingress boolean enabled; not a historical pre-port release",
   ancillary: "All PvE/Regular/Arena population prefetch has real synthetic data. One synthetic official-host achievement image is deliberately browser-blocked to verify onerror hiding without outbound access; its failedrequest remains in raw totals. Repeated timingseries is PvE only; Regular receives correctness/navigation checks.",
 };
+if (seasonal) {
+  conditions.observation = "Seasonal useful DOM: 300 live-profile hours with latest snapshots, 3 gauges and 10 detail cards; controls require two enabled ranges; DOM time is not paint or INP";
+  conditions.ancillary = "Seasonal-only native selector; cohort and other mode routes remain on Next. Both implementations share synthetic progression, fresh bilingual reference cache and separate durable caches. Paired timings cover Seasonal only; functional checks follow timing. A synthetic image is blocked, not a cold HTTPS test.";
+}
 const references = [
   "https://github.com/actions/runner-images/blob/main/images/ubuntu/Ubuntu2404-Readme.md",
   "https://github.com/nodejs/learn/blob/main/pages/getting-started/websocket.md",
@@ -66,14 +72,15 @@ async function validate({ snapshot, requests, tab, backend }) {
   assert.deepEqual(tab.state.exceptions, [], `${backend}: uncaught exceptions`);
   assert.deepEqual(tab.state.console, [], `${backend}: console errors`); assert.deepEqual(snapshot.errors, []);
   const main = requests.filter(request => {
-    const url = new URL(request.url); return url.pathname === "/api/average" && ["pve", "regular"].includes(url.searchParams.get("mode"));
+    const url = new URL(request.url); return seasonal ? url.pathname === "/api/seasonal/average" : url.pathname === "/api/average" && ["pve", "regular"].includes(url.searchParams.get("mode"));
   });
   for (const request of main) {
     assert.equal(request.status, 200, `${backend}:${request.url}`);
     const response = await tab.send("Network.getResponseBody", { requestId: request.id });
     const body = JSON.parse(response.base64Encoded ? Buffer.from(response.body, "base64").toString("utf8") : response.body);
     const query = new URL(request.url).searchParams;
-    assert.equal(body.mode, query.get("mode")); assert.equal(body.cycleId, "persistent");
+    assert.equal(body.mode, seasonal ? "seasonal" : query.get("mode")); assert.equal(body.cycleId, seasonal ? "native-s1" : "persistent");
+    if (seasonal) assert.equal(query.get("cycle"), "native-s1");
     assert.equal(body.statistic, query.get("statistic")); assert.equal(body.period, query.get("period"));
     assert.equal(body.averages.n, 300);
     request.validation = { mode: body.mode, cycleId: body.cycleId, statistic: body.statistic, period: body.period, sampleN: body.averages.n };
@@ -119,6 +126,10 @@ async function functional(tab, backend, context) {
     await tab.send("Page.navigate", { url: new URL(path, tab.url).href }); await ready();
   }
   const radio = value => `main input[type=radio][value=${value}]`;
+  if (seasonal) {
+    await checkSeasonalFunctional({ tab, backend, context, evidence, messages, visible, evaluate, wait, click, key, ready, navigate, radio, blockedImage });
+    return;
+  }
   await ready();
   await click(radio("median"));
   await wait(`document.querySelector(${JSON.stringify(radio("median"))})?.checked&&new URL(location.href).searchParams.get('statistic')==='median'`, "statistic URL"); await ready();
@@ -285,7 +296,7 @@ async function functional(tab, backend, context) {
   }
 
 }
-await runRustUiBrowser({ conditions, references, instrumentation, validate, functional,
-  outputEnvironment: "PERSISTENT_BROWSER_OUTPUT", defaultOutput: "persistent-browser-evidence", profilePrefix: "tarkov-persistent-cdp-",
-  fixtureScript: "scripts/serve-rust-persistent-benchmark.mjs", fixtureEvent: "rust_persistent_browser_ready",
-  blockedUrls: ["https://*"], title: "# PvE browser comparison +PvE/Regular correctness", completionEvent: "rust_persistent_browser_complete" });
+await runRustUiBrowser({ conditions, references, instrumentation, validate, functional, requireSharedProgression: seasonal,
+  outputEnvironment: "PERSISTENT_BROWSER_OUTPUT", defaultOutput: seasonal ? "seasonal-browser-evidence" : "persistent-browser-evidence", profilePrefix: seasonal ? "tarkov-seasonal-cdp-" : "tarkov-persistent-cdp-",
+  fixtureScript: "scripts/serve-rust-persistent-benchmark.mjs", fixtureEvent: seasonal ? "rust_seasonal_browser_ready" : "rust_persistent_browser_ready",
+  blockedUrls: ["https://*"], title: seasonal ? "# Seasonal browser comparison and correctness" : "# PvE browser comparison +PvE/Regular correctness", completionEvent: seasonal ? "rust_seasonal_browser_complete" : "rust_persistent_browser_complete" });

@@ -192,6 +192,12 @@ try {
   assert.ok(ready.routing.rust.assets.length>=3&&ready.routing.next.assets.length>=2);
   assert.ok(ready.benchmarkEnvironment.warmCacheQueries?.length>=2,"Both selected and context cache warmup must be disclosed");
   assert.equal(ready.benchmarkEnvironment.players.accounts,300);assert.equal(ready.benchmarkEnvironment.players.shared,true);
+  if (options.requireSharedProgression) {
+    assert.ok(ready.benchmarkEnvironment.progression?.path);
+    assert.equal(ready.benchmarkEnvironment.progression.shared, true);
+    assert.notEqual(ready.benchmarkEnvironment.progression.path, ready.benchmarkEnvironment.players.path);
+    assert.match(ready.referenceAccess?.cache || "", /actual TypeScript parser/);
+  }
   for(const name of ["rust","next"]){assert.equal(ready.benchmarkEnvironment[name].nodeEnv,"production");assert.equal(ready.benchmarkEnvironment[name].durableCacheEnabled,true);}
   assert.notEqual(ready.benchmarkEnvironment.rust.cachePath,ready.benchmarkEnvironment.next.cachePath);
   const urls={next:ready.baselineUrl,rust:ready.url};

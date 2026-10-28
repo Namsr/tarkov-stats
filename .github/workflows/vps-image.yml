@@ -316,6 +316,26 @@ jobs:
             ${{ runner.temp }}/rust-persistent-browser/evidence/*.png
           if-no-files-found: warn
           retention-days: 14
+      - name: Compare Seasonal interfaces and interactions on the Linux browser runner
+        timeout-minutes: 12
+        env:
+          GH_TOKEN: ""
+        run: |
+          export CADDY_BIN="$RUNNER_TEMP/arena-caddy-bin/caddy"
+          bash scripts/benchmark-rust-arena-browser-image.sh --suite seasonal --image "tarkovstats-web:$GITHUB_SHA" --output "$RUNNER_TEMP/rust-seasonal-browser"
+      - name: Save Seasonal browser correctness and measurement evidence
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: rust-seasonal-browser-${{ github.sha }}
+          path: |
+            ${{ runner.temp }}/rust-seasonal-browser/image-provenance.json
+            ${{ runner.temp }}/rust-seasonal-browser/evidence/*.json
+            ${{ runner.temp }}/rust-seasonal-browser/evidence/*.md
+            ${{ runner.temp }}/rust-seasonal-browser/evidence/*.log
+            ${{ runner.temp }}/rust-seasonal-browser/evidence/*.png
+          if-no-files-found: warn
+          retention-days: 14
       - name: Publish a revision-specific image
         if: github.event_name != 'pull_request'
         run: |

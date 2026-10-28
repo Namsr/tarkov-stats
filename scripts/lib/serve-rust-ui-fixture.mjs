@@ -40,11 +40,12 @@ const token = randomUUID();
 const records = [];
 function record(kind, path) { records.push({ kind, path: path.split("?")[0], at: Date.now() }); if (records.length > 500) records.shift(); }
 const logs = new Map();
+let blockedNextFetch = false;
 function child(executable, args, options) {
   requireRunning();
   const instance = spawn(executable, args, { windowsHide: true, stdio: ["ignore", "pipe", "pipe"], ...options });
   children.push(instance); logs.set(instance.pid, "");
-  for (const stream of [instance.stdout, instance.stderr]) stream.on("data", (chunk) => { logs.set(instance.pid, `${logs.get(instance.pid) || ""}${chunk}`.slice(-32000)); });
+  for (const stream of [instance.stdout, instance.stderr]) stream.on("data", (chunk) => { const output = `${logs.get(instance.pid) || ""}${chunk}`; if (output.includes("PRIVATE_UPSTREAM_BLOCKED:")) blockedNextFetch = true; logs.set(instance.pid, output.slice(-32000)); });
   instance.on("error", (error) => { console.error(error); void stop(1); });
   instance.on("close", (code, signal) => { if (!stopping) { console.error(`Private critical child exited (${signal ?? code}): ${logs.get(instance.pid)}`); void stop(1); } });
   return instance;
@@ -63,6 +64,7 @@ async function stop(code = 0) {
       await options.closePrimary?.();
     } catch (error) { console.error("Fixture primary database cleanup failed", error); code = 1; }
     await fixture.closeAll();
+    if (options.requireNoReferenceFallback && blockedNextFetch) { console.error("The real Next runtime attempted a forbidden upstream fetch"); code = 1; }
     if (existsSync(fixture.directory)) { console.error("Private fixture directory cleanup failed", fixture.directory); code = 1; }
     process.exit(code);
   })();
@@ -139,7 +141,7 @@ try {
     assert.ok(existsSync(to), `complete production Next runtime asset directory required: ${to}`);
   }
   const guard = join(fixture.directory, "offline-runtime.mjs");
-  writeFileSync(guard, `const original=globalThis.fetch;globalThis.fetch=(input,...rest)=>{const url=new URL(typeof input==='string'||input instanceof URL?input:input.url);if(!['127.0.0.1','localhost','[::1]'].includes(url.hostname))return Promise.reject(new Error('Private offline fixture blocks upstream requests'));return original(input,...rest)};`);
+  writeFileSync(guard, `const original=globalThis.fetch;globalThis.fetch=(input,...rest)=>{const url=new URL(typeof input==='string'||input instanceof URL?input:input.url);if(!['127.0.0.1','localhost','[::1]'].includes(url.hostname)){console.error('PRIVATE_UPSTREAM_BLOCKED:'+url.href);return Promise.reject(new Error('Private offline fixture blocks upstream requests'));}return original(input,...rest)};`);
   const next = child(process.execPath, ["--experimental-sqlite", "--import", pathToFileURL(guard).href, entry], {
     cwd: dirname(entry), env: { ...process.env, ...nextEnvironment, PORT: String(nextPort), HOSTNAME: "127.0.0.1",
       ARENA_UI_UPSTREAM: "web:3001", SEASONAL_API_UPSTREAM: "web:3000", HOME_SHOWCASE_API_UPSTREAM: "web:3000",
@@ -193,7 +195,7 @@ try {
     const configPath = join(fixture.directory, `Caddyfile-${label}`);
     writeFileSync(configPath, config);
     const instance = child(caddy, ["run", "--config", configPath, "--adapter", "caddyfile"], {
-      cwd: fixture.directory, env: { ...process.env, ARENA_UI_UPSTREAM: `127.0.0.1:${nextPort}`, PVE_UI_UPSTREAM: `127.0.0.1:${nextPort}`, REGULAR_UI_UPSTREAM: `127.0.0.1:${nextPort}`, SEASONAL_API_UPSTREAM: `127.0.0.1:${nextPort}`, HOME_SHOWCASE_API_UPSTREAM: `127.0.0.1:${nextPort}`,
+      cwd: fixture.directory, env: { ...process.env, ARENA_UI_UPSTREAM: `127.0.0.1:${nextPort}`, PVE_UI_UPSTREAM: `127.0.0.1:${nextPort}`, REGULAR_UI_UPSTREAM: `127.0.0.1:${nextPort}`, SEASONAL_POPULATION_UI_UPSTREAM: `127.0.0.1:${nextPort}`, SEASONAL_API_UPSTREAM: `127.0.0.1:${nextPort}`, HOME_SHOWCASE_API_UPSTREAM: `127.0.0.1:${nextPort}`,
         ...Object.fromEntries(options.selectors.map(key => [key,arenaUpstream])),
         APPDATA: fixture.directory, XDG_CONFIG_HOME: fixture.directory, XDG_DATA_HOME: fixture.directory, GOMEMLIMIT: "192MiB" },
     });
@@ -258,6 +260,7 @@ try {
       syntheticGateway:{upstream:"http://127.0.0.1:"+gatewayPort,pathAllowlist:syntheticPaths,fallbackStatus:404,applicationRequests:false}},
     referenceAccess:fixture.referenceAccess||null,
     benchmarkEnvironment:{warmCacheQueries,players:{path:commonEnvironment.SQLITE_PATH,shared:true,accounts:300},
+      progression:{path:commonEnvironment.PROGRESSION_SQLITE_PATH,shared:true},
       rust:{nodeEnv:rustEnvironment.NODE_ENV,publicationsEnabled:false,durableCacheEnabled:true,cachePath:rustEnvironment.AVERAGE_PUBLICATION_SQLITE_PATH,cacheRole:"private Rust cache; no Next crosswarming"},
       next:{nodeEnv:nextEnvironment.NODE_ENV,publicationsEnabled:false,durableCacheEnabled:true,cachePath:nextEnvironment.AVERAGE_PUBLICATION_SQLITE_PATH,cacheRole:"private Next cache; no Rust crosswarming"},
       analytics:{path:commonEnvironment.ADMIN_ANALYTICS_SQLITE_PATH,available:false,reason:"intentional directory path for both servers"}},
