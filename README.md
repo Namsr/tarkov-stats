@@ -141,3 +141,23 @@ immutable UI assets. See the [Arena implementation and validation](docs/rust-are
 and the [full UI migration plan](docs/rust-ui-migration.md). Remaining pages,
 auth/support/telemetry endpoints and background tasks still require migration;
 this first interface does not complete the all-Rust goal.
+
+### Axis prediction materialization
+
+The default `AXIS_PREDICTION_MATERIALIZER=typescript` keeps the existing model. The
+experimental `rust` value uses the image’s bounded native calculator for archive
+publication and statistics edits. Node retains the SQLite transaction and writes; a
+missing worker, invalid response, timeout, or input above 8 MiB aborts and rolls it
+back without a TypeScript fallback. `AXIS_PREDICTION_BIN` overrides the executable.
+Unchanged inputs reuse saved predictions; missing saved predictions on reads still use
+the independent TypeScript singleton calculation. The child runs synchronously while
+the writer lock is held. Do not enable this path in production until a representative
+archive fits the input bound and Linux measurements establish its resource and latency
+budget. Compose passes this setting through the existing `.env` files to web and the
+Axis worker.
+
+The CI image benchmark records four isolated Linux runs (TypeScript/Rust and the
+reverse order), each with 1,000 synthetic matches and 20 changed-input publications.
+It saves every transaction timing, paired SQLite state digests and image/binary
+provenance. Lifetime cgroup CPU and peak charged memory include fixture setup and
+validation, not only timed work. This is not a live HTTP or full-archive benchmark.

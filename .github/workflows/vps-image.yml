@@ -110,6 +110,7 @@ jobs:
           test "$(docker image inspect --format '{{index .Config.Labels "org.tarkovstats.rust-arena-ui"}}' "tarkovstats-web:$GITHUB_SHA")" = "v1"
           docker run --rm --network none --entrypoint node "tarkovstats-web:$GITHUB_SHA" --experimental-strip-types --experimental-sqlite -e "require('node:sqlite'); require('discord.js'); require('node:fs').accessSync('/app/server.js'); require('node:fs').accessSync('/app/scripts/axis-discord-bot.mjs')"
           docker run --rm --network none --entrypoint /app/rust/cohort-worker/target/release/tarkov-cohort-worker "tarkovstats-web:$GITHUB_SHA" < /dev/null
+          test "$(printf '{"matches":[]}' | docker run --rm -i --network none --entrypoint /app/rust/axis-probability/target/release/axis-probability "tarkovstats-web:$GITHUB_SHA")" = '{"version":3,"predictions":[]}'
           docker network create image-smoke
           trap 'docker logs image-smoke; docker rm --force image-smoke; docker network rm image-smoke' EXIT
           docker run --detach --network image-smoke --network-alias web --memory 896m --memory-swap 1152m --env WEB_BACKGROUND_WORKERS=false --name image-smoke "tarkovstats-web:$GITHUB_SHA"
@@ -175,6 +176,20 @@ jobs:
             --name rust-arena-ui-smoke "tarkovstats-web:$GITHUB_SHA"
           trap 'docker logs rust-arena-ui-smoke; docker rm --force rust-arena-ui-smoke' EXIT
           docker exec rust-arena-ui-smoke node --experimental-strip-types --experimental-sqlite scripts/verify-rust-http-runtime.mjs --arena-ui
+      - name: Compare isolated Axis materialization on the production image
+        timeout-minutes: 10
+        run: bash scripts/benchmark-axis-materialization.sh "tarkovstats-web:$GITHUB_SHA" "$RUNNER_TEMP/axis-materialization"
+      - name: Save synthetic Axis materialization evidence
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: axis-materialization-${{ github.sha }}
+          path: |
+            ${{ runner.temp }}/axis-materialization/*.json
+            ${{ runner.temp }}/axis-materialization/*.log
+            ${{ runner.temp }}/axis-materialization/summary.md
+          if-no-files-found: warn
+          retention-days: 14
       - name: Benchmark isolated TypeScript and Rust API workloads
         timeout-minutes: 20
         run: bash scripts/benchmark-rust-container.sh "tarkovstats-web:$GITHUB_SHA" "$RUNNER_TEMP/rust-linux-benchmark"

@@ -7,6 +7,11 @@ WORKDIR /build
 COPY rust/cohort-worker/ ./
 RUN cargo build --release --locked
 
+FROM rust-builder AS rust-axis-builder
+WORKDIR /native
+COPY rust/axis-probability/ ./rust/axis-probability/
+RUN cargo build --release --locked --manifest-path rust/axis-probability/Cargo.toml
+
 FROM rust-builder AS rust-ui-builder
 ARG TARGETARCH
 RUN rustup target add wasm32-unknown-unknown
@@ -73,6 +78,7 @@ COPY --from=builder /app/public ./public
 COPY --from=builder --chown=nextjs:nodejs /app/.next/standalone ./
 COPY --from=builder --chown=nextjs:nodejs /app/.next/static ./.next/static
 COPY --from=rust-builder --chown=nextjs:nodejs /build/target/release/tarkov-cohort-worker ./rust/cohort-worker/target/release/tarkov-cohort-worker
+COPY --from=rust-axis-builder --chown=nextjs:nodejs /native/rust/axis-probability/target/release/axis-probability ./rust/axis-probability/target/release/axis-probability
 COPY --from=rust-api-builder --chown=nextjs:nodejs /native/rust/backend/target/release/tarkov-backend ./rust/backend/target/release/tarkov-backend
 COPY --from=builder --chown=nextjs:nodejs /app/scripts/sync-player-index.mjs ./scripts/sync-player-index.mjs
 COPY --from=builder --chown=nextjs:nodejs /app/scripts/sync-pve-index.mjs ./scripts/sync-pve-index.mjs

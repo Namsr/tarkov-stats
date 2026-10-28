@@ -7,6 +7,7 @@ import { detectAxisSeasons, type AxisSeason } from "../axis-seasons.ts";
 import { AxisKdaConflict, parseAxisKdaChanges, sameAxisKda, parseAxisRoundChange, sameAxisRoundScore, type AxisRoundScore, type AxisRoundChange, type AxisKda, type AxisKdaChange } from "../axis-kda.ts";
 import { axisLeagueAverages, buildAxisPlayerSummary, AXIS_PLAYER_PAGE_SIZE, type AxisIdentity, type AxisPlayerSummary, type AxisPlayerProfileResponse } from "../axis-player-profile.ts";
 import { AXIS_PREDICTION_VERSION, buildAxisWinProbabilities, type AxisWinProbability } from "../axis-win-probability.ts";
+import { buildNativeAxisProbabilities } from "../axis-native-probability.ts";
 import { axisMatchRosterFingerprintForMatch, parseAxisOcrNameRows, type AxisMatchConflict, type AxisMatchReview, type AxisMatchReviewView, type AxisMatchSubmissionReview, type AxisOcrNameRow, type AxisUploadRole } from "../axis-match-submission.ts";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any -- node:sqlite is loaded dynamically, as in the other admin stores.
@@ -282,7 +283,9 @@ export function createAxisLeagueStore(db: SqliteDatabase) {
       return { ...match, rounds: rounds.get(match.number) ?? null, teams: match.teams.map(team => ({ ...team,
         players: team.players.map(player => ({ ...player, kda: stats.get(`${match.number}:${player.id}`) ?? null })) })) };
     });
-    const predictions = buildAxisWinProbabilities(matches);
+    const backend = process.env.AXIS_PREDICTION_MATERIALIZER || "typescript";
+    if (backend !== "typescript" && backend !== "rust") throw new Error("Invalid Axis prediction backend");
+    const predictions = backend === "rust" ? buildNativeAxisProbabilities(matches) : buildAxisWinProbabilities(matches);
     const remove = db.prepare("DELETE FROM axis_match_predictions WHERE number=?");
     for (const row of db.prepare("SELECT number FROM axis_match_predictions").all()) {
       if (!predictions.has(row.number)) remove.run(row.number);
