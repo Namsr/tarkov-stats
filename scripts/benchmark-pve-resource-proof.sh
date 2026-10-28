@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 # Operator-only synthetic PvE comparison on an immutable locally loaded image.
 set -euo pipefail
-image_id='sha256:d64895bb623aaa921ff775ae02b1a8dc4dca80b3d57fa8bdbba19b67f9edabc7'
+production_image_id='sha256:d64895bb623aaa921ff775ae02b1a8dc4dca80b3d57fa8bdbba19b67f9edabc7'
+release_tag='tarkovstats-web:0a705c50ae9764d72d714c00e7027ebebadadf22'
+archive_sha='fd6848ec3753e626c8c9e6e5c5c569562e8f72a802a513a67be6dc069e7ce60a'
 revision='0a705c50ae9764d72d714c00e7027ebebadadf22'
 native_sha='f2e4ee25851e890a312fe29540778140bcac6de4059425fd3dcba54d5e62618c'
 output=${1:?Usage: benchmark-pve-resource-proof.sh NEW_OUTPUT_DIRECTORY}
@@ -14,8 +16,13 @@ endpoint=$(docker context inspect default --format '{{(index .Endpoints "docker"
 [[ ! -e $output && ! -L $output ]] || { echo 'Output already exists.' >&2; exit 2; }
 mkdir -p -- "$output"
 output=$(cd "$output" && pwd)
-[[ $(docker image inspect "$image_id" --format '{{.Id}}') == "$image_id" ]] || exit 1
-[[ $(docker image inspect "$image_id" --format '{{index .Config.Labels "org.opencontainers.image.revision"}}') == "$revision" ]] || exit 1
+[[ ${PROOF_ARCHIVE_SHA256:-} == "$archive_sha" ]] || { echo 'Release archive SHA mismatch.' >&2; exit 1; }
+image_id=$(docker image inspect "$release_tag" --format '{{.Id}}')
+[[ $image_id =~ ^sha256:[0-9a-f]{64}$ ]] || { echo 'Invalid tested image ID.' >&2; exit 1; }
+[[ $(docker image inspect "$image_id" --format '{{index .Config.Labels "org.opencontainers.image.revision"}}') == "$revision" ]] || { echo 'Release revision mismatch.' >&2; exit 1; }
+image_matches_production=false
+if [[ $image_id == "$production_image_id" ]]; then image_matches_production=true; fi
+printf '{"testedImageId":"%s","productionImageId":"%s","imageIdentityMatchesProduction":%s,"releaseTag":"%s","sourceRevision":"%s","archiveSha256":"%s"}\n' "$image_id" "$production_image_id" "$image_matches_production" "$release_tag" "$revision" "$archive_sha" > "$output/image-provenance.json"
 active_id=''
 active_name=''
 token=$(tr -d '-' < /proc/sys/kernel/random/uuid)
@@ -37,6 +44,8 @@ active_name="pve-proof-hash-$token"
 active_id=$(docker create --pull never --name "$active_name" --label "org.tarkovstats.pve-proof=$token" --network none --ipc private --cpus 0.5 --memory 512m --memory-swap 512m --pids-limit 64 --read-only --cap-drop ALL --security-opt no-new-privileges --entrypoint sha256sum "$image_id" /app/rust/cohort-worker/target/release/tarkov-cohort-worker)
 [[ $active_id =~ ^[0-9a-f]{64}$ ]] || { active_id=''; echo 'Invalid hash container ID.' >&2; exit 1; }
 hash_id=$active_id
+hash_image_id=$(docker inspect "$hash_id" --format '{{.Image}}')
+[[ $hash_image_id == "$image_id" ]] || { echo 'Hash container image mismatch.' >&2; exit 1; }
 set +e
 actual_native=$(timeout --signal=TERM --kill-after=5s 30s "$docker_binary" --context default start --attach "$active_id")
 hash_status=$?
@@ -45,7 +54,7 @@ docker rm --force "$active_id" >/dev/null
 if docker inspect "$active_id" >/dev/null 2>&1; then echo 'Hash container cleanup failed.' >&2; exit 1; fi
 active_id=''; active_name=''
 [[ $hash_status == 0 && ${actual_native%% *} == "$native_sha" ]] || { echo 'Native binary mismatch or hash failure.' >&2; exit 1; }
-printf '{"imageId":"%s","sourceRevision":"%s","nativeSha256":"%s","archiveSha256":"%s","hashContainerId":"%s","hashContainerRemoved":true,"ownershipToken":"%s"}\n' "$image_id" "$revision" "$native_sha" "${PROOF_ARCHIVE_SHA256:?archive SHA required}" "$hash_id" "$token" > "$output/provenance.json"
+printf '{"testedImageId":"%s","productionImageId":"%s","imageIdentityMatchesProduction":%s,"releaseTag":"%s","sourceRevision":"%s","nativeSha256":"%s","archiveSha256":"%s","hashContainerId":"%s","hashContainerImageId":"%s","hashContainerRemoved":true,"ownershipToken":"%s"}\n' "$image_id" "$production_image_id" "$image_matches_production" "$release_tag" "$revision" "$native_sha" "$archive_sha" "$hash_id" "$hash_image_id" "$token" > "$output/provenance.json"
 payload="$output/payload"
 mkdir -p "$payload/scripts" "$payload/tests/fixtures" "$payload/app/api/average/cohort" "$payload/app/api/seasonal/cohort"
 for file in benchmark-rust-cohort.mjs benchmark-worker-resources.mjs; do cp "$root/scripts/$file" "$payload/scripts/$file"; done

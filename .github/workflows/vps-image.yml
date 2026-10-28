@@ -24,7 +24,7 @@ jobs:
           test -z "$(git status --porcelain --untracked-files=all)"
           node --test scripts/test-pve-resource-proof.mjs
           bash -n scripts/benchmark-pve-resource-proof.sh
-      - name: Download and verify the installed release image
+      - name: Download and verify the pinned release archive
         timeout-minutes: 4
         env:
           GH_TOKEN: ${{ github.token }}
@@ -36,7 +36,7 @@ jobs:
           cd "$RUNNER_TEMP/pve-image"
           timeout --signal=TERM --kill-after=10s 120s gh release download "container-$SOURCE_REVISION" --pattern web.tar.gz --pattern web.tar.gz.sha256
           expected=$(awk '$2 == "web.tar.gz" { print $1 }' web.tar.gz.sha256)
-          [[ $expected =~ ^[0-9a-f]{64}$ ]]
+          [[ $expected == fd6848ec3753e626c8c9e6e5c5c569562e8f72a802a513a67be6dc069e7ce60a ]]
           printf '%s  web.tar.gz\n' "$expected" | sha256sum --check
           timeout --signal=TERM --kill-after=10s 100s docker --context default load --input web.tar.gz
           echo "PROOF_ARCHIVE_SHA256=$expected" >> "$GITHUB_ENV"
