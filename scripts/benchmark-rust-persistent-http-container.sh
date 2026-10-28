@@ -71,7 +71,7 @@ for round in 1 2; do
       --backend "$backend" --rows "$rows" --iterations "$iterations" --repetition "$round")
     [[ $active_id =~ ^[0-9a-f]{64}$ ]] || { active_id=''; echo 'Invalid create result; refusing unowned cleanup.' >&2; exit 2; }
     set +e
-    timeout --signal=TERM --kill-after=15s 360s "$docker_binary" --context default start --attach "$active_id" > "$stem.json" 2> "$stem.log"
+    timeout --signal=TERM --kill-after=15s 720s "$docker_binary" --context default start --attach "$active_id" > "$stem.json" 2> "$stem.log"
     status=$?
     set -e
     docker inspect "$active_id" --format \

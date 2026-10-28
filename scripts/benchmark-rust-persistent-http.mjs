@@ -40,6 +40,11 @@ export function buildPlan(iterations) {
   const cold = make("regular", "median", "all", "selected"), contexts = [], groups = [];
   for (const mode of MODES) for (const statistic of ["median", "trimmed_mean"]) for (const period of ["all", "90d"]) {
     contexts.push(make(mode, statistic, period, "context", true));
+  }
+  // Time the real default filters; keep the wider correctness matrix as probes
+  // and in the differential/HTTP suites, without multiplying every time series.
+  for (const mode of MODES) {
+    const statistic = "trimmed_mean", period = "all";
     for (const scope of ["selected", "context"]) groups.push({ mode, statistic, period, scope,
       warmup: make(mode, statistic, period, scope),
       miss1: Array.from({ length: iterations }, () => make(mode, statistic, period, scope)),
@@ -191,7 +196,7 @@ export async function runBenchmark(options) {
   assert.equal(process.env.BENCHMARK_RUST_PERSISTENT_HTTP_ISOLATED, "1"); assert.ok(existsSync("/.dockerenv"));
   assert.equal(process.env.NODE_ENV, "production"); assert.ok(existsSync("server.js"));
   const before = snapshotContainerResources(); validateIsolation(before);
-  const report = { formatVersion: 1, benchmark: "production-persistent-population-http", ...options, complete: false, failures: [], samples: [], cold: null, contexts: [], results: [], auxiliary: [], resources: null };
+  const report = { formatVersion: 2, benchmark: "production-persistent-population-http", ...options, complete: false, failures: [], samples: [], cold: null, contexts: [], results: [], auxiliary: [], resources: null };
   let record, state, cancelled = false;
   const requests = new Set();
   const signal = () => { cancelled = true; for (const controller of requests) controller.abort(); };
@@ -282,7 +287,7 @@ export async function runBenchmark(options) {
     } catch (error) { report.complete = false; report.failures.push(String(error)); }
     process.removeListener("SIGTERM", signal); process.removeListener("SIGINT", signal);
   }
-  report.methodology = { backendOrder: options.repetition === 1 ? BACKENDS : [...BACKENDS].reverse(), quantiles: "nearest rank; retain raw samples; p95 with n<=19 is the maximum; never average rounds", cache: "unique actual min bounds for every cold/warmup/miss/prewarm; no cache clears/revision tricks; context minima below every seeded peer; actual unfiltered context also checked", durable: "production enabled by NODE_ENV; cold writes acknowledged; analytics asynchronous flush outside HTTP timers; progression publication reads emit no request_events", rateLimit: "real limiter retained; explicitly trusted private synthetic client header distributes requests, not proxy-user traffic", queue: "existing Next average maxPending16/native8; compute30s and HTTP25s unchanged; concurrency4; any errors fail the evidence gate", http: "loopback actual production Next TS vs full Rust HTTP/cache/child; JSON parsing included; Next frontend remains running in both", resources: "whole cgroup lifetime through final post-shutdown sample: fixture/client/Next/Rust/compute/analytics/tmpfs/page-cache; not RSS or only timed requests", limitations: "synthetic positive-hours shifted data; zero/corrupt edge cases remain separate correctness tests; no page-cache flush, proxy/TLS/CDN/browser/upstream; reversed order does not eliminate runner noise; no universal speed claim or speed threshold" };
+  report.methodology = { latencyProfile: "Regular/PvE selected/context with default trimmed_mean/all only; median/90d have one-off correctness probes, not repeated timing evidence", backendOrder: options.repetition === 1 ? BACKENDS : [...BACKENDS].reverse(), quantiles: "nearest rank; retain raw samples; p95 with n<=19 is the maximum; never average rounds", cache: "unique actual min bounds for every cold/warmup/miss/prewarm; no cache clears/revision tricks; context minima below every seeded peer; actual unfiltered context also checked", durable: "production enabled by NODE_ENV; cold writes acknowledged; analytics asynchronous flush outside HTTP timers; progression publication reads emit no request_events", rateLimit: "real limiter retained; explicitly trusted private synthetic client header distributes requests, not proxy-user traffic", queue: "existing Next average maxPending16/native8; compute30s and HTTP25s unchanged; concurrency4; any errors fail the evidence gate", http: "loopback actual production Next TS vs full Rust HTTP/cache/child; JSON parsing included; Next frontend remains running in both", resources: "whole cgroup lifetime through final post-shutdown sample: fixture/client/Next/Rust/compute/analytics/tmpfs/page-cache; not RSS or only timed requests", limitations: "synthetic positive-hours shifted data; zero/corrupt edge cases remain separate correctness tests; no page-cache flush, proxy/TLS/CDN/browser/upstream; reversed order does not eliminate runner noise; no universal speed claim or speed threshold" };
   process.stdout.write(`${JSON.stringify(report)}\n`);
   return report;
 }

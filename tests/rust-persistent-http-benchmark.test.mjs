@@ -29,7 +29,7 @@ function example(backend = "typescript", repetition = 1) {
     const progression = add({ id: `p-${mode}`, path: `/api/progression/average?mode=${mode}` }); progression.body = { mode, cycleId: "persistent", axis: "pmc_raids", series: {} }; auxiliary.push(progression);
     const achievement = add({ id: `a-${mode}`, path: `/api/average/achievements?mode=${mode}` }); achievement.body = { total: 5000, achievements: [{ id: "synthetic-achievement", name: "Synthetic achievement", nameRu: "Синтетическое достижение", officialPct: 10, owners: Math.floor(5000 / (mode === "regular" ? 2 : 3)) }] }; auxiliary.push(achievement);
   }
-  const report = { formatVersion: 1, benchmark: "production-persistent-population-http", backend, repetition, rows: 5000, iterations: 4, complete: true, failures: [],
+  const report = { formatVersion: 2, benchmark: "production-persistent-population-http", backend, repetition, rows: 5000, iterations: 4, complete: true, failures: [],
     fixture: { synthetic: true, rowsPerMode: 5000, population, minimumHours: { regular: 1000, pve: 1000 }, normalizedSha256: "c".repeat(64), planSha256: plan.sha256, uniqueKeys: plan.unique.length },
     methodology: { backendOrder: repetition === 1 ? BACKENDS : [...BACKENDS].reverse() }, environment: { imageId: IMAGE, sourceRevision: REVISION },
     samples, cold, contexts, results, auxiliary, analytics: { rows: samples.length - 2, expectedRows: samples.length - 2, operations: { average: samples.length - 4, average_achievements: 2 }, uninstrumentedRequests: 2, awaitedForEachTimedBatch: true }, shutdown: { code: 0 },
@@ -43,7 +43,8 @@ test("bounded CLI and unique real cache keys cover both modes/statistics/periods
   assert.deepEqual(parseArguments(["--backend", "rust"]), { backend: "rust", rows: 30000, iterations: 20, repetition: 1 });
   for (const args of [[], ["--backend", "next-rust"], ["--backend", "rust", "--rows", "100001"], ["--backend", "rust", "--iterations", "3"], ["--backend", "rust", "--backend", "rust"], ["--backend", "rust", "--url", "https://example.com"]]) assert.throws(() => parseArguments(args));
   for (const n of [4, 20, 40]) {
-    const plan = buildPlan(n); assert.equal(plan.groups.length, 16); assert.equal(plan.contexts.length, 8); assert.equal(plan.unique.length, 89 + 32 * n);
+    const plan = buildPlan(n); assert.equal(plan.groups.length, 4); assert.equal(plan.contexts.length, 8); assert.equal(plan.unique.length, 29 + 8 * n);
+    assert.ok(plan.groups.every(group => group.statistic === "trimmed_mean" && group.period === "all"));
     assert.equal(new Set(plan.unique.map(v => v.key)).size, plan.unique.length);
     assert.ok(plan.unique.filter(v => v.scope === "context" && v.min !== null).every(v => v.min > 0 && v.min < 1000));
     assert.ok(plan.unique.every(v => !v.path.includes("revision")));
@@ -73,7 +74,7 @@ test("report gate validates raw quantiles, all query counts, cgroup caps, status
 });
 test("paired oracle rejects payload differences and reports slower results without a speed gate", () => {
   const before = example().report, after = example("rust").report;
-  const comparison = comparePair(before, after); assert.equal(comparison.length, 48); assert.equal(comparison[0].p95.deltaMs, 0);
+  const comparison = comparePair(before, after); assert.equal(comparison.length, 12); assert.equal(comparison[0].p95.deltaMs, 0);
   after.results[0].http.p95Ms = 10; assert.equal(comparePair(before, after)[0].p95.deltaMs, 8);
   after.samples[0].body.averages.n--; assert.throws(() => comparePair(before, after));
 });
@@ -84,7 +85,7 @@ test("four-run summary preserves evidence and rejects overwrite or reused contai
     const changed = join(directory, "persistent-round2-rust.inspect.json"), original = readFileSync(changed, "utf8"), reused = JSON.parse(original);
     reused.id = JSON.parse(readFileSync(join(directory, "persistent-round1-typescript.inspect.json"), "utf8")).id;
     writeFileSync(changed, JSON.stringify(reused)); assert.throws(() => summarizeDirectory(directory), /four distinct fresh containers/); writeFileSync(changed, original);
-    const result = summarizeDirectory(directory); assert.equal(result.summary.runs.length, 4); assert.equal(result.summary.comparisons.length, 96); assert.throws(() => summarizeDirectory(directory));
+    const result = summarizeDirectory(directory); assert.equal(result.summary.runs.length, 4); assert.equal(result.summary.comparisons.length, 24); assert.throws(() => summarizeDirectory(directory));
   } finally { if (old === undefined) delete process.env.GITHUB_STEP_SUMMARY; else process.env.GITHUB_STEP_SUMMARY = old; const path = realpathSync(directory); assert.equal(dirname(path), realpathSync(tmpdir())); assert.ok(basename(path).startsWith("rust-persistent-evidence-")); rmSync(path, { recursive: true, force: true }); }
 });
 test("owned child cleanup awaits actual exit and does not keep an idle process alive", { timeout: 5000 }, async () => {
@@ -95,7 +96,7 @@ test("owned child cleanup awaits actual exit and does not keep an idle process a
 });
 test("container orchestration only accepts local immutable images and cleans its successfully created ID", () => {
   const text = readFileSync(resolve("scripts/benchmark-rust-persistent-http-container.sh"), "utf8");
-  for (const required of ["--context default", "unix://", "image inspect", "--pull never", "--network none", "--read-only", "--cpus 0.5", "--memory 896m", "--memory-swap 896m", "--pids-limit 128", "--kill-after=15s 360s", 'docker rm --force "$active_id"']) assert.ok(text.includes(required), required);
+  for (const required of ["--context default", "unix://", "image inspect", "--pull never", "--network none", "--read-only", "--cpus 0.5", "--memory 896m", "--memory-swap 896m", "--pids-limit 128", "--kill-after=15s 720s", 'docker rm --force "$active_id"']) assert.ok(text.includes(required), required);
   assert.ok(text.includes('backends=(typescript rust)') && text.includes('backends=(rust typescript)'));
   assert.ok(!/dst=\/app\/(?:app|lib|types|server\.js|\.next)(?:,|\/)/.test(text.match(/--mount[^\n]*/g).join("\n")));
   assert.ok(text.includes("readonly")); assert.ok(text.indexOf('active_id=$(docker create') > text.indexOf("trap cleanup EXIT"));
@@ -106,7 +107,7 @@ test("existing analytics contract excludes progression but counts real average/m
   const samples = ["/api/average?mode=regular", "/api/average/metrics?mode=pve", "/api/average/achievements?mode=pve", "/api/progression/average?mode=pve", "/api/progression/average?mode=regular"].map(path => ({ path }));
   assert.deepEqual(expectedAnalytics(samples), { rows: 3, operations: { average: 2, average_achievements: 1 }, uninstrumentedRequests: 2 });
   const { report, inspect } = example();
-  assert.equal(report.samples.length, 293); assert.equal(report.analytics.rows, 291);
+  assert.equal(report.samples.length, 89); assert.equal(report.analytics.rows, 87);
   validateRun(report, inspect, "typescript", 1);
   report.analytics.rows = report.samples.length;
   assert.throws(() => validateRun(report, inspect, "typescript", 1));

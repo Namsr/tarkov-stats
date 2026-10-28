@@ -27,7 +27,7 @@ for (const base of [next, native]) {
 }
 const securityHeaders = ["content-security-policy", "x-frame-options", "x-content-type-options",
   "referrer-policy", "permissions-policy", "x-dns-prefetch-control", "strict-transport-security"];
-// next.config redirects run before its configured headers. Compare their native
+// Next configuration redirects discard the accumulated configured headers. Compare their native
 // security policy with an ordinary Next response rather than requiring Rust to
 // drop protections merely because that early redirect has none.
 const nextPolicy = await fetch(`${next}/healthz`, { signal: AbortSignal.timeout(5000) });

@@ -6,7 +6,7 @@ import { pathToFileURL } from "node:url";
 import { BACKENDS, BINDS, MEMORY_BYTES, assertPayloadParity, buildPlan, distribution, expectedAnalytics, validateAuxiliary, validateIsolation, validateResponse } from "./benchmark-rust-persistent-http.mjs";
 const scenario = row => `${row.mode}/${row.statistic}/${row.period}/${row.scope}/${row.cache}/${row.concurrency}`;
 export function validateRun(report, inspect, backend, repetition) {
-  assert.equal(report.formatVersion, 1); assert.equal(report.benchmark, "production-persistent-population-http");
+  assert.equal(report.formatVersion, 2); assert.equal(report.benchmark, "production-persistent-population-http");
   assert.equal(report.complete, true, JSON.stringify(report.failures)); assert.deepEqual(report.failures, []);
   assert.equal(report.backend, backend); assert.equal(report.repetition, repetition);
   const plan = buildPlan(report.iterations);
@@ -15,7 +15,7 @@ export function validateRun(report, inspect, backend, repetition) {
   assert.equal(report.fixture.planSha256, plan.sha256); assert.match(report.fixture.normalizedSha256, /^[a-f0-9]{64}$/);
   assert.deepEqual(report.methodology.backendOrder, repetition === 1 ? BACKENDS : [...BACKENDS].reverse());
   for (const mode of ["regular", "pve"]) { assert.equal(report.fixture.population[mode].all, report.rows); assert.ok(report.fixture.population[mode]["90d"] > 20 && report.fixture.population[mode]["90d"] < report.rows); assert.ok(report.fixture.minimumHours[mode] >= 1000); }
-  assert.equal(report.samples.length, 101 + 48 * report.iterations);
+  assert.equal(report.samples.length, plan.unique.length + plan.groups.length * report.iterations + 12);
   const expectedAnalyticsRows = expectedAnalytics(report.samples);
   assert.equal(report.analytics.rows, expectedAnalyticsRows.rows); assert.equal(report.analytics.expectedRows, expectedAnalyticsRows.rows);
   assert.deepEqual(report.analytics.operations, expectedAnalyticsRows.operations); assert.equal(report.analytics.uninstrumentedRequests, expectedAnalyticsRows.uninstrumentedRequests);
@@ -96,7 +96,7 @@ export function summarizeDirectory(directory) {
   assert.equal(new Set(containerIds).size, 4, "four distinct fresh containers required");
   assert.equal(new Set(runs.map(v => v.environment.imageId)).size, 1); assert.equal(new Set(runs.map(v => v.environment.sourceRevision)).size, 1); assert.equal(new Set(runs.map(v => v.fixture.normalizedSha256)).size, 1); assert.equal(new Set(runs.map(v => v.fixture.planSha256)).size, 1);
   const comparisons = [1, 2].flatMap(repetition => comparePair(runs.find(v => v.repetition === repetition && v.backend === "typescript"), runs.find(v => v.repetition === repetition && v.backend === "rust")));
-  const lines = ["# Production Regular/PvE population HTTP evidence", "", `Image: ${runs[0].environment.imageId}; revision: ${runs[0].environment.sourceRevision}.`, "", `${runs[0].rows} synthetic rows per mode; ${runs[0].iterations} observations per series. Four fresh containers: TypeScript/Rust, then Rust/TypeScript. Each: 0.5 CPU, 896 MiB, zero extra swap; Next frontend remains running in both.`, "", "Every Rust payload is checked against actual production Next HTTP for the same query. Counts/nulls/identity/labels must match exactly; calculated averages/sums use relative tolerance 1e-12. All statuses, stale flags and durable acknowledgements are gated. There is no statistical speed threshold.", "", "| Round | Backend | Mode/statistic/period/scope/cache/concurrency | p50 ms | p95 ms |", "|---|---|---|---:|---:|"];
+  const lines = ["# Production Regular/PvE population HTTP evidence", "", `Image: ${runs[0].environment.imageId}; revision: ${runs[0].environment.sourceRevision}.`, "", `${runs[0].rows} synthetic rows per mode; ${runs[0].iterations} observations per series. Four fresh containers: TypeScript/Rust, then Rust/TypeScript. Each: 0.5 CPU, 896 MiB, zero extra swap; Next frontend remains running in both.`, "", "Repeated latency series cover the default trimmed_mean/all filters for Regular/PvE selected ranges and full contexts. Median/90d receive one-off correctness probes; their repeated latency is not measured. Every Rust payload is checked against actual production Next HTTP for the same query. Counts/nulls/identity/labels must match exactly; calculated averages/sums use relative tolerance 1e-12. All statuses, stale flags and durable acknowledgements are gated. There is no statistical speed threshold.", "", "| Round | Backend | Mode/statistic/period/scope/cache/concurrency | p50 ms | p95 ms |", "|---|---|---|---:|---:|"];
   for (const run of runs) for (const row of run.results) lines.push(`|${run.repetition}|${run.backend}|${scenario(row)}|${row.http.p50Ms}|${row.http.p95Ms}|`);
   lines.push("", "## Paired changes", "", "Positive values are slower. Rounds are never averaged.", "", "| Round | Scenario | p50 delta ms (%) | p95 delta ms (%) |", "|---|---|---:|---:|");
   const delta = v => `${v.deltaMs} (${v.changePercent ?? "n/a"}%)`;

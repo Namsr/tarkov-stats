@@ -124,8 +124,10 @@ or PC performance measurements; CI may produce different native artifacts.
 
 The new API experiment uses four fresh, constrained production containers in
 opposite orders,30,000 synthetic rows per mode and20 observations per timed
-series. It keeps full raw replies, status failures, per-round p50/p95 and cgroup
-resource observations. Each container has a360-second hard run limit and the
+series for Regular/PvE selected/context with the default trimmed_mean/all
+filters. Median/90d remain one-off correctness probes, not repeated timing
+evidence. It keeps full raw replies, status failures, per-round p50/p95 and cgroup
+resource observations. Each container has a720-second hard run limit and the
 384MiB private tmpfs remains charged to its896MiB memory cap. The separate browser
 experiment uses4fresh cold-asset and6warm PvE pairs with the declared Linux
 CPU/network recipe; Regular gets functional/navigation checks, not a repeated
