@@ -152,3 +152,14 @@ Fresh reference metadata is verified through the real TypeScript parser with a
 rejecting fetch, and a loopback deny proxy detects native fallback; this is not
 an OS firewall. A successful seeded run does not establish cold production
 HTTPS/TLS reference refresh, which remains required before activation.
+
+The image workflow also schedules a bounded cold HTTPS correctness probe for
+Regular and Seasonal achievement metadata. It runs the image's unchanged Rust
+backend with its Alpine CA bundle, disposable publications and empty reference
+and durable caches. The probe requires newly parsed nonempty version-2 files and
+matching accepted durable metadata; an HTTP 200 by itself is not a pass. Its
+evidence contains only image/source identity, binary and CA hashes, aggregate
+counts, statuses and cleanup state. This check uses real upstream egress and is
+not a benchmark, a VPS test, a bad-certificate test or proof of future upstream
+availability. A passing result must be obtained for the candidate image before
+claiming the cold production-image path was validated.

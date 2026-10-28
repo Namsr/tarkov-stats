@@ -7,6 +7,7 @@ import { basename, dirname, join, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import test from "node:test";
 import { startRustBackend } from "./fixtures/rust-seasonal-http.mjs";
+import { validateColdMetadata, validateProbeReport } from "../scripts/verify-rust-cold-https.mjs";
 
 const entry = resolve("scripts/start-web.mjs");
 const binary = process.env.RUST_BACKEND_BIN || resolve("rust/backend/target/release", `tarkov-backend${process.platform === "win32" ? ".exe" : ""}`);
@@ -349,4 +350,51 @@ test("Seasonal verifier seeds a private fixture and checks native SSR and assets
   });
   const first = await run(); assert.equal(first.code, 0, first.output); assert.match(first.output, /rust_seasonal_ui_runtime_verified/);
   const second = await run(); assert.notEqual(second.code, 0); assert.match(second.output, /refuse to modify a populated database/);
+});
+
+
+test("cold HTTPS evidence requires newly parsed reference and accepted matching durable metadata", () => {
+  const start = 1_700_000_000_000, end = start + 20000, generatedAt = start + 300;
+  const entry = { id: "private-fixture-id", name: "Synthetic", nameEn: "Synthetic", nameRu: "Тест", descriptionEn: null, descriptionRu: null,
+    imageUrl: null, side: "pmc", rarity: "rare", playersCompletedPercent: 1, adjustedPlayersCompletedPercent: 2 };
+  for (const mode of ["regular", "seasonal"]) {
+    const key = mode === "regular" ? "achievement-metadata:regular" : "achievement-metadata:seasonal:cold-tls-cycle";
+    const valid = { mode, fileBytes: 200, payloadBytes: 300, start, end,
+      file: { version: 2, mode, savedAt: start + 100, entries: [entry] },
+      saved: { key, value: [[entry.id, entry]], generatedAt, expiresAt: generatedAt + 21600000 } };
+    assert.deepEqual(validateColdMetadata(valid), { count: 1, fileBytes: 200, payloadBytes: 300 });
+    const cases = [
+      { ...valid, fileBytes: 0 }, { ...valid, fileBytes: 2097153 },
+      { ...valid, file: { ...valid.file, version: 1 } }, { ...valid, file: { ...valid.file, savedAt: start - 1 } },
+      { ...valid, file: { ...valid.file, entries: [] } }, { ...valid, file: { ...valid.file, entries: [{ ...entry, rarity: "invalid" }] } },
+      { ...valid, saved: { ...valid.saved, key: "wrong" } }, { ...valid, saved: { ...valid.saved, value: [] } },
+      { ...valid, saved: { ...valid.saved, value: [["different", entry]] } },
+      { ...valid, saved: { ...valid.saved, value: [[entry.id, { ...entry, name: "changed" }]] } },
+      { ...valid, saved: { ...valid.saved, generatedAt: start - 1 } }, { ...valid, saved: { ...valid.saved, expiresAt: generatedAt } },
+      { ...valid, payloadBytes: 0 },
+    ];
+    for (const candidate of cases) assert.throws(() => validateColdMetadata(candidate));
+  }
+});
+
+test("cold HTTPS host report rejects missing, mismatched or partial proof", () => {
+  const expected = { imageId: `sha256:${"a".repeat(64)}`, sourceRevision: "b".repeat(40), reviewedHead: "c".repeat(40) };
+  const mode = { status: 200, stale: false, count: 2, fileBytes: 50, payloadBytes: 70 };
+  const report = { ...expected, outcome: "passed", phase: "complete", failure: null, backendSha256: "d".repeat(64), caBundleSha256: "e".repeat(64), caBundleBytes: 200,
+    modes: { regular: mode, seasonal: mode }, health: { before: 200, after: 200 }, cleanup: { backendStopped: true } };
+  assert.equal(validateProbeReport(report, expected), true);
+  for (const invalid of [null, { ...report, imageId: "wrong" }, { ...report, outcome: "failed" }, { ...report, caBundleSha256: "" },
+    { ...report, modes: { regular: mode } }, { ...report, modes: { ...report.modes, seasonal: { ...mode, count: 0 } } },
+    { ...report, health: { before: 200, after: 500 } }, { ...report, cleanup: { backendStopped: false } }]) assert.throws(() => validateProbeReport(invalid, expected));
+});
+
+test("cold HTTPS CI probe uses an exact nonroot image, bounded egress and sanitized evidence", async () => {
+  const workflow = await readFile(".github/workflows/vps-image.yml", "utf8");
+  const wrapper = await readFile("scripts/check-rust-cold-https-image.sh", "utf8");
+  const driver = await readFile("scripts/verify-rust-cold-https.mjs", "utf8");
+  for (const marker of ["--network bridge", "--read-only", "--cap-drop ALL", "--pids-limit 64", "timeout --signal=TERM", "docker rm --force", "PROBE_CONTAINER_IMAGE"]) assert.ok(wrapper.includes(marker), marker);
+  for (const marker of ["reviewed head is not", "org.opencontainers.image.revision", "Config.User", "caBundleSha256", "backendSha256"]) assert.ok((wrapper + driver).toLowerCase().includes(marker.toLowerCase()), marker);
+  assert.ok(workflow.includes("scripts/check-rust-cold-https-image.sh")); assert.ok(workflow.includes("rust-cold-https"));
+  assert.match(driver, /achievement-metadata:seasonal:cold-tls-cycle/);
+  assert.match(driver, /response-not-fresh/); assert.match(driver, /durable-missing/);
 });
