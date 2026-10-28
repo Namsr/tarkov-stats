@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import {readFile,writeFile} from "node:fs/promises";
 import {join} from "node:path";
 import {runRustUiBrowser} from "./lib/benchmark-rust-ui-browser.mjs";
+const radio = value => `main input[type=radio][value=${JSON.stringify(value)}]`;
 const messages=JSON.parse(await readFile(new URL("../lib/i18n/messages.json",import.meta.url),"utf8"));
 const conditions = {
   viewport: { width: 1280, height: 900, deviceScaleFactor: 1, mobile: false }, locale: "ru-RU", cookie: "lang=ru", cpuSlowdown: 4,
@@ -118,7 +119,7 @@ async function functional(tab, backend, context) {
   async function navigate(path) {
     await tab.send("Page.navigate", { url: new URL(path, tab.url).href }); await ready();
   }
-  const radio = value => `main input[type=radio][value=${value}]`;
+
   await ready();
   await click(radio("median"));
   await wait(`document.querySelector(${JSON.stringify(radio("median"))})?.checked&&new URL(location.href).searchParams.get('statistic')==='median'`, "statistic URL"); await ready();

@@ -1,8 +1,10 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { runInNewContext } from "node:vm";
+import { createRequire } from "node:module";
 import test from "node:test";
 import ts from "typescript";
+const { transform } = createRequire(import.meta.url)("lightningcss");
 const source = await readFile(new URL("../scripts/check-rust-persistent-browser.mjs", import.meta.url), "utf8");
 const tree = ts.createSourceFile("persistent-browser.mjs", source, ts.ScriptTarget.Latest, true, ts.ScriptKind.JS);
 function literal(tree, name) {
@@ -10,6 +12,19 @@ function literal(tree, name) {
   assert.ok(statement, `actual ${name} declaration exists`);
   return runInNewContext(statement.getText(tree) + `\n${name}`);
 }
+test("persistent radio selectors parse for every functional control, including numeric-leading periods", () => {
+  const declarations = [];
+  function visit(node) { if (ts.isVariableDeclaration(node) && node.name.getText(tree) === "radio") declarations.push(node); ts.forEachChild(node, visit); }
+  visit(tree); assert.equal(declarations.length, 1, "functional calls must not shadow the tested helper");
+  const radio = literal(tree, "radio");
+  const parse = selector => transform({ filename: "selector.css", code: Buffer.from(selector + " { color: red }"), minify: true }).code.toString();
+  assert.throws(() => parse("main input[type=radio][value=90d]"));
+  for (const value of ["median", "trimmed_mean", "all", "90d", "pmc_raids"]) {
+    const selector = radio(value);
+    assert.match(parse(selector), /\{color:red\}/);
+    if (value === "90d") assert.match(selector, /\[value="90d"\]/);
+  }
+});
 test("persistent observer requires actual300 profiles, all13 numeric values and both hydrated range controls", () => {
   const script = literal(tree, "instrumentation");
   let now = 1, changed;
