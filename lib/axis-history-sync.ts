@@ -7,6 +7,12 @@ export async function loadAxisHistory(page: number, defer?: (task: () => Promise
 }
 
 const pendingArchives = new WeakMap<AxisLeagueStore, Promise<void>>();
+const ARCHIVE_TIMEOUT_MS = 12_000;
+// NeatQueue sometimes drops a connection mid-body from the VPS. A refused
+// connection surfaces at once; only a timed-out attempt is worth repeating.
+function archiveRequestTimedOut(error: unknown) {
+  return typeof error === "object" && error !== null && (error as { name?: unknown }).name === "TimeoutError";
+}
 export async function refreshAxisArchive(store: AxisLeagueStore, request: typeof fetch = fetch, now = Date.now(), headOnly = false) {
   const pending = pendingArchives.get(store);
   if (pending) return pending;
@@ -18,17 +24,24 @@ export async function refreshAxisArchive(store: AxisLeagueStore, request: typeof
     try {
       let progress = store.archiveState();
       const numbers = new Set(store.archiveMatchNumbers());
-      const signal = AbortSignal.timeout(12_000);
       const read = async (page: number, pageSize = AXIS_ARCHIVE_PAGE_SIZE) => {
         const url = new URL(AXIS_HISTORY_API_URL);
         url.search = new URLSearchParams({ page: String(page), page_size: String(pageSize), order: "desc" }).toString();
-        const response = await request(url, { cache: "no-store", signal });
-        if (!response.ok) throw new Error(`NeatQueue archive HTTP ${response.status}`);
-        const data = parseAxisHistory(await response.json(), page, pageSize);
-        pages.push(data);
-        for (const match of data.matches) numbers.add(match.number);
-        progress = advanceAxisArchiveState(progress, data, numbers.size);
-        return data;
+        // Every attempt gets its own budget: a slow head page must not starve the
+        // reconciliation reads, and a stalled connection gets one clean retry.
+        for (let attempt = 1; ; attempt++) {
+          try {
+            const response = await request(url, { cache: "no-store", signal: AbortSignal.timeout(ARCHIVE_TIMEOUT_MS) });
+            if (!response.ok) throw new Error(`NeatQueue archive HTTP ${response.status}`);
+            const data = parseAxisHistory(await response.json(), page, pageSize);
+            pages.push(data);
+            for (const match of data.matches) numbers.add(match.number);
+            progress = advanceAxisArchiveState(progress, data, numbers.size);
+            return data;
+          } catch (error) {
+            if (attempt >= 2 || !archiveRequestTimedOut(error)) throw error;
+          }
+        }
       };
       const complete = Boolean(progress.complete);
       const first = await read(1, headOnly && !complete ? AXIS_HISTORY_PAGE_SIZE : AXIS_ARCHIVE_PAGE_SIZE);
