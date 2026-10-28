@@ -8,12 +8,20 @@ export async function loadAxisHistory(page: number, defer?: (task: () => Promise
 
 const pendingArchives = new WeakMap<AxisLeagueStore, Promise<void>>();
 const ARCHIVE_TIMEOUT_MS = 12_000;
-// NeatQueue sometimes drops a connection mid-body from the VPS. A refused
-// connection surfaces at once; only a timed-out attempt is worth repeating.
-function archiveRequestTimedOut(error: unknown) {
-  return typeof error === "object" && error !== null && (error as { name?: unknown }).name === "TimeoutError";
+// NeatQueue sometimes stalls or drops the connection mid-body from the VPS. A
+// stall surfaces as a TimeoutError once the signal fires; a reset surfaces as
+// `TypeError: terminated` with a socket error cause even though the headers
+// already arrived. Both are worth one retry on a fresh connection; HTTP errors
+// and malformed payloads are not.
+function archiveRequestRetryable(error: unknown) {
+  if (typeof error !== "object" || error === null) return false;
+  const { name, message, cause } = error as { name?: unknown; message?: unknown; cause?: unknown };
+  if (name === "TimeoutError") return true;
+  if (name === "TypeError" && message === "terminated") return true;
+  const code = typeof cause === "object" && cause !== null ? (cause as { code?: unknown }).code : null;
+  return code === "UND_ERR_SOCKET" || code === "ECONNRESET" || code === "EPIPE";
 }
-export async function refreshAxisArchive(store: AxisLeagueStore, request: typeof fetch = fetch, now = Date.now(), headOnly = false) {
+export async function refreshAxisArchive(store: AxisLeagueStore, request: typeof fetch = fetch, now = Date.now(), headOnly = false, retries = 1) {
   const pending = pendingArchives.get(store);
   if (pending) return pending;
   if (!store.claimArchiveRefresh(now, headOnly)) return;
@@ -28,8 +36,8 @@ export async function refreshAxisArchive(store: AxisLeagueStore, request: typeof
         const url = new URL(AXIS_HISTORY_API_URL);
         url.search = new URLSearchParams({ page: String(page), page_size: String(pageSize), order: "desc" }).toString();
         // Every attempt gets its own budget: a slow head page must not starve the
-        // reconciliation reads, and a stalled connection gets one clean retry.
-        for (let attempt = 1; ; attempt++) {
+        // reconciliation reads, and a dropped connection gets a clean retry.
+        for (let attempt = 0; ; attempt++) {
           try {
             const response = await request(url, { cache: "no-store", signal: AbortSignal.timeout(ARCHIVE_TIMEOUT_MS) });
             if (!response.ok) throw new Error(`NeatQueue archive HTTP ${response.status}`);
@@ -39,7 +47,7 @@ export async function refreshAxisArchive(store: AxisLeagueStore, request: typeof
             progress = advanceAxisArchiveState(progress, data, numbers.size);
             return data;
           } catch (error) {
-            if (attempt >= 2 || !archiveRequestTimedOut(error)) throw error;
+            if (attempt >= retries || !archiveRequestRetryable(error)) throw error;
           }
         }
       };
@@ -78,8 +86,9 @@ export async function refreshAxisArchive(store: AxisLeagueStore, request: typeof
 
 export async function loadAxisSeasonHistory(page: number, season: string, defer?: (task: () => Promise<void>) => void, matchNumber?: number, map?: string) {
   const store = await getAxisLeagueStore();
-  // Bootstrap only a small head page; never delay the first response for older seasons.
-  if (store.archiveState().updated_at == null) await refreshAxisArchive(store, fetch, Date.now(), true);
+  // Bootstrap only a small head page; never delay the first response for older
+  // seasons. No retry here: the visitor waits on this, so keep one 12 s budget.
+  if (store.archiveState().updated_at == null) await refreshAxisArchive(store, fetch, Date.now(), true, 0);
   // Also recover when the dedicated worker is absent. The shared lease prevents duplicate syncs.
   else defer?.(() => refreshAxisArchive(store, fetch, Date.now(), true));
   return matchNumber == null ? store.readSeasonHistory(page, season, undefined, map) : store.readMatchHistory(matchNumber);
