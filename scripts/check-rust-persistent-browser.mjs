@@ -4,6 +4,7 @@ import {readFile,writeFile} from "node:fs/promises";
 import {join} from "node:path";
 import {runRustUiBrowser} from "./lib/benchmark-rust-ui-browser.mjs";
 import {checkSeasonalFunctional} from "./lib/check-rust-seasonal-functional.mjs";
+const radio = value => `main input[type=radio][value=${JSON.stringify(value)}]`;
 const seasonal = process.env.RUST_SEASONAL_BROWSER === "true";
 const messages=JSON.parse(await readFile(new URL("../lib/i18n/messages.json",import.meta.url),"utf8"));
 const conditions = {
@@ -125,7 +126,7 @@ async function functional(tab, backend, context) {
   async function navigate(path) {
     await tab.send("Page.navigate", { url: new URL(path, tab.url).href }); await ready();
   }
-  const radio = value => `main input[type=radio][value=${value}]`;
+
   if (seasonal) {
     await checkSeasonalFunctional({ tab, backend, context, evidence, messages, visible, evaluate, wait, click, key, ready, navigate, radio, blockedImage });
     return;
