@@ -387,7 +387,7 @@ test("archive refresh imports bounded pages, coordinates store handles and retai
   assert.equal(db.readSeasonHistory(1, "all").stale, true);
 });
 
-test("complete archives poll only 25 newest matches and catch up missing matches after an outage", async (t) => {
+test("complete archives reconcile older pages and catch up missing matches after an outage", async (t) => {
   const db = store(t);
   db.publishArchive({ page: 1, pages: 1, total: 1, matches: [seasonMatch(1, AXIS_CURRENT_SEASON_START)] });
   const calls = [];
@@ -400,18 +400,145 @@ test("complete archives poll only 25 newest matches and catch up missing matches
       pagination: { current_page: page, per_page: size, total_pages: Math.ceil(total / size), total_items: total } });
   };
   await refreshAxisArchive(db, request, AXIS_REFRESH_MS);
-  assert.deepEqual(calls, [[1, 25]]);
+  assert.deepEqual(calls, [[1, 50]]);
   // A saved cursor from an earlier import must not skip a gap after a longer outage.
   db.publishArchive({ page: 7, pages: 20, total: 1, matches: [] });
   total = 127; calls.length = 0;
   await refreshAxisArchive(db, request, AXIS_REFRESH_MS * 2);
-  assert.deepEqual(calls, [[1, 25], [1, 50], [2, 50], [3, 50]]);
+  assert.deepEqual(calls, [[1, 50], [2, 50], [3, 50]]);
   assert.equal(db.archiveState().complete, 1);
   assert.equal(db.readSeasonHistory(1, "all").total, 127);
   assert.equal(db.readSeasonHistory(6, "all").matches.at(-1).number, 1);
   calls.length = 0;
   await refreshAxisArchive(db, request, AXIS_REFRESH_MS * 3);
-  assert.deepEqual(calls, [[1, 25]]);
+  assert.deepEqual(calls, [[1, 50], [2, 50], [3, 50]]);
+});
+
+test("completed archives revisit cancellations beyond the head, resume across handles and retain manual data", async t => {
+  const sql = new DatabaseSync(":memory:"); t.after(() => sql.close());
+  let db = createAxisLeagueStore(sql);
+  const cancelled = new Set(), calls = [];
+  const request = async url => {
+    const size = Number(url.searchParams.get("page_size")), page = Number(url.searchParams.get("page"));
+    calls.push(page);
+    return Response.json({ data: Array.from({ length: Math.max(0, Math.min(size, 251 - (page - 1) * size)) }, (_, i) => {
+      const match = historyMatch(251 - (page - 1) * size - i);
+      match.queue_channel = AXIS_CHANNEL_ID; match.time = "2026-10-17 12:00:00";
+      if (cancelled.has(match.game_num)) {
+        match.winner = -1;
+        for (const player of match.teams.flat()) player.mmr_change = 0;
+      }
+      return match;
+    }), pagination: { current_page: page, per_page: size, total_pages: Math.ceil(251 / size), total_items: 251 } });
+  };
+  for (let page = 1; page <= 6; page++) {
+    const url = new URL("https://example.test"); url.search = new URLSearchParams({ page, page_size: 50 });
+    db.publishArchive(parseAxisHistory(await (await request(url)).json(), page, 50));
+  }
+  db.publish(parseAxisPage(page()).players);
+  db.setProfile(row().id, { aid: 12345, mode: "arena" });
+  const kda = { kills: 12, deaths: 3, assists: 4 }, score = { a: 7, b: 11 };
+  for (const number of [20, 225]) db.setMatchStats(number, [{ discordId: row().id, kda, expected: null }], { score, expected: null });
+  const photo = { revision: "a".repeat(64), width: 128, height: 72, data: Buffer.from("saved photo") };
+  db.setMatchPhoto(20, null, photo);
+  assert.equal(db.read().currentSeason.games, 251);
+  assert.equal(db.read().players[0].combatStats.matches, 2);
+  assert.equal(db.readPlayerProfile(12345).archivedGames, 251);
+  cancelled.add(20); cancelled.add(225); calls.length = 0;
+  // HTTP fallbacks share the lease: they must advance reconciliation too.
+  await refreshAxisArchive(db, request, AXIS_REFRESH_MS, true);
+  assert.deepEqual(calls, [1, 2, 3]);
+  assert.equal(db.readMatchHistory(225).matches[0].winner, -1, "records 26–50 cannot fall between page sizes");
+  assert.equal(db.readMatchHistory(20).matches[0].winner, 1);
+  assert.equal(db.archiveState().next_page, 4);
+  db = createAxisLeagueStore(sql); calls.length = 0;
+  await refreshAxisArchive(db, request, AXIS_REFRESH_MS * 2);
+  assert.deepEqual(calls, [1, 4, 5]);
+  const match = db.readMatchHistory(20).matches[0];
+  assert.equal(match.winner, -1);
+  assert.equal(match.teams[0].players[0].change, 0);
+  assert.deepEqual(match.teams[0].players[0].kda, kda);
+  assert.deepEqual(match.rounds, score);
+  assert.deepEqual(Buffer.from(db.readMatchPhoto(20).data), photo.data);
+  assert.equal(db.read().currentSeason.games, 249);
+  assert.equal(db.read().players[0].combatStats, null);
+  assert.equal(db.readPlayerProfile(12345).archivedGames, 249);
+  calls.length = 0;
+  await refreshAxisArchive(db, request, AXIS_REFRESH_MS * 3);
+  assert.deepEqual(calls, [1, 6], "stop at the last page instead of duplicating wrapped pages");
+  calls.length = 0;
+  await refreshAxisArchive(db, request, AXIS_REFRESH_MS * 4);
+  assert.deepEqual(calls, [1, 2, 3], "reconciliation repeats after reaching the end");
+});
+
+test("failed reconciliation retains earlier corrections and retries the failed page", async t => {
+  const db = store(t), calls = [];
+  db.publishArchive({ page: 1, pages: 3, total: 150, matches: Array.from({ length: 150 }, (_, i) => seasonMatch(i + 1, AXIS_CURRENT_SEASON_START + i)) });
+  const request = async url => {
+    const page = Number(url.searchParams.get("page")); calls.push(page);
+    if (page === 3) throw new Error("older page offline");
+    const body = { data: Array.from({ length: 50 }, (_, i) => ({ ...historyMatch(150 - (page - 1) * 50 - i), winner: -1 })),
+      pagination: { current_page: page, per_page: 50, total_pages: 3, total_items: 150 } };
+    return Response.json(body);
+  };
+  await refreshAxisArchive(db, request, AXIS_REFRESH_MS);
+  assert.deepEqual(calls, [1, 2, 3]);
+  assert.equal(db.readMatchHistory(51).matches[0].winner, -1);
+  assert.equal(db.readMatchHistory(1).matches[0].winner, 0);
+  assert.equal(db.archiveState().complete, 1);
+  assert.equal(db.archiveState().next_page, 3);
+  assert.equal(db.archiveState().last_error, 1);
+  calls.length = 0;
+  await refreshAxisArchive(db, request, AXIS_REFRESH_MS * 2);
+  assert.deepEqual(calls, [1, 3]);
+});
+
+test("timed-out archive reads retry once with a fresh budget and stay fresh", async (t) => {
+  const db = store(t), calls = [];
+  let stalled = true;
+  const request = async (url) => {
+    const page = Number(url.searchParams.get("page")), size = Number(url.searchParams.get("page_size"));
+    calls.push(page);
+    if (page === 2 && stalled) {
+      stalled = false;
+      throw new DOMException("The operation was aborted due to timeout", "TimeoutError");
+    }
+    return Response.json({ data: Array.from({ length: Math.min(size, 120 - (page - 1) * size) }, (_, i) => historyMatch(120 - (page - 1) * size - i)),
+      pagination: { current_page: page, per_page: size, total_pages: Math.ceil(120 / size), total_items: 120 } });
+  };
+  await refreshAxisArchive(db, request, AXIS_REFRESH_MS);
+  assert.deepEqual(calls, [1, 2, 2, 3]);
+  assert.equal(db.archiveState().last_error, 0);
+  assert.equal(db.readSeasonHistory(1, "all", AXIS_REFRESH_MS + 1).stale, false);
+});
+
+test("a dropped archive connection is retried like a stall", async (t) => {
+  const db = store(t), calls = [];
+  let dropped = true;
+  const request = async (url) => {
+    const page = Number(url.searchParams.get("page")), size = Number(url.searchParams.get("page_size"));
+    calls.push(page);
+    if (page === 2 && dropped) {
+      dropped = false;
+      throw Object.assign(new TypeError("terminated"), { cause: { name: "SocketError", code: "UND_ERR_SOCKET" } });
+    }
+    return Response.json({ data: Array.from({ length: Math.min(size, 120 - (page - 1) * size) }, (_, i) => historyMatch(120 - (page - 1) * size - i)),
+      pagination: { current_page: page, per_page: size, total_pages: Math.ceil(120 / size), total_items: 120 } });
+  };
+  await refreshAxisArchive(db, request, AXIS_REFRESH_MS);
+  assert.deepEqual(calls, [1, 2, 2, 3]);
+  assert.equal(db.archiveState().last_error, 0);
+});
+
+test("bootstrap head reads keep a single attempt", async (t) => {
+  const db = store(t), calls = [];
+  const request = async (url) => {
+    calls.push(Number(url.searchParams.get("page")));
+    throw new DOMException("The operation was aborted due to timeout", "TimeoutError");
+  };
+  await refreshAxisArchive(db, request, AXIS_REFRESH_MS, true, 0);
+  assert.deepEqual(calls, [1]);
+  assert.equal(db.archiveState().last_error, 1);
 });
 
 test("initial archive import stays bounded and resumes the next 50-match page", async (t) => {
@@ -453,9 +580,9 @@ test("a failed later archive fetch publishes earlier pages once without exposing
   assert.equal(db.archiveState().last_error, 1);
 });
 
-test("HTTP head refreshes cannot starve archive import or leave the cursor beyond an outage gap", async (t) => {
+test("HTTP bootstrap refreshes leave import slots to the worker", async (t) => {
   const db = store(t); const calls = [];
-  db.publishArchive({ page: 7, pages: 20, total: 1, matches: [seasonMatch(1, AXIS_CURRENT_SEASON_START)] });
+  db.publishArchive({ page: 1, pages: 3, total: 127, matches: [seasonMatch(1, AXIS_CURRENT_SEASON_START)] });
   const request = async url => {
     const page = Number(url.searchParams.get("page")), size = Number(url.searchParams.get("page_size"));
     calls.push([page, size]);
