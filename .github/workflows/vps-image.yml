@@ -46,6 +46,8 @@ jobs:
       - run: cargo clippy --locked --lib --features hydrate --target wasm32-unknown-unknown --manifest-path rust/ui/Cargo.toml -- -D warnings
       - run: cargo fmt --manifest-path rust/backend/Cargo.toml -- --check
       - run: cargo clippy --locked --all-targets --manifest-path rust/backend/Cargo.toml -- -D warnings
+      - run: cargo fmt --manifest-path rust/axis-probability/Cargo.toml -- --check
+      - run: cargo clippy --locked --all-targets --manifest-path rust/axis-probability/Cargo.toml -- -D warnings
       - run: cargo fmt --manifest-path rust/cohort-worker/Cargo.toml -- --check
       - run: cargo clippy --locked --all-targets --manifest-path rust/cohort-worker/Cargo.toml -- -D warnings
       - run: npm ci
