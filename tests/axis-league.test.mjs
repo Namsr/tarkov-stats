@@ -493,6 +493,54 @@ test("failed reconciliation retains earlier corrections and retries the failed p
   assert.deepEqual(calls, [1, 3]);
 });
 
+test("timed-out archive reads retry once with a fresh budget and stay fresh", async (t) => {
+  const db = store(t), calls = [];
+  let stalled = true;
+  const request = async (url) => {
+    const page = Number(url.searchParams.get("page")), size = Number(url.searchParams.get("page_size"));
+    calls.push(page);
+    if (page === 2 && stalled) {
+      stalled = false;
+      throw new DOMException("The operation was aborted due to timeout", "TimeoutError");
+    }
+    return Response.json({ data: Array.from({ length: Math.min(size, 120 - (page - 1) * size) }, (_, i) => historyMatch(120 - (page - 1) * size - i)),
+      pagination: { current_page: page, per_page: size, total_pages: Math.ceil(120 / size), total_items: 120 } });
+  };
+  await refreshAxisArchive(db, request, AXIS_REFRESH_MS);
+  assert.deepEqual(calls, [1, 2, 2, 3]);
+  assert.equal(db.archiveState().last_error, 0);
+  assert.equal(db.readSeasonHistory(1, "all", AXIS_REFRESH_MS + 1).stale, false);
+});
+
+test("a dropped archive connection is retried like a stall", async (t) => {
+  const db = store(t), calls = [];
+  let dropped = true;
+  const request = async (url) => {
+    const page = Number(url.searchParams.get("page")), size = Number(url.searchParams.get("page_size"));
+    calls.push(page);
+    if (page === 2 && dropped) {
+      dropped = false;
+      throw Object.assign(new TypeError("terminated"), { cause: { name: "SocketError", code: "UND_ERR_SOCKET" } });
+    }
+    return Response.json({ data: Array.from({ length: Math.min(size, 120 - (page - 1) * size) }, (_, i) => historyMatch(120 - (page - 1) * size - i)),
+      pagination: { current_page: page, per_page: size, total_pages: Math.ceil(120 / size), total_items: 120 } });
+  };
+  await refreshAxisArchive(db, request, AXIS_REFRESH_MS);
+  assert.deepEqual(calls, [1, 2, 2, 3]);
+  assert.equal(db.archiveState().last_error, 0);
+});
+
+test("bootstrap head reads keep a single attempt", async (t) => {
+  const db = store(t), calls = [];
+  const request = async (url) => {
+    calls.push(Number(url.searchParams.get("page")));
+    throw new DOMException("The operation was aborted due to timeout", "TimeoutError");
+  };
+  await refreshAxisArchive(db, request, AXIS_REFRESH_MS, true, 0);
+  assert.deepEqual(calls, [1]);
+  assert.equal(db.archiveState().last_error, 1);
+});
+
 test("initial archive import stays bounded and resumes the next 50-match page", async (t) => {
   const db = store(t); const calls = [];
   const publish = db.publishArchiveBatch.bind(db), batches = [];

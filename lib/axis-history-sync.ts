@@ -7,7 +7,21 @@ export async function loadAxisHistory(page: number, defer?: (task: () => Promise
 }
 
 const pendingArchives = new WeakMap<AxisLeagueStore, Promise<void>>();
-export async function refreshAxisArchive(store: AxisLeagueStore, request: typeof fetch = fetch, now = Date.now(), headOnly = false) {
+const ARCHIVE_TIMEOUT_MS = 12_000;
+// NeatQueue sometimes stalls or drops the connection mid-body from the VPS. A
+// stall surfaces as a TimeoutError once the signal fires; a reset surfaces as
+// `TypeError: terminated` with a socket error cause even though the headers
+// already arrived. Both are worth one retry on a fresh connection; HTTP errors
+// and malformed payloads are not.
+function archiveRequestRetryable(error: unknown) {
+  if (typeof error !== "object" || error === null) return false;
+  const { name, message, cause } = error as { name?: unknown; message?: unknown; cause?: unknown };
+  if (name === "TimeoutError") return true;
+  if (name === "TypeError" && message === "terminated") return true;
+  const code = typeof cause === "object" && cause !== null ? (cause as { code?: unknown }).code : null;
+  return code === "UND_ERR_SOCKET" || code === "ECONNRESET" || code === "EPIPE";
+}
+export async function refreshAxisArchive(store: AxisLeagueStore, request: typeof fetch = fetch, now = Date.now(), headOnly = false, retries = 1) {
   const pending = pendingArchives.get(store);
   if (pending) return pending;
   if (!store.claimArchiveRefresh(now, headOnly)) return;
@@ -18,17 +32,24 @@ export async function refreshAxisArchive(store: AxisLeagueStore, request: typeof
     try {
       let progress = store.archiveState();
       const numbers = new Set(store.archiveMatchNumbers());
-      const signal = AbortSignal.timeout(12_000);
       const read = async (page: number, pageSize = AXIS_ARCHIVE_PAGE_SIZE) => {
         const url = new URL(AXIS_HISTORY_API_URL);
         url.search = new URLSearchParams({ page: String(page), page_size: String(pageSize), order: "desc" }).toString();
-        const response = await request(url, { cache: "no-store", signal });
-        if (!response.ok) throw new Error(`NeatQueue archive HTTP ${response.status}`);
-        const data = parseAxisHistory(await response.json(), page, pageSize);
-        pages.push(data);
-        for (const match of data.matches) numbers.add(match.number);
-        progress = advanceAxisArchiveState(progress, data, numbers.size);
-        return data;
+        // Every attempt gets its own budget: a slow head page must not starve the
+        // reconciliation reads, and a dropped connection gets a clean retry.
+        for (let attempt = 0; ; attempt++) {
+          try {
+            const response = await request(url, { cache: "no-store", signal: AbortSignal.timeout(ARCHIVE_TIMEOUT_MS) });
+            if (!response.ok) throw new Error(`NeatQueue archive HTTP ${response.status}`);
+            const data = parseAxisHistory(await response.json(), page, pageSize);
+            pages.push(data);
+            for (const match of data.matches) numbers.add(match.number);
+            progress = advanceAxisArchiveState(progress, data, numbers.size);
+            return data;
+          } catch (error) {
+            if (attempt >= retries || !archiveRequestRetryable(error)) throw error;
+          }
+        }
       };
       const complete = Boolean(progress.complete);
       const first = await read(1, headOnly && !complete ? AXIS_HISTORY_PAGE_SIZE : AXIS_ARCHIVE_PAGE_SIZE);
@@ -65,8 +86,9 @@ export async function refreshAxisArchive(store: AxisLeagueStore, request: typeof
 
 export async function loadAxisSeasonHistory(page: number, season: string, defer?: (task: () => Promise<void>) => void, matchNumber?: number, map?: string) {
   const store = await getAxisLeagueStore();
-  // Bootstrap only a small head page; never delay the first response for older seasons.
-  if (store.archiveState().updated_at == null) await refreshAxisArchive(store, fetch, Date.now(), true);
+  // Bootstrap only a small head page; never delay the first response for older
+  // seasons. No retry here: the visitor waits on this, so keep one 12 s budget.
+  if (store.archiveState().updated_at == null) await refreshAxisArchive(store, fetch, Date.now(), true, 0);
   // Also recover when the dedicated worker is absent. The shared lease prevents duplicate syncs.
   else defer?.(() => refreshAxisArchive(store, fetch, Date.now(), true));
   return matchNumber == null ? store.readSeasonHistory(page, season, undefined, map) : store.readMatchHistory(matchNumber);
