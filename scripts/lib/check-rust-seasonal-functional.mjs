@@ -116,7 +116,7 @@ export async function checkSeasonalFunctional({ tab, backend, context, evidence,
         await nojs.evaluate(`(()=>{const e=document.querySelector('main input[name=${name}]');e.focus();e.select()})()`);
         await nojs.send("Input.insertText", { text: value });
       }
-      const point = await nojs.evaluate("(()=>{const e=document.querySelector('main button[type=submit]');e.scrollIntoView({block:'center'});const b=e.getBoundingClientRect();return{x:b.left+b.width/2,y:b.top+b.height/2}})()");
+      const point = await nojs.evaluate("(()=>{const e=document.querySelector('main button[type=submit]');e.scrollIntoView({block:'center',behavior:'instant'});const b=e.getBoundingClientRect(),x=b.left+b.width/2,y=b.top+b.height/2,hit=document.elementFromPoint(x,y);if(!hit||!e.contains(hit))throw Error('Submit is not hittable');return{x,y}})()");
       await nojs.send("Input.dispatchMouseEvent", { type: "mousePressed", button: "left", clickCount: 1, ...point });
       await nojs.send("Input.dispatchMouseEvent", { type: "mouseReleased", button: "left", clickCount: 1, ...point });
       const applied = await until(() => nojs.evaluate(`(()=>{const p=new URL(location.href).searchParams;const n=Number(document.querySelector('.average-sampleline')?.textContent.replace(/\\D/g,''));return p.get('cycle')===${JSON.stringify(cycle)}&&p.get('min')==='900'&&p.get('max')==='1500'&&n>0&&n<300?{n,unknown:p.getAll('unknown')}:false})()`), 30000, "Seasonal native GET filters without WASM");

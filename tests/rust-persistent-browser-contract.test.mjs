@@ -26,6 +26,59 @@ test("persistent radio selectors parse for every functional control, including n
     if (value === "90d") assert.match(selector, /\[value="90d"\]/);
   }
 });
+test("actual mouse helper scrolls instantly and rejects an obscured target", async () => {
+  const found = {};
+  function visit(node) {
+    if (ts.isFunctionDeclaration(node) && ["point", "click"].includes(node.name?.text)) found[node.name.text] = node.getText(tree);
+    if (ts.isVariableStatement(node) && node.declarationList.declarations.some(d => d.name.getText(tree) === "visible")) found.visible = node.getText(tree);
+    ts.forEachChild(node, visit);
+  }
+  visit(tree); for (const name of ["point", "click", "visible"]) assert.ok(found[name]);
+  let top = 1400, blocked = false, scrollOptions; const child = { tagName: "SPAN", closest: () => ({ getAttribute: () => "/population/regular" }) };
+  const target = { textContent: "Regular", getClientRects: () => [{}], matches: () => false,
+    scrollIntoView(options) { scrollOptions = options; if (options.behavior === "instant") top = 100; },
+    getBoundingClientRect: () => ({ left: 10, top, width: 40, height: 20 }), contains: hit => hit === target || hit === child };
+  const overlay = { tagName: "D".repeat(100), closest: () => ({ getAttribute: () => "/" + "x".repeat(300) }) };
+  const document = { querySelectorAll: () => [target], elementFromPoint: (_x, y) => y >= 0 && y < 600 ? (blocked ? overlay : child) : null };
+  const getComputedStyle = () => ({ visibility: "visible", display: "block" });
+  const events = [], evidence = {}, tab = { async send(method, value) { events.push({ method, value }); } };
+  const evaluate = expression => runInNewContext(expression, { document, getComputedStyle });
+  const { point, click } = runInNewContext(found.visible + "\n" + found.point + "\n" + found.click + "\n({point,click})", { evaluate, tab, evidence });
+  target.scrollIntoView({ block: "center" });
+  assert.equal(target.getBoundingClientRect().top, 1400, "default smooth scrolling leaves the old offscreen rectangle in this model");
+  const location = await point("main a", "Regular");
+  assert.equal(scrollOptions.behavior, "instant"); assert.equal(location.x, 30); assert.equal(location.y, 110); assert.equal(location.hitTag, "SPAN"); assert.equal(location.hitHref, "/population/regular");
+  await click("main a", "Regular");
+  assert.deepEqual(events.map(event => event.value.type), ["mousePressed", "mouseReleased"]);
+  assert.ok(events.every(event => event.method === "Input.dispatchMouseEvent" && event.value.x === 30 && event.value.y === 110));
+  assert.equal(evidence.lastMouseTarget.dispatched, true); assert.equal(evidence.lastMouseTarget.hitHref, "/population/regular");
+  blocked = true;
+  await assert.rejects(click("a".repeat(250), "Regular"), error => {
+    const details = JSON.parse(error.message.split("Control is not hittable ")[1]);
+    assert.equal(details.selector.length, 200); assert.equal(details.x, 30); assert.equal(details.y, 110);
+    assert.equal(details.hitTag.length, 40); assert.equal(details.hitHref.length, 200); return true;
+  });
+  assert.equal(events.length, 2);
+});
+test("Seasonal no-JS submit uses an instant scroll and rejects an obscured point", async () => {
+  const source = await readFile(new URL("../scripts/lib/check-rust-seasonal-functional.mjs", import.meta.url), "utf8");
+  const parsed = ts.createSourceFile("seasonal-functional.mjs", source, ts.ScriptTarget.Latest, true, ts.ScriptKind.JS);
+  const expressions = [];
+  function visit(node) {
+    if (ts.isCallExpression(node) && node.expression.getText(parsed) === "nojs.evaluate" && ts.isStringLiteral(node.arguments[0]) && node.arguments[0].text.includes("main button[type=submit]")) expressions.push(node.arguments[0].text);
+    ts.forEachChild(node, visit);
+  }
+  visit(parsed); assert.equal(expressions.length, 1);
+  let top = 1400, blocked = false, options; const child = {}, overlay = {};
+  const target = { scrollIntoView(value) { options = value; if (value.behavior === "instant") top = 100; },
+    getBoundingClientRect: () => ({ left: 10, top, width: 40, height: 20 }), contains: value => value === child };
+  const document = { querySelector: () => target, elementFromPoint: () => blocked ? overlay : child };
+  target.scrollIntoView({ block: "center" }); assert.equal(target.getBoundingClientRect().top, 1400);
+  const point = runInNewContext(expressions[0], { document });
+  assert.equal(options.behavior, "instant"); assert.equal(point.x, 30); assert.equal(point.y, 110);
+  blocked = true; assert.throws(() => runInNewContext(expressions[0], { document }), /Submit is not hittable/);
+  assert.match(source, /Input\.dispatchMouseEvent/);
+});
 test("persistent observer requires actual300 profiles, all13 numeric values and both hydrated range controls", () => {
   const script = literal(tree, "instrumentation");
   let now = 1, changed;
