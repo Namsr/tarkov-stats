@@ -11,7 +11,7 @@ const source = await readFile(new URL("../scripts/benchmark-rust-arena-browser.m
 const tree = ts.createSourceFile("benchmark.mjs", source, ts.ScriptTarget.Latest, true, ts.ScriptKind.JS);
 const engineSource=await readFile(new URL("../scripts/lib/benchmark-rust-ui-browser.mjs",import.meta.url),"utf8");
 const engineTree=ts.createSourceFile("engine.mjs",engineSource,ts.ScriptTarget.Latest,true,ts.ScriptKind.JS);
-const names=["requireRunning","start","stop","cancel","until","browser","page"];
+const names=["requireRunning","start","stop","cancel","until","browser","page","totals","measurePage"];
 const declarations=[];
 function visit(node){if(ts.isFunctionDeclaration(node)&&names.includes(node.name?.text))declarations.push(node);ts.forEachChild(node,visit)}
 visit(engineTree);assert.equal(declarations.length,names.length);
@@ -19,7 +19,7 @@ const functions=declarations.map(node=>node.getText(engineTree)).join("\n");
 function lifecycle(extra = {}) {
   const context = { assert, spawn, basename, setTimeout, clearTimeout, delay, cancelled: false, results: {},
     owned: new Set(), profiles: new Set(), processLogs: [], process: { exitCode: 0 }, options: {profilePrefix:"tarkov-arena-cdp-"}, ...extra };
-  const api = runInNewContext(functions + "\n({start,stop,cancel,until,browser,page})", context);
+  const api = runInNewContext(functions + "\n({start,stop,cancel,until,browser,page,measurePage})", context);
   return { api, context };
 }
 function alive(pid) {
@@ -152,4 +152,48 @@ test("CDP evaluation keeps exception description and stack with a text-only fall
   await assert.rejects(tab.evaluate("expression"), /Execution failed/);
   exceptionDetails = null;
   assert.equal(await tab.evaluate("expression"), 42);
+});
+
+
+test("page records CDP clock anchors and mixed-case encoding in the actual raw sample", async () => {
+  const handlers = new Map(); let clock = 0;
+  const snapshot = { timeOrigin: 1700000000123, now: 2000, marker: "rust",
+    navigation: { ttfbMs: 10, loadMs: 300 }, fcpMs: 20, lcpMs: 30, cls: 0, usefulDomMs: 40, controlsReadyMs: 50, dom: { metrics: ["1"] } };
+  const emit = (name, value) => handlers.get(name)(value);
+  const cdp = { on(_session, name, handler) { handlers.set(name, handler); }, async send(method, params) {
+    if (method === "Target.createBrowserContext") return { browserContextId: "context" };
+    if (method === "Target.createTarget") return { targetId: "target" };
+    if (method === "Target.attachToTarget") return { sessionId: "session" };
+    if (method === "Network.setCookie") return { success: true };
+    if (method === "Runtime.evaluate") return { result: { value: params.expression === "performance.timeOrigin" ? 1 : snapshot } };
+    if (method === "Page.navigate") {
+      emit("Network.requestWillBeSent", { requestId: "doc", timestamp: 0, wallTime: 0, type: "Document", request: { url: "http://local/", method: "GET" } });
+      emit("Network.responseReceived", { requestId: "doc", timestamp: 0, response: { status: 200, mimeType: "text/html", headers: {} } });
+      emit("Network.loadingFinished", { requestId: "doc", timestamp: 0, encodedDataLength: 123 });
+      emit("Network.requestWillBeSent", { requestId: "wasm", timestamp: 10, wallTime: 1700000000, type: "Fetch", request: { url: "http://local/app.wasm", method: "GET" } });
+      emit("Network.responseReceived", { requestId: "wasm", timestamp: 11, response: { status: 200, mimeType: "application/wasm", fromDiskCache: true, fromServiceWorker: false, headers: { "Content-Encoding": "br" } } });
+      emit("Network.loadingFinished", { requestId: "wasm", timestamp: 12, encodedDataLength: 0 });
+      emit("Network.requestWillBeSent", { requestId: "failed", timestamp: 13, type: "Image", request: { url: "http://local/missing", method: "GET" } });
+      emit("Network.loadingFailed", { requestId: "failed", timestamp: 14, errorText: "blocked", canceled: true });
+      emit("Page.loadEventFired", {});
+    }
+    return {};
+  } };
+  const { api } = lifecycle({ Date: { now: () => (clock += 1000) }, URL,
+    conditions: { viewport: {}, cpuSlowdown: 4, locale: "ru-RU", network: {} }, instrumentation: "", options: { async validate() { return []; } } });
+  const tab = await api.page({ cdp }, "http://local/");
+  const sample = await api.measurePage(tab, "rust", "browser-cold", 0, false);
+  assert.equal(sample.timeOriginEpochMs, 1700000000123);
+  const doc = sample.requests.find(request => request.id === "doc");
+  assert.equal(doc.requestTimestampMonotonicSeconds, 0); assert.equal(doc.requestWallTimeUnixSeconds, 0);
+  assert.equal(doc.responseTimestampMonotonicSeconds, 0); assert.equal(doc.finishedTimestampMonotonicSeconds, 0);
+  assert.equal(doc.failedTimestampMonotonicSeconds, null);
+  const wasm = sample.requests.find(request => request.id === "wasm");
+  assert.equal(wasm.encoding, "br"); assert.equal(wasm.fromDiskCache, true); assert.equal(wasm.bytes, 0);
+  assert.equal(wasm.requestTimestampMonotonicSeconds, 10); assert.equal(wasm.requestWallTimeUnixSeconds, 1700000000);
+  assert.equal(wasm.responseTimestampMonotonicSeconds, 11); assert.equal(wasm.finishedTimestampMonotonicSeconds, 12);
+  const failed = sample.requests.find(request => request.id === "failed");
+  assert.equal(failed.requestWallTimeUnixSeconds, null); assert.equal(failed.responseTimestampMonotonicSeconds, null);
+  assert.equal(failed.finishedTimestampMonotonicSeconds, null); assert.equal(failed.failedTimestampMonotonicSeconds, 14);
+  assert.equal(failed.error, "blocked"); assert.equal(failed.canceled, true); assert.equal(failed.finished, true);
 });
