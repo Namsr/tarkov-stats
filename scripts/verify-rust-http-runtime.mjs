@@ -5,10 +5,13 @@ import { readFile } from "node:fs/promises";
 import { basename, join, resolve } from "node:path";
 
 const arguments_ = process.argv.slice(2);
-assert.ok(arguments_.length <= 1 && arguments_.every(arg => ["--arena-ui", "--pve-ui", "--regular-ui"].includes(arg)), "Usage: verify-rust-http-runtime.mjs [--arena-ui|--pve-ui|--regular-ui]");
+assert.ok(arguments_.length <= 1 && arguments_.every(arg => ["--arena-ui", "--pve-ui", "--regular-ui", "--seasonal-ui"].includes(arg)), "Usage: verify-rust-http-runtime.mjs [--arena-ui|--pve-ui|--regular-ui|--seasonal-ui]");
 const uiMode = arguments_[0]?.slice(2, -3) ?? null;
 const arenaUi = uiMode === "arena";
+const seasonalUi = uiMode === "seasonal";
+const uiPage = seasonalUi ? "pvp-season" : uiMode;
 if (arenaUi) await seedArenaFixture();
+else if (seasonalUi) await seedSeasonalFixture();
 else if (uiMode) await seedPersistentFixture(uiMode);
 
 const next = process.env.NEXT_HTTP_URL || "http://127.0.0.1:3000";
@@ -38,9 +41,9 @@ const headers = ["content-security-policy", "x-frame-options", "x-content-type-o
   "referrer-policy", "permissions-policy", "x-dns-prefetch-control", "strict-transport-security",
   "content-type", "cache-control", "allow", "location", "refresh", "access-control-allow-origin", "set-cookie"];
 const cases = uiMode ? ["GET", "HEAD", "POST", "OPTIONS"].flatMap(method => [
-  [method, `/average/${uiMode}?unknown=one&unknown=two`],
-  [method, `/average/${uiMode}/?unknown=one&unknown=two`],
-  [method, `/population/${uiMode}/?unknown=one&unknown=two`],
+  [method, `/average/${uiPage}?unknown=one&unknown=two`],
+  [method, `/average/${uiPage}/?unknown=one&unknown=two`],
+  [method, `/population/${uiPage}/?unknown=one&unknown=two`],
 ]) : [
   ["GET", "/api/seasonal/cohort"],
   ["GET", "/api/seasonal/cohort?aid=invalid&cycle=native-s1"],
@@ -65,7 +68,7 @@ for (const [method, path] of cases) {
   const [expected, actual] = replies;
   if (actual.status !== expected.status) mismatches.push({ method, path, field: "status", actual: actual.status, expected: expected.status });
   for (const name of headers) {
-    const earlyAlias = uiMode && path.startsWith(`/average/${uiMode}?`) && expected.status === 308;
+    const earlyAlias = uiMode && path.startsWith(`/average/${uiPage}?`) && expected.status === 308;
     const expectedValue = earlyAlias && securityHeaders.includes(name) && expected.headers.get(name) === null
       ? nextPolicy.headers.get(name) : expected.headers.get(name);
     if (actual.headers.get(name) !== expectedValue) {
@@ -86,7 +89,7 @@ if (!uiMode) console.log(JSON.stringify({ event: "rust_http_runtime_verified", c
 async function seedArenaFixture() {
   assert.equal(process.env.RUST_UI_RUNTIME_FIXTURE, "true", "Arena runtime fixture requires explicit opt-in");
   assert.equal(process.env.ARENA_UI_UPSTREAM, "web:3001");
-  for (const flag of ["SEASONAL_API_UPSTREAM", "HOME_SHOWCASE_API_UPSTREAM", "PVE_UI_UPSTREAM", "REGULAR_UI_UPSTREAM"]) assert.equal(process.env[flag] || "web:3000", "web:3000", `${flag}: verify independent Arena selection`);
+  for (const flag of ["SEASONAL_API_UPSTREAM", "HOME_SHOWCASE_API_UPSTREAM", "PVE_UI_UPSTREAM", "REGULAR_UI_UPSTREAM", "SEASONAL_POPULATION_UI_UPSTREAM"]) assert.equal(process.env[flag] || "web:3000", "web:3000", `${flag}: verify independent Arena selection`);
   assert.equal(process.env.AVERAGE_PUBLICATIONS_ENABLED, "false");
   assert.ok(process.env.SQLITE_PATH);
   assert.equal(basename(process.env.SQLITE_PATH), "rust-arena-runtime-smoke.db");
@@ -110,7 +113,7 @@ async function seedArenaFixture() {
 async function seedPersistentFixture(mode) {
   assert.equal(process.env.RUST_UI_RUNTIME_FIXTURE, "true", "Persistent runtime fixture requires explicit opt-in");
   assert.equal(process.env[`${mode.toUpperCase()}_UI_UPSTREAM`], "web:3001");
-  for (const flag of ["SEASONAL_API_UPSTREAM", "HOME_SHOWCASE_API_UPSTREAM", "ARENA_UI_UPSTREAM", "PVE_UI_UPSTREAM", "REGULAR_UI_UPSTREAM"].filter(flag => flag !== `${mode.toUpperCase()}_UI_UPSTREAM`)) assert.equal(process.env[flag] || "web:3000", "web:3000", `${flag}: verify independent ${mode} selection`);
+  for (const flag of ["SEASONAL_API_UPSTREAM", "HOME_SHOWCASE_API_UPSTREAM", "ARENA_UI_UPSTREAM", "PVE_UI_UPSTREAM", "REGULAR_UI_UPSTREAM", "SEASONAL_POPULATION_UI_UPSTREAM"].filter(flag => flag !== `${mode.toUpperCase()}_UI_UPSTREAM`)) assert.equal(process.env[flag] || "web:3000", "web:3000", `${flag}: verify independent ${mode} selection`);
   assert.equal(process.env.AVERAGE_PUBLICATIONS_ENABLED, "false");
   assert.ok(process.env.SQLITE_PATH);
   assert.equal(basename(process.env.SQLITE_PATH), `rust-${mode}-runtime-smoke.db`);
@@ -135,8 +138,36 @@ async function seedPersistentFixture(mode) {
   } finally { db.close(); }
 }
 
+async function seedSeasonalFixture() {
+  assert.equal(process.env.RUST_UI_RUNTIME_FIXTURE, "true", "Seasonal runtime fixture requires explicit opt-in");
+  assert.equal(process.env.SEASONAL_POPULATION_UI_UPSTREAM, "web:3001");
+  for (const flag of ["SEASONAL_API_UPSTREAM", "HOME_SHOWCASE_API_UPSTREAM", "ARENA_UI_UPSTREAM", "PVE_UI_UPSTREAM", "REGULAR_UI_UPSTREAM"]) assert.equal(process.env[flag] || "web:3000", "web:3000", `${flag}: verify independent Seasonal selection`);
+  assert.equal(process.env.AVERAGE_PUBLICATIONS_ENABLED, "false");
+  assert.equal(process.env.SEASONAL_ENABLED, "true");
+  assert.equal(process.env.SEASONAL_CYCLE_ID, "runtime-smoke-s1");
+  assert.ok(process.env.SQLITE_PATH && process.env.PROGRESSION_SQLITE_PATH);
+  assert.equal(basename(process.env.SQLITE_PATH), "rust-seasonal-runtime-smoke.db");
+  assert.equal(basename(process.env.PROGRESSION_SQLITE_PATH), "rust-seasonal-runtime-progression.db");
+  const { DatabaseSync } = await import("node:sqlite");
+  const { initializeSeasonalSchema } = await import("../lib/seasonal/storage.ts");
+  const db = new DatabaseSync(process.env.PROGRESSION_SQLITE_PATH);
+  try {
+    for (const table of ["player_profiles", "progression_snapshots", "season_cycles"]) {
+      const exists = db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?").get(table);
+      if (exists) assert.equal(db.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get().n, 0, "refuse to modify a populated database");
+    }
+    initializeSeasonalSchema(db);
+    db.prepare("INSERT INTO season_cycles(mode,cycle_id,starts_at,enabled,upstream_contract) VALUES('seasonal',?,1,1,'direct_profile')").run(process.env.SEASONAL_CYCLE_ID);
+    const profile = db.prepare(`INSERT INTO player_profiles(mode,cycle_id,aid,nickname,profile_updated_at,last_access_at,lifetime_pvp_hours,experience,pmc_raids,scav_raids,pmc_survived,pmc_deaths,pmc_kills,killed_pmc,first_seen_at,last_seen_at,confirmed_banned) VALUES('seasonal',?,?,'fixture',?,?,?,1000,100,20,50,50,100,40,1,?,0)`);
+    const snapshot = db.prepare(`INSERT INTO progression_snapshots(mode,cycle_id,aid,profile_updated_at,upstream_updated_at,captured_at,local_date,hours,total_raids,pmc_raids,scav_raids,survived,pmc_survived,deaths,pmc_deaths,pmc_kills,total_kills,killed_pmc,run_through,level,prestige,longest_win_streak,achievements) VALUES('seasonal',?,?,?,?,?,'2026-01-01',99999,120,100,20,60,50,60,50,100,150,40,0,25,0,4,'[]')`);
+    const now = Date.now(); db.exec("BEGIN");
+    try { for (let aid = 1; aid <= 30; aid++) { profile.run(process.env.SEASONAL_CYCLE_ID, aid, now, now, 100 + aid, now); snapshot.run(process.env.SEASONAL_CYCLE_ID, aid, now, now, now); } db.exec("COMMIT"); }
+    catch (error) { db.exec("ROLLBACK"); throw error; }
+  } finally { db.close(); }
+}
+
 if (uiMode) {
-  const response = await fetch(`${native}/population/${uiMode}`, { headers: { cookie: "lang=en" }, signal: AbortSignal.timeout(15000) });
+  const response = await fetch(`${native}/population/${uiPage}`, { headers: { cookie: "lang=en" }, signal: AbortSignal.timeout(15000) });
   assert.equal(response.status, 200);
   assert.equal(response.headers.get("content-type"), "text/html; charset=utf-8");
   assert.equal(response.headers.get("cache-control"), "no-store");
@@ -161,9 +192,11 @@ if (uiMode) {
     assert.equal(initial.meta.context_status, 200);
   } else {
     assert.equal(initial.state.mode, uiMode);
+    if (seasonalUi) { assert.equal(initial.state.cycle_id, process.env.SEASONAL_CYCLE_ID); assert.equal(initial.seasonal_cycle, process.env.SEASONAL_CYCLE_ID); }
     for (const reply of [initial.selected, initial.context]) {
       assert.equal(reply.status, 200);
       assert.equal(reply.body.mode, uiMode);
+      if (seasonalUi) assert.equal(reply.body.cycleId, process.env.SEASONAL_CYCLE_ID);
       assert.equal(reply.body.total, 30);
       assert.equal(reply.body.averages.n, 30, "useful data must already exist before browser code");
       assert.equal(reply.body.averages.kd_ratio, 2.5);
@@ -196,7 +229,7 @@ if (uiMode) {
       assert.match(disk.toString("utf8"), new RegExp(`export function ${island}_[0-9]+\\(`), "the shipped client must include this page's actual WASM island entrypoint");
     }
   }
-  const head = await fetch(`${native}/population/${uiMode}`, { method: "HEAD", signal: AbortSignal.timeout(5000) });
+  const head = await fetch(`${native}/population/${uiPage}`, { method: "HEAD", signal: AbortSignal.timeout(5000) });
   assert.equal(head.status, 200); assert.equal(await head.text(), "");
   console.log(JSON.stringify({ event: `rust_${uiMode}_ui_runtime_verified`, sampleN: 30, assets: 3,
     scope: `Synthetic production-image Rust SSR, shipped WASM/CSS and immutable asset HTTP; ${uiMode} UI-only opt-in, not browser hydration or a VPS/performance test` }));

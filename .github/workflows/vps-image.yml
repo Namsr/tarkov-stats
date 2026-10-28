@@ -206,6 +206,27 @@ jobs:
             cleanup
             owned=''
           done
+      - name: Verify the independently enabled Rust Seasonal population UI runtime
+        run: |
+          docker run --detach --network none --memory 896m --memory-swap 896m --read-only --pids-limit 256 \
+            --cap-drop ALL --security-opt no-new-privileges \
+            --tmpfs /data:rw,noexec,nosuid,nodev,size=64m,uid=1001,gid=1001,mode=0700 \
+            --tmpfs /tmp:rw,noexec,nosuid,nodev,size=32m,mode=1777 \
+            --tmpfs /app/.next/cache:rw,noexec,nosuid,nodev,size=32m,uid=1001,gid=1001,mode=0700 \
+            --env WEB_BACKGROUND_WORKERS=false --env SEASONAL_API_UPSTREAM=web:3000 \
+            --env HOME_SHOWCASE_API_UPSTREAM=web:3000 --env ARENA_UI_UPSTREAM=web:3000 \
+            --env REGULAR_UI_UPSTREAM=web:3000 --env PVE_UI_UPSTREAM=web:3000 \
+            --env SEASONAL_POPULATION_UI_UPSTREAM=web:3001 --env SEASONAL_ENABLED=true \
+            --env SEASONAL_CYCLE_ID=runtime-smoke-s1 --env SEASONAL_STARTS_AT=2020-01-01 \
+            --env SEASONAL_COLLECTION_SOURCE=operator --env SEASONAL_UPSTREAM_CONTRACT=direct_profile \
+            --env 'SEASONAL_PROFILE_URL_TEMPLATE=https://players.tarkov.dev/pvp-season/{aid}.json' \
+            --env AVERAGE_PUBLICATIONS_ENABLED=false --env RUST_UI_RUNTIME_FIXTURE=true \
+            --env SQLITE_PATH=/data/rust-seasonal-runtime-smoke.db \
+            --env PROGRESSION_SQLITE_PATH=/data/rust-seasonal-runtime-progression.db \
+            --env AVERAGE_PUBLICATION_SQLITE_PATH=/data/rust-seasonal-runtime-cache.db \
+            --name rust-seasonal-ui-smoke "tarkovstats-web:$GITHUB_SHA"
+          trap 'docker logs rust-seasonal-ui-smoke; docker rm --force rust-seasonal-ui-smoke' EXIT
+          docker exec rust-seasonal-ui-smoke node --experimental-strip-types --experimental-sqlite scripts/verify-rust-http-runtime.mjs --seasonal-ui
       - name: Benchmark isolated TypeScript and Rust API workloads
         timeout-minutes: 20
         run: bash scripts/benchmark-rust-container.sh "tarkovstats-web:$GITHUB_SHA" "$RUNNER_TEMP/rust-linux-benchmark"

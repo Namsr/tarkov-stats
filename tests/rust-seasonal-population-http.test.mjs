@@ -54,6 +54,45 @@ function parity(got, wanted, context) {
   if (expectedAt === null) assert.equal(actualAt, null, context); else assert.match(actualAt ?? "", /^[1-9]\d*$/, context);
 }
 
+// Complete every teardown step before surfacing either diagnostics or cleanup failures.
+async function cleanup({ servers, pub, sockets, proxy, fixture, restore, diagnostics }) {
+  const errors = [], logs = [];
+  const attempt = async action => { try { await action(); } catch (error) { errors.push(error); } };
+  for (const server of [...servers].reverse()) {
+    await attempt(() => server.stop());
+    await attempt(() => { logs.push(server.logs()); });
+  }
+  await attempt(() => pub.resetAveragePublicationForTests());
+  for (const socket of sockets) await attempt(() => socket.destroy());
+  await attempt(() => new Promise((resolve, reject) => proxy.close(error => error ? reject(error) : resolve())));
+  await attempt(() => fixture.cleanup());
+  await attempt(restore);
+  for (const log of logs) await attempt(() => assert.doesNotMatch(log, /unexpected-upstream-fetch:/));
+  await attempt(diagnostics);
+  if (errors.length) throw new AggregateError(errors, "Seasonal GET fixture cleanup failed");
+}
+
+test("cleanup still closes every resource and reports both fetch and teardown failures", async () => {
+  const calls = [];
+  const servers = [
+    { stop: async () => { calls.push("first-stop"); }, logs: () => "" },
+    { stop: async () => { calls.push("second-stop"); throw new Error("stop failed"); }, logs: () => "unexpected-upstream-fetch:fixture" },
+  ];
+  const values = { servers, pub: { resetAveragePublicationForTests: () => calls.push("reset") },
+    sockets: [{ destroy: () => calls.push("socket") }], proxy: { close: done => { calls.push("proxy"); done(); } },
+    fixture: { cleanup: () => calls.push("fixture") }, restore: () => calls.push("restore"),
+    diagnostics: () => { calls.push("diagnostics"); throw new Error("proxy fallback"); } };
+  await assert.rejects(cleanup(values), error => error instanceof AggregateError && error.errors.length === 3 &&
+    error.errors.some(item => /stop failed/.test(item.message)) && error.errors.some(item => /unexpected-upstream-fetch/.test(item.message)) &&
+    error.errors.some(item => /proxy fallback/.test(item.message)));
+  assert.deepEqual(calls, ["second-stop", "first-stop", "reset", "socket", "proxy", "fixture", "restore", "diagnostics"]);
+  calls.length = 0;
+  values.servers[1] = { stop: async () => calls.push("second-stop"), logs: () => "" };
+  values.diagnostics = () => calls.push("diagnostics");
+  await cleanup(values);
+  assert.deepEqual(calls, ["second-stop", "first-stop", "reset", "socket", "proxy", "fixture", "restore", "diagnostics"]);
+});
+
 test("Seasonal GET contracts match actual TS handlers and publication state", { timeout: 180000 }, async t => {
   const previous = { ...process.env };
   const fixture = await createSeasonalPopulationFixture("rust-seasonal-population-http-");
@@ -76,13 +115,12 @@ test("Seasonal GET contracts match actual TS handlers and publication state", { 
   Object.assign(process.env, environment);
   const pub = await import("../lib/average-publication.ts");
   t.after(async () => {
-    for (const server of servers.reverse()) { await server.stop(); assert.doesNotMatch(server.logs(), /unexpected-upstream-fetch:/); }
-    pub.resetAveragePublicationForTests();
-    for (const socket of sockets) socket.destroy(); await new Promise(resolve => proxy.close(resolve));
-    await fixture.cleanup();
-    for (const key of Object.keys(process.env)) if (!(key in previous)) delete process.env[key];
-    Object.assign(process.env, previous);
-    assert.deepEqual(blocked, [], "fresh validated metadata must avoid native fallback (loopback deny-proxy, not OS network isolation)");
+    const restore = () => {
+      for (const key of Object.keys(process.env)) if (!(key in previous)) delete process.env[key];
+      Object.assign(process.env, previous);
+    };
+    const diagnostics = () => assert.deepEqual(blocked, [], "fresh validated metadata must avoid native fallback (loopback deny-proxy, not OS network isolation)");
+    await cleanup({ servers, pub, sockets, proxy, fixture, restore, diagnostics });
   });
   fixture.seed(seasonalPopulationRows(61), Date.now());
   const native = async extra => { const server = await startRustBackend({ ...environment, ...extra }); servers.push(server); return server; };

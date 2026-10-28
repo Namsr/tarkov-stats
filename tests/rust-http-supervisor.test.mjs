@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import test from "node:test";
+import { startRustBackend } from "./fixtures/rust-seasonal-http.mjs";
 
 const entry = resolve("scripts/start-web.mjs");
 const binary = process.env.RUST_BACKEND_BIN || resolve("rust/backend/target/release", `tarkov-backend${process.platform === "win32" ? ".exe" : ""}`);
@@ -216,7 +217,7 @@ test("persistent UI selectors independently reject invalid routing, missing bina
 test("persistent UI-only and combined selections use one ready Rust server without enabling other pages", { timeout: 60000 }, async t => {
   const assets = process.env.RUST_PERSISTENT_UI_ASSETS || resolve("public/_rust/persistent");
   assert.ok(existsSync(join(assets, "manifest.json")), "build real persistent UI assets before supervisor checks");
-  const combinations = [{ SEASONAL_POPULATION_UI_UPSTREAM: "web:3001" }, { SEASONAL_POPULATION_UI_UPSTREAM: "web:3001", SEASONAL_API_UPSTREAM: "web:3001" }, { PVE_UI_UPSTREAM: "web:3001" }, { REGULAR_UI_UPSTREAM: "web:3001" }, { PVE_UI_UPSTREAM: "web:3001", REGULAR_UI_UPSTREAM: "web:3001" },
+  const combinations = [{ SEASONAL_API_UPSTREAM: "web:3001" }, { SEASONAL_POPULATION_UI_UPSTREAM: "web:3001" }, { SEASONAL_POPULATION_UI_UPSTREAM: "web:3001", SEASONAL_API_UPSTREAM: "web:3001" }, { PVE_UI_UPSTREAM: "web:3001" }, { REGULAR_UI_UPSTREAM: "web:3001" }, { PVE_UI_UPSTREAM: "web:3001", REGULAR_UI_UPSTREAM: "web:3001" },
     { SEASONAL_POPULATION_UI_UPSTREAM: "web:3001", PVE_UI_UPSTREAM: "web:3001", REGULAR_UI_UPSTREAM: "web:3001", ARENA_UI_UPSTREAM: "web:3001", HOME_SHOWCASE_API_UPSTREAM: "web:3001", SEASONAL_API_UPSTREAM: "web:3001" }];
   for (const selection of combinations) {
     const run = await fixture(t, { ...selection, RUST_PERSISTENT_UI_ASSETS: assets, RUST_UI_ASSETS: resolve("public/_rust/arena") });
@@ -308,4 +309,44 @@ test("persistent image fixture guards reject accidental data writes before datab
     assert.ok(stderr.includes(optIn ? `rust-${mode}-runtime-smoke.db` : "Persistent runtime fixture requires explicit opt-in"));
     assert.equal(existsSync(path), false);
   }
+});
+
+
+test("Seasonal image verifier is independently selected and refuses unguarded fixture writes", { timeout: 10000 }, async () => {
+  const workflow = await readFile(".github/workflows/vps-image.yml", "utf8");
+  assert.ok(workflow.includes("scripts/verify-rust-http-runtime.mjs --seasonal-ui"));
+  assert.ok(workflow.includes("SEASONAL_POPULATION_UI_UPSTREAM=web:3001"));
+  assert.ok(workflow.includes("PROGRESSION_SQLITE_PATH=/data/rust-seasonal-runtime-progression.db"));
+  const path = join(tmpdir(), `blocked-seasonal-runtime-${process.pid}-${Date.now()}.db`);
+  const child = spawn(process.execPath, [resolve("scripts/verify-rust-http-runtime.mjs"), "--seasonal-ui"], {
+    windowsHide: true, env: { ...process.env, RUST_UI_RUNTIME_FIXTURE: "false", SQLITE_PATH: path }, stdio: ["ignore", "ignore", "pipe"],
+  });
+  let stderr = ""; child.stderr.on("data", chunk => { stderr += chunk; });
+  const code = await new Promise((resolve, reject) => { child.once("error", reject); child.once("close", resolve); });
+  assert.notEqual(code, 0); assert.match(stderr, /Seasonal runtime fixture requires explicit opt-in/); assert.equal(existsSync(path), false);
+});
+
+
+test("Seasonal verifier seeds a private fixture and checks native SSR and assets", { timeout: 120000 }, async t => {
+  const directory = await mkdtemp(join(tmpdir(), "rust-seasonal-verifier-"));
+  const environment = { NODE_ENV: "production", RUST_UI_RUNTIME_FIXTURE: "true", SEASONAL_POPULATION_UI_UPSTREAM: "web:3001",
+    SEASONAL_API_UPSTREAM: "web:3000", HOME_SHOWCASE_API_UPSTREAM: "web:3000", ARENA_UI_UPSTREAM: "web:3000", PVE_UI_UPSTREAM: "web:3000", REGULAR_UI_UPSTREAM: "web:3000",
+    SEASONAL_ENABLED: "true", SEASONAL_CYCLE_ID: "runtime-smoke-s1", SEASONAL_STARTS_AT: "2020-01-01", SEASONAL_ENDS_AT: "", SEASONAL_COLLECTION_SOURCE: "operator",
+    SEASONAL_UPSTREAM_CONTRACT: "direct_profile", SEASONAL_PROFILE_URL_TEMPLATE: "https://players.tarkov.dev/pvp-season/{aid}.json", AVERAGE_PUBLICATIONS_ENABLED: "false",
+    SQLITE_PATH: join(directory, "rust-seasonal-runtime-smoke.db"), PROGRESSION_SQLITE_PATH: join(directory, "rust-seasonal-runtime-progression.db"),
+    AVERAGE_PUBLICATION_SQLITE_PATH: join(directory, "rust-seasonal-runtime-cache.db"), RUST_PERSISTENT_UI_ASSETS: resolve("public/_rust/persistent"),
+    RUST_COHORT_BIN: resolve("rust/cohort-worker/target/release", `tarkov-cohort-worker${process.platform === "win32" ? ".exe" : ""}`), OBSERVABILITY_SAMPLE_RATE: "0" };
+  const backend = await startRustBackend(environment);
+  t.after(async () => { await backend.stop(); assert.equal(dirname(resolve(directory)), resolve(tmpdir())); assert.ok(basename(directory).startsWith("rust-seasonal-verifier-")); await rm(directory, { recursive: true, force: true }); });
+  // Both URLs intentionally point to the real native server in this source-level
+  // test; production-image CI supplies real Next and Rust listeners separately.
+  const run = () => new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, ["--experimental-strip-types", "--experimental-sqlite", "scripts/verify-rust-http-runtime.mjs", "--seasonal-ui"], {
+      env: { ...process.env, ...environment, NEXT_HTTP_URL: backend.base, RUST_HTTP_URL: backend.base }, windowsHide: true, stdio: ["ignore", "pipe", "pipe"],
+    });
+    let output = ""; for (const stream of [child.stdout, child.stderr]) stream.on("data", chunk => { output += chunk; });
+    child.once("error", reject); child.once("close", code => resolve({ code, output }));
+  });
+  const first = await run(); assert.equal(first.code, 0, first.output); assert.match(first.output, /rust_seasonal_ui_runtime_verified/);
+  const second = await run(); assert.notEqual(second.code, 0); assert.match(second.output, /refuse to modify a populated database/);
 });

@@ -1,16 +1,18 @@
-# Regular and PvE population pages in Rust
+# Population pages in Rust
 
-This slice moves `/population/regular` and `/population/pve`, their legacy
-`/average/<mode>` redirects, population data, progression projection and
-achievement aggregation into the existing Rust server and Rust/WASM client.
+This slice moves `/population/regular`, `/population/pve` and
+`/population/pvp-season`, their legacy `/average/<mode>` redirects, population
+data, progression projection and achievement aggregation into the existing Rust
+server and Rust/WASM client.
 It does not finish the application migration: profiles, auth, support,
 analytics, collectors, schema/bootstrap ownership and other pages still need
 Rust implementations before Node/Next can be removed.
 
 ## Runtime and rollout
 
-`REGULAR_UI_UPSTREAM` and `PVE_UI_UPSTREAM` independently select `web:3000`
-(default Next) or `web:3001` (Rust). A single Rust process serves all selected
+`REGULAR_UI_UPSTREAM`, `PVE_UI_UPSTREAM` and `SEASONAL_POPULATION_UI_UPSTREAM`
+independently select `web:3000` (default Next) or `web:3001` (Rust). The Seasonal
+population selector is independent of `SEASONAL_API_UPSTREAM` for cohort requests. A single Rust process serves all selected
 native boundaries; there is no extra container allocation. Both Compose web
 and Caddy receive the same selectors. The selected population document,
 immutable assets and these API branches move together:
@@ -72,7 +74,8 @@ refresh runs outside the shared statistical compute child. Defensive caps:
 baseline payload. Current upstream sizes were checked once for headroom;
 this does not prove unlimited future growth. Existing analytics records some
 HTTP503 achievement failures as status500; this slice preserves that source
-behavior. Seasonal achievements are not routed to this native service.
+behavior. Seasonal achievement reads use the selected Seasonal publication and
+bilingual reference cache.
 
 Existing database schemas must already be initialized by their current owner.
 The read-only population/progression path does not take over schema migrations
@@ -106,8 +109,10 @@ histogram/range/XP functions and cover SSR structure. Supervision/proxy/deploy
 checks exercise independent selectors, one Rust process, immutable assets,
 shared admission and compatible rollback labels.
 
-The production-image CI verifier checks each mode independently with a private
-30-row real SQLite fixture and shipped asset hashes/entrypoints. Full browser
+The production-image CI verifier checks Regular, PvE and Seasonal independently
+with private 30-row real SQLite fixtures and shipped asset hashes/entrypoints.
+The Seasonal fixture uses its own progression database and does not exercise
+browser hydration or external reference-network access. Full browser
 acceptance must use actual production-image Next and Rust implementations,
 identical fixtures and real hydration; compilation or SSR strings alone do not
 prove it. No timing/load/browser performance experiments run on the user's

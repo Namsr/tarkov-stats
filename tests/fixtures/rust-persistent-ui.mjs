@@ -12,6 +12,7 @@ import { startRustBackend } from "./rust-seasonal-http.mjs";
 import { readBuiltAssets } from "./rust-arena-ui.mjs";
 
 export const PERSISTENT_MODES = ["pve", "regular"];
+export const SEASONAL_UI_CYCLE = "native-s1";
 export const PERSISTENT_ASSETS_ROOT = resolve(process.env.RUST_PERSISTENT_UI_ASSETS || "public/_rust/persistent");
 export const persistentAssets = () => readBuiltAssets(PERSISTENT_ASSETS_ROOT);
 export function progressionPayload(mode, count, now = Date.now()) {
@@ -23,7 +24,7 @@ export function progressionPayload(mode, count, now = Date.now()) {
     tempo: { kind: "tempo", overall: [], n: 0, confidence: 0, freshnessAt: now },
   } };
 }
-export async function createPersistentUiFixture({ prefix = "rust-persistent-ui-", rows = 300, includeArena = false } = {}) {
+export async function createPersistentUiFixture({ prefix = "rust-persistent-ui-", rows = 300, includeArena = false, includeSeasonal = false } = {}) {
   const population = await createPopulationFixture(prefix);
   let progression; let denyProxy; const sockets=new Set(); const blockedOutbound=[];
   try {
@@ -38,6 +39,23 @@ export async function createPersistentUiFixture({ prefix = "rust-persistent-ui-"
     const insert=population.db.prepare(`INSERT INTO arena_mode_stats(${columns.join(",")})VALUES(${columns.map(()=>"?").join(",")})`);
     population.db.exec("BEGIN");try{for(const arenaMode of["overall","teamFight","lastHero","checkpoint","blastGang","shootOutDuo"])for(const row of syntheticArenaRows(rows,{arenaMode})){const complete={...row,upstream_version:1,parser_version:ARENA_PARSER_VERSION,raw_json:"{}",fetched_at:now};insert.run(...columns.map(key=>complete[key]));}population.db.exec("COMMIT");}catch(error){population.db.exec("ROLLBACK");throw error;}
   }
+  if (includeSeasonal) {
+    const { initializeSeasonalSchema } = await import("../../lib/seasonal/storage.ts");
+    initializeSeasonalSchema(progression);
+    progression.prepare("INSERT OR IGNORE INTO season_cycles(mode,cycle_id,starts_at,enabled,upstream_contract) VALUES('seasonal',?,1,1,'direct_profile')").run(SEASONAL_UI_CYCLE);
+    const profile = progression.prepare(`INSERT INTO player_profiles(mode,cycle_id,aid,nickname,profile_updated_at,last_access_at,lifetime_pvp_hours,experience,pmc_raids,scav_raids,pmc_survived,pmc_deaths,pmc_kills,killed_pmc,first_seen_at,last_seen_at,confirmed_banned) VALUES('seasonal',?,?,'synthetic',?,?,?,1000,100,20,50,50,100,40,1,?,0)`);
+    const snapshot = progression.prepare(`INSERT INTO progression_snapshots(mode,cycle_id,aid,profile_updated_at,upstream_updated_at,captured_at,local_date,hours,total_raids,pmc_raids,scav_raids,survived,pmc_survived,deaths,pmc_deaths,pmc_kills,total_kills,killed_pmc,run_through,level,prestige,longest_win_streak,achievements) VALUES('seasonal',?,?,?,?,?,'2026-01-01',99999,120,100,20,60,50,60,50,100,?,40,0,25,0,4,'[]')`);
+    progression.exec("BEGIN");
+    try {
+      for (let aid = 1; aid <= rows; aid++) {
+        const activity = now - (aid % 5 === 0 ? 100 : 10) * 86400000;
+        profile.run(SEASONAL_UI_CYCLE, aid, activity, activity, 100 + aid * 10, now);
+        snapshot.run(SEASONAL_UI_CYCLE, aid, now - 2000, now - 2000, now, 60);
+        snapshot.run(SEASONAL_UI_CYCLE, aid, now - 1000, now - 1000, now, 150);
+      }
+      progression.exec("COMMIT");
+    } catch (error) { progression.exec("ROLLBACK"); throw error; }
+  }
   const referenceDirectory = join(population.directory, "reference");
   mkdirSync(referenceDirectory);
   const metadata = Array.from({ length: 8 }, (_, i) => ({ id: `fixture-achievement-${i + 1}`,
@@ -46,6 +64,7 @@ export async function createPersistentUiFixture({ prefix = "rust-persistent-ui-"
     imageUrl: i === 0 ? "https://assets.tarkov.dev/fixture-missing.webp" : null, side: "pmc", rarity: ["common", "rare", "seasonal", "legendary"][i % 4],
     playersCompletedPercent: i / 10, adjustedPlayersCompletedPercent: i / 5 }));
   writeFileSync(join(referenceDirectory, "achievements-regular.json"), JSON.stringify({ version: 2, mode: "regular", savedAt: now, entries: metadata }));
+  if (includeSeasonal) writeFileSync(join(referenceDirectory, "achievements-seasonal.json"), JSON.stringify({ version: 2, mode: "seasonal", savedAt: now, entries: metadata }));
   // Exercise the real TS disk-cache parser under a rejecting fixture-only fetch.
   // An invalid fresh cache must fail before a native process can try its fallback.
   const previousFetch=globalThis.fetch,previousCache=process.env.ACHIEVEMENTS_CACHE_DIR;
@@ -53,7 +72,9 @@ export async function createPersistentUiFixture({ prefix = "rust-persistent-ui-"
   globalThis.fetch=async(input)=>{setupAttempts.push(String(input));throw new Error("Private fixture cache validation forbids networking");};
   try {
     const {getAchievements}=await import("../../lib/tarkov-api.ts");const actual=await getAchievements("regular");
-    assert.equal(actual.size,8);assert.equal(actual.get(metadata[0].id)?.nameRu,metadata[0].nameRu);assert.deepEqual(setupAttempts,[]);
+    assert.equal(actual.size,8);assert.equal(actual.get(metadata[0].id)?.nameRu,metadata[0].nameRu);
+    if (includeSeasonal) { const seasonal = await getAchievements("seasonal"); assert.equal(seasonal.size, 8); assert.equal(seasonal.get(metadata[0].id)?.nameRu, metadata[0].nameRu); }
+    assert.deepEqual(setupAttempts,[]);
   }finally{globalThis.fetch=previousFetch;if(previousCache===undefined)delete process.env.ACHIEVEMENTS_CACHE_DIR;else process.env.ACHIEVEMENTS_CACHE_DIR=previousCache;}
   denyProxy=createServer((request,response)=>{blockedOutbound.push(request.url);request.resume();response.writeHead(403);response.end();});
   denyProxy.maxConnections=16;
@@ -73,7 +94,10 @@ export async function createPersistentUiFixture({ prefix = "rust-persistent-ui-"
     SEASONAL_API_UPSTREAM: "web:3000", HOME_SHOWCASE_API_UPSTREAM: "web:3000",
     HTTP_PROXY:proxyUrl,HTTPS_PROXY:proxyUrl,ALL_PROXY:proxyUrl,http_proxy:proxyUrl,https_proxy:proxyUrl,all_proxy:proxyUrl,
     NO_PROXY:"127.0.0.1,localhost,::1",no_proxy:"127.0.0.1,localhost,::1",
-    TRUSTED_IP_HEADER: "x-real-ip", OBSERVABILITY_SAMPLE_RATE: "0", SEASONAL_ENABLED: "false" };
+    TRUSTED_IP_HEADER: "x-real-ip", OBSERVABILITY_SAMPLE_RATE: "0", SEASONAL_ENABLED: "false", SEASONAL_POPULATION_UI_UPSTREAM: "web:3000",
+    ...(includeSeasonal ? { SEASONAL_ENABLED: "true", SEASONAL_CYCLE_ID: SEASONAL_UI_CYCLE,
+      SEASONAL_STARTS_AT: "2020-01-01", SEASONAL_ENDS_AT: "", SEASONAL_COLLECTION_SOURCE: "operator",
+      SEASONAL_UPSTREAM_CONTRACT: "direct_profile", SEASONAL_PROFILE_URL_TEMPLATE: "https://players.tarkov.dev/pvp-season/{aid}.json" } : {}) };
   const servers = [];
   let variant = 0; let cacheSerial = 0;
   let closed = false;
@@ -89,8 +113,20 @@ export async function createPersistentUiFixture({ prefix = "rust-persistent-ui-"
     population.db.prepare("INSERT INTO achievement_baseline_publications(mode,generation,generated_at,total,achievements_json) VALUES(?,1,?,?,?) ON CONFLICT(mode)DO UPDATE SET generated_at=excluded.generated_at,total=excluded.total,achievements_json=excluded.achievements_json")
       .run(mode, now, rows, JSON.stringify(values));
   }
+  function publishSeasonalProgression(generatedAt = now, generation = 1) {
+    const average = { ...progressionPayload("seasonal", rows, now), cycleId: SEASONAL_UI_CYCLE, population: { n: rows } };
+    delete average.axis;
+    const achievementBaseline = { eligibleN: rows, achievements: metadata.map((entry, i) => ({ id: entry.id, owners: Math.max(0, rows - i * 20),
+      samplePct: Math.max(0, rows - i * 20) / rows * 100, meanHours: 25.5 + i * 15, stdHours: i + 1, earlyHours: 5 + i, unlockHours: i === 0 ? 0 : 5 + i })) };
+    progression.prepare("INSERT OR REPLACE INTO progression_population_generations(mode,cycle_id,generation,generated_at,payload) VALUES('seasonal',?,?,?,?)")
+      .run(SEASONAL_UI_CYCLE, generation, generatedAt, JSON.stringify({ average, metrics: {}, riskBaselines: [], achievementBaseline }));
+    progression.prepare("INSERT OR REPLACE INTO progression_population_current(mode,cycle_id,generation,generated_at) VALUES('seasonal',?,?,?)")
+      .run(SEASONAL_UI_CYCLE, generation, generatedAt);
+    return average;
+  }
   for (const mode of PERSISTENT_MODES) { publishProgression(mode); publishAchievements(mode); }
-  return { ...population, configured, rows, metadata, progression, referenceDirectory, publishProgression, publishAchievements,blockedOutbound,
+  if (includeSeasonal) publishSeasonalProgression();
+  return { ...population, configured, rows, metadata, progression, referenceDirectory, publishProgression, publishAchievements, publishSeasonalProgression,blockedOutbound,
     referenceAccess:{cache:"fresh v2 metadata validated through actual TypeScript parser",nativeGuard:"owned loopback deny-proxy via verified reqwest env support; not OS network isolation"},
     async start(env = {}) { assert.equal(closed, false); const server = await startRustBackend({ ...configured, AVERAGE_PUBLICATION_SQLITE_PATH: join(population.directory, `statistics-${cacheSerial++}.db`), ...env }); servers.push(server); return server; },
     cloneAssets(assets = persistentAssets()) {

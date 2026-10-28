@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { readFileSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import test from "node:test";
-import { createPersistentUiFixture, persistentAssets, PERSISTENT_MODES } from "./fixtures/rust-persistent-ui.mjs";
+import { createPersistentUiFixture, persistentAssets, PERSISTENT_MODES, SEASONAL_UI_CYCLE } from "./fixtures/rust-persistent-ui.mjs";
 import { assertPopulationParity } from "./fixtures/rust-population-data.mjs";
 import { raw, startRejectedUi } from "./fixtures/rust-arena-ui.mjs";
 const { computeAverage } = await import("../lib/average-compute.ts");
@@ -38,7 +38,7 @@ async function json(base, path) {
 
 test("real persistent Rust SSR keeps both mode contracts, full panels, initial data and immutable production assets", { timeout: 180000 }, async t => {
   const assets = persistentAssets();
-  const fixture = await createPersistentUiFixture({ prefix: "rust-persistent-ui-http-" });
+  const fixture = await createPersistentUiFixture({ prefix: "rust-persistent-ui-http-", includeSeasonal: true });
   t.after(() => fixture.closeAll());
   const server = await fixture.start();
   await t.test("useful real TS-computed numbers, published XP and complete controls are in both native documents", async () => {
@@ -158,4 +158,80 @@ test("real persistent Rust SSR keeps both mode contracts, full panels, initial d
     const bytes = Buffer.from(assets.bodies.get("tarkov_ui.js")); bytes[0] ^= 1; writeFileSync(file, bytes);
     assert.match(await startRejectedUi({ ...fixture.configured, RUST_PERSISTENT_UI_ASSETS: root }), /Rust API failed/i);
   });
+  await t.test("Seasonal native SSR keeps typed data, gate, assets and independent selector contracts", async t => {
+    await seasonalSsr(t, fixture);
+  });
 });
+
+async function seasonalSsr(t, fixture) {
+  const { CohortComputeWorker } = await import("../lib/cohort-worker.ts");
+  const oracle = new CohortComputeWorker({ entry: resolve("tests/fixtures/rust-seasonal-population-oracle.mjs") });
+  t.after(async () => {
+    const children = [...new Set([...oracle.children.values(), oracle.child].filter(Boolean))];
+    const done = children.map(child => child.exitCode !== null || child.signalCode !== null ? Promise.resolve() : new Promise(resolve => child.once("close", resolve)));
+    oracle.stop(); await Promise.all(done);
+  });
+  const assets = persistentAssets(), server = await fixture.start({ SEASONAL_POPULATION_UI_UPSTREAM: "web:3001" }), page = "/population/pvp-season";
+  const query = { cycleId: SEASONAL_UI_CYCLE, statistic: "median", period: "90d", dimension: "hours", metric: "kd_ratio", min: 900, max: 1500 };
+  async function expected(input) { const value = await oracle.compute({ kind: "seasonal_average", args: [input] }); assert.equal(value.available, true); return value.result; }
+  await t.test("SSR includes real selected and context values, scheduled progression and both locales", async () => {
+    const q = "?statistic=median&period=90d&metric=kd_ratio&min=900&max=1500";
+    const expectedSelected = await expected(query), expectedContext = await expected({ ...query, min: null, max: null });
+    for (const lang of ["en", "ru"]) {
+      const { html, initial } = document(await raw(server.base, page + q, { headers: { cookie: `lang=${lang}` } }), "seasonal", lang);
+      assert.equal(initial.state.cycle_id, SEASONAL_UI_CYCLE); assert.equal(initial.seasonal_cycle, SEASONAL_UI_CYCLE);
+      assert.equal(initial.state.period, "90d"); assert.equal(initial.state.min, 900); assert.equal(initial.state.max, 1500);
+      assertPopulationParity({ body: initial.selected.body }, { body: expectedSelected }, "seasonal selected");
+      assertPopulationParity({ body: initial.context.body }, { body: expectedContext }, "seasonal context");
+      assert.equal(initial.context.body.averages.n, fixture.rows * 0.8); assert.ok(initial.selected.body.averages.n < fixture.rows * 0.8);
+      assert.equal(initial.context.body.averages.kd_ratio, 2.5, "latest snapshot values win");
+      assert.deepEqual(initial.progression.body, fixture.publishSeasonalProgression());
+      assert.equal(initial.progression.status, 200); assert.equal(initial.metrics.body, null); assert.equal(initial.achievements.body, null);
+      assert.equal(initial.level_bands.length, 79);
+      for (const marker of ["arena-combat-ring", "seasonal-chart__hit", "achievement-table", "achievement-cards", "detail-grid--compact", 'type="range"', 'type="number"']) assert.ok(html.includes(marker), marker);
+      for (const file of ["tarkov_ui.js", "tarkov_ui_bg.wasm", "tarkov_ui.css"]) assert.ok(html.includes(`/_rust/persistent/${assets.manifest.hash}/${file}`));
+      assert.equal((html.match(/<leptos-island\b/g) || []).length, 1);
+    }
+    const metrics = await json(server.base, `/api/average/metrics?mode=seasonal&cycle=${SEASONAL_UI_CYCLE}&statistic=median&period=all`);
+    assert.equal(metrics.status, 200); assert.equal(metrics.body.period, "all"); assert.equal(Object.keys(metrics.body.series).length, 6);
+    const achievements = await json(server.base, `/api/average/achievements?mode=seasonal&cycle=${SEASONAL_UI_CYCLE}`);
+    assert.equal(achievements.status, 200); assert.equal(achievements.body.achievements[0].nameRu, "Тестовое достижение 1"); assert.equal(achievements.body.achievements[0].unlockHours, 0);
+  });
+  await t.test("missing and empty cycle use the configured cycle; wrong, duplicate and whitespace cycles render unavailable", async () => {
+    for (const q of ["", "?cycle="]) assert.equal(document(await raw(server.base, page + q), "seasonal").initial.state.cycle_id, SEASONAL_UI_CYCLE);
+    for (const q of [`?cycle=other`, `?cycle=${SEASONAL_UI_CYCLE}&cycle=${SEASONAL_UI_CYCLE}`, `?cycle=%20${SEASONAL_UI_CYCLE}%20`]) {
+      const response = await raw(server.base, page + q); assert.equal(response.status, 200);
+      const html = response.body.toString("utf8"); assert.ok(html.includes(messages.en["seasonal.unavailable"])); assert.equal(html.includes("arena-combat-ring"), false);
+      assert.equal((html.match(/<leptos-island\b/g) || []).length, 1);
+    }
+    for (const extra of [{ SEASONAL_ENABLED: "false" }, { SEASONAL_PROFILE_URL_TEMPLATE: "" }]) {
+      const disabled = await fixture.start({ ...extra, SEASONAL_POPULATION_UI_UPSTREAM: "web:3001" }); const response = await raw(disabled.base, page);
+      assert.equal(response.status, 200); assert.ok(response.body.toString("utf8").includes(messages.en["seasonal.unavailable"]));
+      await disabled.stop();
+    }
+  });
+  await t.test("HEAD is empty without working data, aliases keep query and immutable assets remain scoped", async () => {
+    const absent = await fixture.start({ SQLITE_PATH: fixture.directory, PROGRESSION_SQLITE_PATH: fixture.directory, SEASONAL_POPULATION_UI_UPSTREAM: "web:3001" });
+    for (const path of [page, `${page}?cycle=wrong`]) { const head = await raw(absent.base, path, { method: "HEAD" }); assert.equal(head.status, 200); assert.equal(head.body.length, 0); }
+    assert.doesNotMatch(absent.logs(), /cohort_job_v1/); await absent.stop();
+    for (const alias of ["/average/pvp-season", `${page}/`]) for (const method of ["GET", "HEAD"]) {
+      const location = `${page}?cycle=${SEASONAL_UI_CYCLE}&unknown=one&unknown=two`;
+      const redirect = await raw(server.base, `${alias}?cycle=${SEASONAL_UI_CYCLE}&unknown=one&unknown=two`, { method });
+      assert.equal(redirect.status, 308); assert.equal(redirect.headers.location, location); assert.equal(redirect.headers.refresh, `0;url=${location}`);
+      assert.equal(redirect.body.toString(), method === "HEAD" ? "" : location);
+    }
+    for (const name of ["tarkov_ui.js", "tarkov_ui_bg.wasm", "tarkov_ui.css"]) {
+      const response = await raw(server.base, `/_rust/persistent/${assets.manifest.hash}/${name}`);
+      assert.equal(response.status, 200); assert.equal(response.headers["cache-control"], "public, max-age=31536000, immutable"); assert.deepEqual(response.body, assets.bodies.get(name));
+    }
+  });
+  await t.test("Seasonal UI selection is independent from cohort and persistent page flags", async () => {
+    const uiOnly = await fixture.start({ SEASONAL_POPULATION_UI_UPSTREAM: "web:3001", SEASONAL_API_UPSTREAM: "web:3000", PVE_UI_UPSTREAM: "web:3000", REGULAR_UI_UPSTREAM: "web:3000" });
+    assert.equal((await raw(uiOnly.base, page, { method: "HEAD" })).status, 200);
+    assert.equal((await raw(uiOnly.base, "/population/pve", { method: "HEAD" })).status, 404);
+    assert.equal((await raw(uiOnly.base, "/population/regular", { method: "HEAD" })).status, 404); await uiOnly.stop();
+    const cohortOnly = await fixture.start({ SEASONAL_API_UPSTREAM: "web:3001", SEASONAL_POPULATION_UI_UPSTREAM: "web:3000", PVE_UI_UPSTREAM: "web:3000", REGULAR_UI_UPSTREAM: "web:3000" });
+    assert.equal((await raw(cohortOnly.base, page, { method: "HEAD" })).status, 404);
+    assert.equal((await raw(cohortOnly.base, `/_rust/persistent/${assets.manifest.hash}/tarkov_ui.js`)).status, 404); await cohortOnly.stop();
+  });
+}
