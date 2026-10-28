@@ -100,12 +100,14 @@ async function functional(tab, backend, context) {
   const visible = String.raw`e=>!!(e&&e.getClientRects().length&&getComputedStyle(e).visibility!=='hidden'&&getComputedStyle(e).display!=='none')`;
   async function wait(expression, description, limit = 30000) { return until(() => evaluate(expression), limit, `${backend}:${description}`); }
   async function point(selector, text) {
-    return evaluate(`(()=>{const show=${visible};const e=[...document.querySelectorAll(${JSON.stringify(selector)})].find(e=>show(e)&&(${text === undefined ? "true" : `e.textContent.replace(/[↑↓]/g,'').trim().toLowerCase()===${JSON.stringify(text.toLowerCase())}`}));if(!e)throw Error('Missing visible control '+${JSON.stringify(selector)});const target=e.matches('input[type=radio]')?e.closest('label'):e;target.scrollIntoView({block:'center'});const b=target.getBoundingClientRect();return{x:b.left+b.width/2,y:b.top+b.height/2};})()`);
+    return evaluate(`(()=>{const show=${visible};const e=[...document.querySelectorAll(${JSON.stringify(selector)})].find(e=>show(e)&&(${text === undefined ? "true" : `e.textContent.replace(/[↑↓]/g,'').trim().toLowerCase()===${JSON.stringify(text.toLowerCase())}`}));if(!e)throw Error('Missing visible control '+${JSON.stringify(selector)});const target=e.matches('input[type=radio]')?e.closest('label'):e;if(!target)throw Error('Missing clickable label');target.scrollIntoView({block:'center',behavior:'instant'});const b=target.getBoundingClientRect(),x=b.left+b.width/2,y=b.top+b.height/2,hit=document.elementFromPoint(x,y),hitTag=String(hit?.tagName??'').slice(0,40),hitHref=String(hit?.closest?.('a[href]')?.getAttribute('href')??'').slice(0,200);if(!hit||!target.contains(hit))throw Error('Control is not hittable '+JSON.stringify({selector:${JSON.stringify(selector.slice(0,200))},x,y,hitTag,hitHref}));return{x,y,hitTag,hitHref};})()`);
   }
   async function click(selector, text) {
-    const p = await point(selector, text);
-    await tab.send("Input.dispatchMouseEvent", { type: "mousePressed", button: "left", clickCount: 1, ...p });
-    await tab.send("Input.dispatchMouseEvent", { type: "mouseReleased", button: "left", clickCount: 1, ...p });
+    const p = await point(selector, text), coords = { x:p.x, y:p.y };
+    evidence.lastMouseTarget = { selector:selector.slice(0,200), ...p, dispatched:false };
+    await tab.send("Input.dispatchMouseEvent", { type: "mousePressed", button: "left", clickCount: 1, ...coords });
+    await tab.send("Input.dispatchMouseEvent", { type: "mouseReleased", button: "left", clickCount: 1, ...coords });
+    evidence.lastMouseTarget.dispatched = true;
   }
   async function key(name) {
     const codes={Enter:["Enter",13],Escape:["Escape",27],Home:["Home",36],ArrowDown:["ArrowDown",40],ArrowRight:["ArrowRight",39],Tab:["Tab",9]," ":["Space",32]};
@@ -165,7 +167,7 @@ async function functional(tab, backend, context) {
   const overall='main .seasonal-chart:not([aria-label]) .seasonal-chart__toggles button';
   await click(overall);assert.equal(await evaluate(`document.querySelector(${JSON.stringify(overall)}).getAttribute('aria-pressed')`),"false");
   await click(overall);await ready();evidence.checks.push("overall XP toggle");
-  await evaluate(`[...document.querySelectorAll('#ach-breakdown img')].find(e=>e.getBoundingClientRect().width>0)?.scrollIntoView({block:'center'})`);
+  await evaluate(`[...document.querySelectorAll('#ach-breakdown img')].find(e=>e.getBoundingClientRect().width>0)?.scrollIntoView({block:'center',behavior:'instant'})`);
   await wait(`[...document.querySelectorAll('#ach-breakdown img')].some(e=>e.getBoundingClientRect().width>0&&e.style.visibility==='hidden')`,"official image failure hides icon without outbound access");
   evidence.checks.push("image onerror/missing icon handling");
 
@@ -205,7 +207,7 @@ async function functional(tab, backend, context) {
   const lowSelector = 'main input[type=range]';
   const remote = await tab.send("Runtime.evaluate", { expression: "document.querySelector('main input[type=range]')", objectGroup: "persistent-focus" });
   const objectId = remote.result.objectId; assert.ok(objectId);
-  const slider = await evaluate(`(()=>{const e=document.querySelector(${JSON.stringify(lowSelector)});e.scrollIntoView({block:'center'});e.focus();const b=e.getBoundingClientRect();return{x:b.left+8+(b.width-16)*Number(e.value)/10000,y:b.top+b.height/2,width:b.width};})()`);
+  const slider = await evaluate(`(()=>{const e=document.querySelector(${JSON.stringify(lowSelector)});e.scrollIntoView({block:'center',behavior:'instant'});e.focus({preventScroll:true});const b=e.getBoundingClientRect(),x=b.left+8+(b.width-16)*Number(e.value)/10000,y=b.top+b.height/2,hit=document.elementFromPoint(x,y);if(!hit||!e.contains(hit))throw Error('Range is not hittable');return{x,y,width:b.width};})()`);
   const beforeDrag=new Set(tab.state.requests.keys());
   await tab.send("Input.dispatchMouseEvent", { type: "mousePressed", button: "left", clickCount: 1, x: slider.x, y: slider.y });
   await tab.send("Input.dispatchMouseEvent", { type: "mouseMoved", button: "left", buttons: 1, x: slider.x + slider.width / 8, y: slider.y });
@@ -264,7 +266,7 @@ async function functional(tab, backend, context) {
         await nojs.evaluate(`(()=>{const e=document.querySelector('main input[name=${name}]');e.focus();e.select()})()`);
         await nojs.send("Input.insertText",{text:value});
       }
-      const p=await nojs.evaluate("(()=>{const e=document.querySelector('main button[type=submit]');e.scrollIntoView({block:'center'});const b=e.getBoundingClientRect();return{x:b.left+b.width/2,y:b.top+b.height/2}})()");
+      const p=await nojs.evaluate("(()=>{const e=document.querySelector('main button[type=submit]');e.scrollIntoView({block:'center',behavior:'instant'});const b=e.getBoundingClientRect(),x=b.left+b.width/2,y=b.top+b.height/2,hit=document.elementFromPoint(x,y);if(!hit||!e.contains(hit))throw Error('Submit is not hittable');return{x,y}})()");
       await nojs.send("Input.dispatchMouseEvent",{type:"mousePressed",button:"left",clickCount:1,...p});await nojs.send("Input.dispatchMouseEvent",{type:"mouseReleased",button:"left",clickCount:1,...p});
       const applied=await until(()=>nojs.evaluate("(()=>{const p=new URL(location.href).searchParams;const n=Number(document.querySelector('.average-sampleline')?.textContent.replace(/\\D/g,''));return p.get('min')==='100'&&p.get('max')==='2000'&&n>0&&n<300?{n,unknown:p.getAll('unknown')}:false})()"),30000,"native GET applies real filters without WASM");
       assert.deepEqual(applied.unknown,["first","second"]);evidence.noWasmNativeGet={...applied,scriptExecutionDisabled:true,requests:[...nojs.state.requests.values()]};

@@ -207,48 +207,6 @@ jobs:
             cleanup
             owned=''
           done
-      - name: Benchmark isolated TypeScript and Rust API workloads
-        timeout-minutes: 20
-        run: bash scripts/benchmark-rust-container.sh "tarkovstats-web:$GITHUB_SHA" "$RUNNER_TEMP/rust-linux-benchmark"
-      - name: Save synthetic Linux benchmark evidence
-        if: always()
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: rust-linux-benchmark-${{ github.sha }}
-          path: |
-            ${{ runner.temp }}/rust-linux-benchmark/*.json
-            ${{ runner.temp }}/rust-linux-benchmark/*.log
-            ${{ runner.temp }}/rust-linux-benchmark/summary.md
-          if-no-files-found: warn
-          retention-days: 14
-      - name: Benchmark production Next and Rust HTTP endpoints
-        timeout-minutes: 12
-        run: bash scripts/benchmark-rust-http-container.sh --image "tarkovstats-web:$GITHUB_SHA" --output "$RUNNER_TEMP/rust-http-benchmark"
-      - name: Save full HTTP benchmark evidence
-        if: always()
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: rust-http-benchmark-${{ github.sha }}
-          path: |
-            ${{ runner.temp }}/rust-http-benchmark/*.json
-            ${{ runner.temp }}/rust-http-benchmark/*.log
-            ${{ runner.temp }}/rust-http-benchmark/summary.md
-          if-no-files-found: warn
-          retention-days: 14
-      - name: Compare isolated production Regular and PvE population APIs
-        timeout-minutes: 28
-        run: bash scripts/benchmark-rust-persistent-http-container.sh --image "tarkovstats-web:$GITHUB_SHA" --output "$RUNNER_TEMP/rust-persistent-http"
-      - name: Save persistent API comparison evidence
-        if: always()
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: rust-persistent-http-${{ github.sha }}
-          path: |
-            ${{ runner.temp }}/rust-persistent-http/*.json
-            ${{ runner.temp }}/rust-persistent-http/*.log
-            ${{ runner.temp }}/rust-persistent-http/summary.md
-          if-no-files-found: warn
-          retention-days: 14
       - name: Compare Arena interfaces on the isolated Linux browser runner
         timeout-minutes: 10
         env:
@@ -294,6 +252,48 @@ jobs:
             ${{ runner.temp }}/rust-persistent-browser/evidence/*.md
             ${{ runner.temp }}/rust-persistent-browser/evidence/*.log
             ${{ runner.temp }}/rust-persistent-browser/evidence/*.png
+          if-no-files-found: warn
+          retention-days: 14
+      - name: Benchmark isolated TypeScript and Rust API workloads
+        timeout-minutes: 20
+        run: bash scripts/benchmark-rust-container.sh "tarkovstats-web:$GITHUB_SHA" "$RUNNER_TEMP/rust-linux-benchmark"
+      - name: Save synthetic Linux benchmark evidence
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: rust-linux-benchmark-${{ github.sha }}
+          path: |
+            ${{ runner.temp }}/rust-linux-benchmark/*.json
+            ${{ runner.temp }}/rust-linux-benchmark/*.log
+            ${{ runner.temp }}/rust-linux-benchmark/summary.md
+          if-no-files-found: warn
+          retention-days: 14
+      - name: Benchmark production Next and Rust HTTP endpoints
+        timeout-minutes: 12
+        run: bash scripts/benchmark-rust-http-container.sh --image "tarkovstats-web:$GITHUB_SHA" --output "$RUNNER_TEMP/rust-http-benchmark"
+      - name: Save full HTTP benchmark evidence
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: rust-http-benchmark-${{ github.sha }}
+          path: |
+            ${{ runner.temp }}/rust-http-benchmark/*.json
+            ${{ runner.temp }}/rust-http-benchmark/*.log
+            ${{ runner.temp }}/rust-http-benchmark/summary.md
+          if-no-files-found: warn
+          retention-days: 14
+      - name: Compare isolated production Regular and PvE population APIs
+        timeout-minutes: 28
+        run: bash scripts/benchmark-rust-persistent-http-container.sh --image "tarkovstats-web:$GITHUB_SHA" --output "$RUNNER_TEMP/rust-persistent-http"
+      - name: Save persistent API comparison evidence
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: rust-persistent-http-${{ github.sha }}
+          path: |
+            ${{ runner.temp }}/rust-persistent-http/*.json
+            ${{ runner.temp }}/rust-persistent-http/*.log
+            ${{ runner.temp }}/rust-persistent-http/summary.md
           if-no-files-found: warn
           retention-days: 14
       - name: Publish a revision-specific image
