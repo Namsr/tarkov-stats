@@ -40,6 +40,7 @@ struct Player {
     #[serde(rename = "avatarUrl")]
     avatar_url: Option<String>,
     mmr: Option<f64>,
+    change: Option<f64>,
 }
 #[derive(Deserialize)]
 struct Standing {
@@ -200,7 +201,7 @@ fn compute(
                     if record.first_mmr.is_none() {
                         record.first_mmr = Some(mmr);
                     }
-                    record.last_mmr = Some(mmr);
+                    record.last_mmr = Some(mmr + player.change.unwrap_or(0.0));
                 }
                 match winner {
                     -2 => {
@@ -287,7 +288,11 @@ fn compute(
         .iter()
         .filter(|(_, r)| eligible(r))
         .filter_map(|(id, r)| {
-            let mmr = ratings.get(id.as_str()).copied().or(r.last_mmr)?;
+            let mmr = if end.is_some() {
+                r.last_mmr?
+            } else {
+                ratings.get(id.as_str()).copied().or(r.last_mmr)?
+            };
             let score = mmr / 10.0
                 + 100.0 * wilson(r.wins, r.wins + r.losses)
                 + 5.0 * f64::from(r.games).ln_1p();
@@ -335,7 +340,12 @@ fn compute(
         .iter()
         .filter(|(_, r)| r.results.len() >= 10)
         .filter_map(|(id, r)| {
-            let delta = ratings.get(id.as_str()).copied().or(r.last_mmr)? - r.first_mmr?;
+            let latest = if end.is_some() {
+                r.last_mmr?
+            } else {
+                ratings.get(id.as_str()).copied().or(r.last_mmr)?
+            };
+            let delta = latest - r.first_mmr?;
             delta.is_finite().then_some((id.as_str(), delta))
         })
         .filter(|(_, v)| *v > 0.0)
@@ -374,6 +384,12 @@ fn compute(
     for r in records.values().filter(|r| r.wins + r.losses >= 10) {
         let rate = ratio(r.wins, r.wins + r.losses);
         distribution[((rate * 5.0) as usize).min(4)] += 1;
+    }
+    // Include inactive calendar days, so 7D/30D means days rather than active-day samples.
+    let first_day = (start + 3 * 3_600_000).div_euclid(86_400_000);
+    let last_day = (end.unwrap_or(now) - 1 + 3 * 3_600_000).div_euclid(86_400_000);
+    for day in first_day..=last_day {
+        days.entry(day).or_default();
     }
     let mut activity: Vec<_> = days.into_iter().collect();
     activity.sort_by_key(|(day, _)| *day);
@@ -541,6 +557,7 @@ mod tests {
                 name: id.into(),
                 avatar_url: None,
                 mmr: Some(1000.0),
+                change: None,
             }],
         };
         Match {
@@ -585,6 +602,7 @@ mod tests {
                     name: (*id).into(),
                     avatar_url: None,
                     mmr: Some(rating),
+                    change: None,
                 })
                 .collect(),
         };
