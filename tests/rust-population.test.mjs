@@ -36,6 +36,20 @@ test("native persistent population and metric batches match actual TS SQLite cal
   await t.test("19/20/21 portrait trim boundaries, ties, missing and zero metrics remain independent", async () => {
     for(const count of [1,2,19,20,21,40]){fixture.clear();for(const mode of ["regular","pve"])fixture.seed(Array.from({length:count},(_,i)=>({aid:i+1,hours:100,pmc_raids:100,kd_ratio:i===count-1?10000:i%4,pmc_kd_ratio:i%3===0?null:0,killed_pmc:i%5===0?null:i,pvp_stats_known:i%2,pmc_survival_rate:0,survival_rate:0})),mode);for(const mode of ["regular","pve"])for(const statistic of ["median","trimmed_mean"]){const body=await average(mode,{statistic,metric:"kd_ratio"});assert.equal(body.metricCounts.survival_rate,count);assert.equal(body.averages.survival_rate,0);assert.equal(body.averages.pmc_survival_rate,0);await metrics(mode,statistic);}}
   });
+  await t.test("pathological SQLite storage classes and numeric fast-path fallback match actual TS", async () => {
+    for (const count of [19, 20, 21]) {
+      fixture.clear();
+      for (const mode of ["regular", "pve"]) fixture.seed(Array.from({ length: count }, (_, i) => ({
+        aid: i + 1, hours: 100, pmc_raids: i + 1, kd_ratio: i % 3 === 0 ? "not numeric" : i % 3 === 1 ? Buffer.from("2") : i / 7,
+        scav_raids: i === 0 ? 9007199254740992n : i, run_through: i === 0 ? Infinity : i,
+        total_kills: i % 2 ? i + 0.25 : i, pmc_kd_ratio: i % 3 ? i / 7 : null, pvp_stats_known: i % 2,
+      })), mode);
+      for (const mode of ["regular", "pve"]) for (const statistic of ["median", "trimmed_mean"]) {
+        await average(mode, { statistic });
+        await average(mode, { statistic, dimension: "pmc_raids", min: 2, max: count - 1, inclusive: false });
+      }
+    }
+  });
   await t.test("fixed bucket transitions, null coordinates, negative legacy metrics and adaptive pooling match", async () => {
     fixture.clear(); const points=[null,-100,-0.5,0,24.9,25,49.9,50,999.9,1000,1999.9,2000,2999.9,3000,9999.9,10000,20000];
     for(const mode of ["regular","pve"])fixture.seed(Array.from({length:85},(_,i)=>({aid:i+1,hours:points[i%points.length],pmc_raids:points[(i*3)%points.length],kd_ratio:i%9===0?null:(i%7-3)/10,profile_updated_at:i%6===0?null:Date.now(),pvp_stats_known:i%2})),mode);

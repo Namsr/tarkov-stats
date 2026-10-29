@@ -6,6 +6,7 @@ import { basename, dirname, join, resolve } from "node:path";
 import test from "node:test";
 import { BACKENDS, BINDS, MEMORY_BYTES, SYNTHETIC_RUSSIAN_NAME, assertPayloadParity, buildPlan, diagnosticStream, distribution, expectedAnalytics, finalizeAnalytics, parseArguments, stopOwnedChild, validateAuxiliary, validateIsolation, validateResponse } from "../scripts/benchmark-rust-persistent-http.mjs";
 import { comparePair, summarizeDirectory, validateRun } from "../scripts/summarize-rust-persistent-http-benchmark.mjs";
+import { validateImagePair } from "../scripts/summarize-rust-population-image-pair.mjs";
 const headers = { "content-type": "application/json", "cache-control": "no-store", "x-average-source": "dynamic", "x-statistics-stale": "0", "retry-after": null, "set-cookie": null, "access-control-allow-origin": null };
 const IMAGE = `sha256:${"a".repeat(64)}`, REVISION = "b".repeat(40);
 function example(backend = "typescript", repetition = 1) {
@@ -51,6 +52,39 @@ test("bounded CLI and unique real cache keys cover both modes/statistics/periods
     assert.equal(plan.sha256, buildPlan(n).sha256);
   }
 });
+test("Rust image pair preserves roles, actual order, provenance and response parity", () => {
+  assert.deepEqual(parseArguments(["--backend", "rust", "--comparison-role", "baseline"]), { backend: "rust", rows: 30000, iterations: 20, repetition: 1, comparisonRole: "baseline" });
+  assert.throws(() => parseArguments(["--backend", "typescript", "--comparison-role", "baseline"]));
+  assert.throws(() => parseArguments(["--backend", "rust", "--comparison-role", "other"]));
+  const pins = { baseline: { imageId: `sha256:${"a".repeat(64)}`, revision: "b".repeat(40), workerSha256: "c".repeat(64) }, candidate: { imageId: `sha256:${"d".repeat(64)}`, revision: "e".repeat(40), workerSha256: "f".repeat(64) } };
+  const order = [[1, "baseline"], [1, "candidate"], [2, "candidate"], [2, "baseline"]];
+  const entries = order.map(([round, role], i) => {
+    const { report, inspect } = example("rust", round), pin = pins[role];
+    report.comparisonRole = role; report.methodology.backendOrder = round === 1 ? ["baseline", "candidate"] : ["candidate", "baseline"];
+    report.environment.imageId = inspect.imageId = inspect.image = pin.imageId;
+    report.environment.sourceRevision = inspect.sourceRevision = pin.revision;
+    inspect.id = String(i + 1).repeat(64);
+    inspect.startedAt = new Date(i * 2000).toISOString(); inspect.finishedAt = new Date(i * 2000 + 1000).toISOString();
+    return { report, inspect, workerSha256: pin.workerSha256 };
+  });
+  const validated = validateImagePair(entries, pins);
+  assert.equal(validated.comparisons.length, 24);
+  assert.ok("baseline" in validated.comparisons[0] && "candidate" in validated.comparisons[0]);
+  for (const mutate of [
+    e => { e[1].inspect.id = e[0].inspect.id; },
+    e => { e[1].report.comparisonRole = "baseline"; },
+    e => { e[1].inspect.imageId = pins.baseline.imageId; },
+    e => { e[1].inspect.sourceRevision = pins.baseline.revision; },
+    e => { e[1].workerSha256 = pins.baseline.workerSha256; },
+    e => { e[1].inspect.startedAt = e[0].inspect.startedAt; },
+    e => { e[1].report.fixture.normalizedSha256 = "f".repeat(64); },
+    e => { e[1].report.samples[0].body.averages.n--; },
+    e => { e[1].report.samples[0].headers["cache-control"] = "bad"; },
+  ]) { const bad = structuredClone(entries); mutate(bad); assert.throws(() => validateImagePair(bad, pins)); }
+  const runner = readFileSync(resolve("scripts/benchmark-rust-population-image-pair-container.sh"), "utf8");
+  for (const required of ['roles=(baseline candidate)', 'roles=(candidate baseline)', '--backend rust --comparison-role', 'docker cp "$active_id:', '[[ $actual_sha == "$expected_sha" ]]', '--network none', '--read-only', '--kill-after=15s 720s']) assert.ok(runner.includes(required), required);
+});
+
 test("nearest rank uses actual raw observations and retains zero/unavailable distinctions", () => {
   assert.deepEqual(distribution([0, 1, 2, 3]), { samples: 4, p50Ms: 1, p95Ms: 3, maxMs: 3 });
   assert.equal(distribution(Array.from({ length: 20 }, (_, i) => i + 1)).p95Ms, 19);

@@ -17,7 +17,7 @@ export const SYNTHETIC_RUSSIAN_NAME = "\u0421\u0438\u043d\u0442\u0435\u0442\u043
 export function parseArguments(args) {
   const fields = new Map();
   for (let i = 0; i < args.length; i += 2) {
-    assert.ok(["--backend", "--rows", "--iterations", "--repetition"].includes(args[i]), `Unknown argument: ${args[i]}`);
+    assert.ok(["--backend", "--rows", "--iterations", "--repetition", "--comparison-role"].includes(args[i]), `Unknown argument: ${args[i]}`);
     assert.ok(!fields.has(args[i]) && args[i + 1] && !args[i + 1].startsWith("--"), "Duplicate/missing argument");
     fields.set(args[i], args[i + 1]);
   }
@@ -26,6 +26,12 @@ export function parseArguments(args) {
   assert.ok(Number.isSafeInteger(rows) && rows >= 5000 && rows <= 100000);
   assert.ok(Number.isSafeInteger(iterations) && iterations >= 4 && iterations <= 40);
   assert.ok([1, 2].includes(repetition));
+  const comparisonRole = fields.get("--comparison-role");
+  if (comparisonRole !== undefined) {
+    assert.equal(backend, "rust");
+    assert.ok(["baseline", "candidate"].includes(comparisonRole));
+    return { backend, rows, iterations, repetition, comparisonRole };
+  }
   return { backend, rows, iterations, repetition };
 }
 export function buildPlan(iterations) {
@@ -287,7 +293,7 @@ export async function runBenchmark(options) {
     } catch (error) { report.complete = false; report.failures.push(String(error)); }
     process.removeListener("SIGTERM", signal); process.removeListener("SIGINT", signal);
   }
-  report.methodology = { latencyProfile: "Regular/PvE selected/context with default trimmed_mean/all only; median/90d have one-off correctness probes, not repeated timing evidence", backendOrder: options.repetition === 1 ? BACKENDS : [...BACKENDS].reverse(), quantiles: "nearest rank; retain raw samples; p95 with n<=19 is the maximum; never average rounds", cache: "unique actual min bounds for every cold/warmup/miss/prewarm; no cache clears/revision tricks; context minima below every seeded peer; actual unfiltered context also checked", durable: "production enabled by NODE_ENV; cold writes acknowledged; analytics asynchronous flush outside HTTP timers; progression publication reads emit no request_events", rateLimit: "real limiter retained; explicitly trusted private synthetic client header distributes requests, not proxy-user traffic", queue: "existing Next average maxPending16/native8; compute30s and HTTP25s unchanged; concurrency4; any errors fail the evidence gate", http: "loopback actual production Next TS vs full Rust HTTP/cache/child; JSON parsing included; Next frontend remains running in both", resources: "whole cgroup lifetime through final post-shutdown sample: fixture/client/Next/Rust/compute/analytics/tmpfs/page-cache; not RSS or only timed requests", limitations: "synthetic positive-hours shifted data; zero/corrupt edge cases remain separate correctness tests; no page-cache flush, proxy/TLS/CDN/browser/upstream; reversed order does not eliminate runner noise; no universal speed claim or speed threshold" };
+  report.methodology = { latencyProfile: "Regular/PvE selected/context with default trimmed_mean/all only; median/90d have one-off correctness probes, not repeated timing evidence", backendOrder: options.comparisonRole ? (options.repetition === 1 ? ["baseline", "candidate"] : ["candidate", "baseline"]) : (options.repetition === 1 ? BACKENDS : [...BACKENDS].reverse()), quantiles: "nearest rank; retain raw samples; p95 with n<=19 is the maximum; never average rounds", cache: "unique actual min bounds for every cold/warmup/miss/prewarm; no cache clears/revision tricks; context minima below every seeded peer; actual unfiltered context also checked", durable: "production enabled by NODE_ENV; cold writes acknowledged; analytics asynchronous flush outside HTTP timers; progression publication reads emit no request_events", rateLimit: "real limiter retained; explicitly trusted private synthetic client header distributes requests, not proxy-user traffic", queue: "existing Next average maxPending16/native8; compute30s and HTTP25s unchanged; concurrency4; any errors fail the evidence gate", http: options.comparisonRole ? "loopback full Rust HTTP/cache/child in both production images; JSON parsing included; Next frontend remains running" : "loopback actual production Next TS vs full Rust HTTP/cache/child; JSON parsing included; Next frontend remains running in both", resources: "whole cgroup lifetime through final post-shutdown sample: fixture/client/Next/Rust/compute/analytics/tmpfs/page-cache; not RSS or only timed requests", limitations: "synthetic positive-hours shifted data; zero/corrupt edge cases remain separate correctness tests; no page-cache flush, proxy/TLS/CDN/browser/upstream; reversed order does not eliminate runner noise; no universal speed claim or speed threshold" };
   process.stdout.write(`${JSON.stringify(report)}\n`);
   return report;
 }

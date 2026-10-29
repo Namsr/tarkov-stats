@@ -5,7 +5,7 @@ import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { BACKENDS, BINDS, MEMORY_BYTES, assertPayloadParity, buildPlan, distribution, expectedAnalytics, validateAuxiliary, validateIsolation, validateResponse } from "./benchmark-rust-persistent-http.mjs";
 const scenario = row => `${row.mode}/${row.statistic}/${row.period}/${row.scope}/${row.cache}/${row.concurrency}`;
-export function validateRun(report, inspect, backend, repetition) {
+export function validateRun(report, inspect, backend, repetition, expectedOrder = repetition === 1 ? BACKENDS : [...BACKENDS].reverse()) {
   assert.equal(report.formatVersion, 2); assert.equal(report.benchmark, "production-persistent-population-http");
   assert.equal(report.complete, true, JSON.stringify(report.failures)); assert.deepEqual(report.failures, []);
   assert.equal(report.backend, backend); assert.equal(report.repetition, repetition);
@@ -13,7 +13,7 @@ export function validateRun(report, inspect, backend, repetition) {
   assert.ok(Number.isSafeInteger(report.rows) && report.rows >= 5000 && report.rows <= 100000);
   assert.equal(report.fixture.synthetic, true); assert.equal(report.fixture.rowsPerMode, report.rows); assert.equal(report.fixture.uniqueKeys, plan.unique.length);
   assert.equal(report.fixture.planSha256, plan.sha256); assert.match(report.fixture.normalizedSha256, /^[a-f0-9]{64}$/);
-  assert.deepEqual(report.methodology.backendOrder, repetition === 1 ? BACKENDS : [...BACKENDS].reverse());
+  assert.deepEqual(report.methodology.backendOrder, expectedOrder);
   for (const mode of ["regular", "pve"]) { assert.equal(report.fixture.population[mode].all, report.rows); assert.ok(report.fixture.population[mode]["90d"] > 20 && report.fixture.population[mode]["90d"] < report.rows); assert.ok(report.fixture.minimumHours[mode] >= 1000); }
   assert.equal(report.samples.length, plan.unique.length + plan.groups.length * report.iterations + 12);
   const expectedAnalyticsRows = expectedAnalytics(report.samples);
