@@ -1,316 +1,132 @@
-name: VPS image
+name: Operator Rust population image pair proof
 
 on:
-  push:
-    branches: [main]
-  pull_request:
-    branches: [main]
   workflow_dispatch:
 
 permissions:
   contents: read
 
-concurrency:
-  group: vps-image-${{ github.ref }}
-  cancel-in-progress: false
-
 jobs:
-  checks:
-    name: Quality checks (Node 22)
+  proof:
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
-    steps:
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
-      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
-        with:
-          node-version: 22
-          cache: npm
-      - name: Install the Rust pilot toolchain
-        run: |
-          rustup toolchain install 1.98.1 --profile minimal --component rustfmt --component clippy
-          rustup default 1.98.1
-          rustup target add wasm32-unknown-unknown --toolchain 1.98.1
-      - name: Install the verified WebAssembly binding CLI
-        run: |
-          curl --fail --silent --show-error --location --retry 3 --max-time 90 \
-            --output "$RUNNER_TEMP/wasm-bindgen.tar.gz" \
-            https://github.com/wasm-bindgen/wasm-bindgen/releases/download/0.2.129/wasm-bindgen-0.2.129-x86_64-unknown-linux-musl.tar.gz
-          printf '82d12bb940e2d4e72e0d5605387fc1b8ca179044e012b620f0ce4e7440e8320e  %s\n' "$RUNNER_TEMP/wasm-bindgen.tar.gz" | sha256sum --check
-          mkdir "$RUNNER_TEMP/wasm-bindgen"
-          tar -xzf "$RUNNER_TEMP/wasm-bindgen.tar.gz" -C "$RUNNER_TEMP/wasm-bindgen" --strip-components=1
-          test "$("$RUNNER_TEMP/wasm-bindgen/wasm-bindgen" --version)" = "wasm-bindgen 0.2.129"
-          echo "$RUNNER_TEMP/wasm-bindgen" >> "$GITHUB_PATH"
-          echo "WASM_BINDGEN_BIN=$RUNNER_TEMP/wasm-bindgen/wasm-bindgen" >> "$GITHUB_ENV"
-      - run: cargo fmt --manifest-path rust/ui/Cargo.toml -- --check
-      - run: cargo clippy --locked --all-targets --features ssr --manifest-path rust/ui/Cargo.toml -- -D warnings
-      - run: cargo clippy --locked --lib --features hydrate --target wasm32-unknown-unknown --manifest-path rust/ui/Cargo.toml -- -D warnings
-      - run: cargo clippy --locked --lib --features hydrate-persistent --target wasm32-unknown-unknown --manifest-path rust/ui/Cargo.toml -- -D warnings
-      - run: cargo fmt --manifest-path rust/backend/Cargo.toml -- --check
-      - run: cargo clippy --locked --all-targets --manifest-path rust/backend/Cargo.toml -- -D warnings
-      - run: cargo fmt --manifest-path rust/axis-probability/Cargo.toml -- --check
-      - run: cargo clippy --locked --all-targets --manifest-path rust/axis-probability/Cargo.toml -- -D warnings
-      - run: cargo fmt --manifest-path rust/cohort-worker/Cargo.toml -- --check
-      - run: cargo clippy --locked --all-targets --manifest-path rust/cohort-worker/Cargo.toml -- -D warnings
-      - run: npm ci
-      - run: npm run i18n:check
-      - run: npm run lint
-      - run: npm run typecheck
-      - name: Install the production Caddy for proxy integration tests
-        run: |
-          curl --fail --silent --show-error --location --retry 3 --max-time 90 \
-            --output "$RUNNER_TEMP/caddy.tar.gz" \
-            https://github.com/caddyserver/caddy/releases/download/v2.11.4/caddy_2.11.4_linux_amd64.tar.gz
-          printf '527fbf917c39189a1e3b31d34fa955601680b2d5c8055d2a87b8b9588dec7bb9  %s\n' "$RUNNER_TEMP/caddy.tar.gz" | sha256sum --check
-          mkdir "$RUNNER_TEMP/caddy-bin"
-          tar -xzf "$RUNNER_TEMP/caddy.tar.gz" -C "$RUNNER_TEMP/caddy-bin" caddy
-          echo "CADDY_BIN=$RUNNER_TEMP/caddy-bin/caddy" >> "$GITHUB_ENV"
-      - run: npm test
-      - run: npm audit --omit=dev
-      - run: systemd-analyze verify ops/systemd/tarkovstats-publications.service ops/systemd/tarkovstats-background.slice ops/systemd/tarkovstats-backup.service ops/systemd/tarkovstats-backup.timer ops/systemd/tarkovstats-profile-queue.service ops/systemd/tarkovstats-profile-catchup.service ops/systemd/tarkovstats-profile-catchup.timer
-  build:
-    needs: checks
-    runs-on: ubuntu-24.04
-    timeout-minutes: 75
-    permissions:
-      contents: write
+    timeout-minutes: 90
     env:
-      GH_TOKEN: ${{ github.token }}
-      GH_REPO: ${{ github.repository }}
+      BASELINE_REVISION: 0e5254526f3f1ecd9e4f28d85053090f0a0e7b77
+      CANDIDATE_REVISION: 657642fa096a89e324108018b84f22bbd3bfff24
     steps:
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - name: Create evidence directory
+        run: mkdir "$RUNNER_TEMP/population-pair-evidence"
+      - name: Check out baseline
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: 0e5254526f3f1ecd9e4f28d85053090f0a0e7b77
+          path: sources/baseline
+          persist-credentials: false
+      - name: Check out candidate and driver
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: 657642fa096a89e324108018b84f22bbd3bfff24
+          path: sources/candidate
+          persist-credentials: false
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
           node-version: 22
-          cache: npm
-      - name: Build the production image
-        run: docker build --build-arg "SOURCE_REVISION=$GITHUB_SHA" --tag "tarkovstats-web:$GITHUB_SHA" .
-      - name: Validate the VPS worker configuration
+      - name: Verify exact clean sources and driver
+        working-directory: sources/candidate
         run: |
-          touch ops/.env ops/.env.private
-          docker compose --profile background -p image-config -f ops/docker-compose.vps.yml config --format json > /tmp/vps-compose.json
-          node -e '
-            const assert = require("node:assert/strict");
-            const { services } = require("/tmp/vps-compose.json");
-            assert.equal(services.web.environment.WEB_BACKGROUND_WORKERS, "false");
-            assert.equal(services.web.environment.SEASONAL_API_UPSTREAM, "web:3000");
-            assert.equal(services.caddy.environment.SEASONAL_API_UPSTREAM, services.web.environment.SEASONAL_API_UPSTREAM);
-            assert.equal(services.web.environment.HOME_SHOWCASE_API_UPSTREAM, "web:3000");
-            assert.equal(services.caddy.environment.HOME_SHOWCASE_API_UPSTREAM, services.web.environment.HOME_SHOWCASE_API_UPSTREAM);
-            assert.equal(services.web.environment.ARENA_UI_UPSTREAM, "web:3000");
-            assert.equal(services.caddy.environment.ARENA_UI_UPSTREAM, services.web.environment.ARENA_UI_UPSTREAM);
-            for (const flag of ["PVE_UI_UPSTREAM", "REGULAR_UI_UPSTREAM"]) {
-              assert.equal(services.web.environment[flag], "web:3000");
-              assert.equal(services.caddy.environment[flag], services.web.environment[flag]);
-            }
-            assert.equal(services.web.ports, undefined);
-            assert.equal(Number(services.web.mem_limit), 896 * 1024 ** 2);
-            assert.equal(Number(services.worker.mem_limit), 512 * 1024 ** 2);
-            assert.equal(Number(services.worker.memswap_limit), 768 * 1024 ** 2);
-            assert.equal(services.worker.cgroup_parent, "tarkovstats-background.slice");
-            assert.equal(services.worker.ports, undefined);
-          '
-      - name: Verify the runtime image
-        run: |
-          test "$(docker image inspect --format '{{index .Config.Labels "org.opencontainers.image.revision"}}' "tarkovstats-web:$GITHUB_SHA")" = "$GITHUB_SHA"
-          test "$(docker image inspect --format '{{index .Config.Labels "org.tarkovstats.rust-arena-ui"}}' "tarkovstats-web:$GITHUB_SHA")" = "v1"
-          test "$(docker image inspect --format '{{index .Config.Labels "org.tarkovstats.rust-persistent-ui"}}' "tarkovstats-web:$GITHUB_SHA")" = "v1"
-          test "$(docker image inspect --format '{{index .Config.Labels "org.tarkovstats.rust-population-api"}}' "tarkovstats-web:$GITHUB_SHA")" = "v1"
-          docker run --rm --network none --entrypoint node "tarkovstats-web:$GITHUB_SHA" --experimental-strip-types --experimental-sqlite -e "require('node:sqlite'); require('discord.js'); require('node:fs').accessSync('/app/server.js'); require('node:fs').accessSync('/app/scripts/axis-discord-bot.mjs')"
-          docker run --rm --network none --entrypoint /app/rust/cohort-worker/target/release/tarkov-cohort-worker "tarkovstats-web:$GITHUB_SHA" < /dev/null
-          docker network create image-smoke
-          trap 'docker logs image-smoke; docker rm --force image-smoke; docker network rm image-smoke' EXIT
-          docker run --detach --network image-smoke --network-alias web --memory 896m --memory-swap 1152m --env WEB_BACKGROUND_WORKERS=false --name image-smoke "tarkovstats-web:$GITHUB_SHA"
-          docker exec image-smoke node -e '
-            (async () => {
-              for (let attempt = 0; attempt < 30; attempt++) {
-                try { if ((await fetch("http://127.0.0.1:3000/healthz")).status === 200) return; } catch {}
-                await new Promise(resolve => setTimeout(resolve, 500));
-              }
-              process.exit(1);
-            })()'
-          # Use the effective Compose URLs, including its environment precedence.
-          node -e '
-            const { services } = require("/tmp/vps-compose.json");
-            for (const key of ["REGULAR_PROFILE_SYNC_BASE_URL", "PVE_PROFILE_SYNC_BASE_URL", "ARENA_PROFILE_SYNC_BASE_URL", "SEASONAL_PROFILE_SYNC_BASE_URL", "LEADERBOARD_WARMUP_BASE_URL"]) {
-              const value = services.worker.environment[key];
-              if (!value) throw new Error(`Missing worker endpoint: ${key}`);
-              console.log(`${key}=${value}`);
-            }
-          ' > /tmp/worker-endpoints.env
-          docker run --rm --network image-smoke --memory 512m --memory-swap 768m --cpus 0.5 --env-file /tmp/worker-endpoints.env --entrypoint node "tarkovstats-web:$GITHUB_SHA" -e '
-            (async () => {
-              for (const [key, base] of Object.entries(process.env).filter(([key]) => key.endsWith("_BASE_URL"))) {
-                const response = await fetch(new URL("/healthz", base), { signal: AbortSignal.timeout(5000) });
-                if (response.status !== 200) throw new Error(`${key}: HTTP ${response.status}`);
-                await response.body?.cancel();
-              }
-            })().catch(error => { console.error(error); process.exitCode = 1; })'
-          processes=$(docker top image-smoke -eo pid,args)
-          if printf '%s\n' "$processes" | grep -E 'materialize-(average|progression|achievement)'; then
-            echo "HTTP-only container launched an offline materializer"
-            exit 1
-          fi
-          # The same image also supports sequential one-shot jobs under the worker cap.
-          docker run --rm --network none --memory 512m --memory-swap 768m --cpus 0.5 --env AVERAGE_MATERIALIZE_ONCE=true --env PROGRESSION_MATERIALIZE_ONCE=true --entrypoint sh "tarkovstats-web:$GITHUB_SHA" -c '
-              nice -n 19 node --experimental-strip-types --experimental-sqlite --experimental-loader ./scripts/ts-alias-loader.mjs scripts/materialize-average-publications.mjs &&
-              nice -n 19 node --experimental-strip-types --experimental-sqlite scripts/materialize-progression-population.mjs &&
-              nice -n 19 node --experimental-strip-types --experimental-sqlite scripts/materialize-achievement-tempo.mjs
-            '
-      - name: Verify the full Rust HTTP runtime contract
-        run: |
-          docker run --detach --network none --memory 896m --memory-swap 896m --read-only --pids-limit 256 \
-            --cap-drop ALL --security-opt no-new-privileges \
-            --tmpfs /data:rw,noexec,nosuid,nodev,size=64m,uid=1001,gid=1001,mode=0700 \
-            --tmpfs /tmp:rw,noexec,nosuid,nodev,size=32m,mode=1777 \
-            --tmpfs /app/.next/cache:rw,noexec,nosuid,nodev,size=32m,uid=1001,gid=1001,mode=0700 \
-            --env WEB_BACKGROUND_WORKERS=false --env SEASONAL_API_UPSTREAM=web:3001 \
-            --env SEASONAL_ENABLED=false --name rust-http-smoke "tarkovstats-web:$GITHUB_SHA"
-          trap 'docker logs rust-http-smoke; docker rm --force rust-http-smoke' EXIT
-          docker exec rust-http-smoke node scripts/verify-rust-http-runtime.mjs
-      - name: Verify the independently enabled Rust Arena UI runtime
-        run: |
-          docker run --detach --network none --memory 896m --memory-swap 896m --read-only --pids-limit 256 \
-            --cap-drop ALL --security-opt no-new-privileges \
-            --tmpfs /data:rw,noexec,nosuid,nodev,size=64m,uid=1001,gid=1001,mode=0700 \
-            --tmpfs /tmp:rw,noexec,nosuid,nodev,size=32m,mode=1777 \
-            --tmpfs /app/.next/cache:rw,noexec,nosuid,nodev,size=32m,uid=1001,gid=1001,mode=0700 \
-            --env WEB_BACKGROUND_WORKERS=false --env SEASONAL_API_UPSTREAM=web:3000 \
-            --env HOME_SHOWCASE_API_UPSTREAM=web:3000 --env ARENA_UI_UPSTREAM=web:3001 \
-            --env SEASONAL_ENABLED=false --env AVERAGE_PUBLICATIONS_ENABLED=false \
-            --env RUST_UI_RUNTIME_FIXTURE=true --env SQLITE_PATH=/data/rust-arena-runtime-smoke.db \
-            --env AVERAGE_PUBLICATION_SQLITE_PATH=/data/rust-arena-runtime-cache.db \
-            --name rust-arena-ui-smoke "tarkovstats-web:$GITHUB_SHA"
-          trap 'docker logs rust-arena-ui-smoke; docker rm --force rust-arena-ui-smoke' EXIT
-          docker exec rust-arena-ui-smoke node --experimental-strip-types --experimental-sqlite scripts/verify-rust-http-runtime.mjs --arena-ui
-      - name: Verify independently enabled Regular and PvE Rust UI runtimes
-        run: |
-          owned=''
-          cleanup() { if [ -n "$owned" ]; then docker logs "$owned"; docker rm --force "$owned"; fi; }
-          trap cleanup EXIT
-          for mode in regular pve; do
-            regular=web:3000; pve=web:3000
-            if [ "$mode" = regular ]; then regular=web:3001; else pve=web:3001; fi
-            owned="rust-$mode-ui-smoke"
-            docker run --detach --network none --memory 896m --memory-swap 896m --read-only --pids-limit 256 \
-              --cap-drop ALL --security-opt no-new-privileges \
-              --tmpfs /data:rw,noexec,nosuid,nodev,size=64m,uid=1001,gid=1001,mode=0700 \
-              --tmpfs /tmp:rw,noexec,nosuid,nodev,size=32m,mode=1777 \
-              --tmpfs /app/.next/cache:rw,noexec,nosuid,nodev,size=32m,uid=1001,gid=1001,mode=0700 \
-              --env WEB_BACKGROUND_WORKERS=false --env SEASONAL_API_UPSTREAM=web:3000 \
-              --env HOME_SHOWCASE_API_UPSTREAM=web:3000 --env ARENA_UI_UPSTREAM=web:3000 \
-              --env "REGULAR_UI_UPSTREAM=$regular" --env "PVE_UI_UPSTREAM=$pve" \
-              --env SEASONAL_ENABLED=false --env AVERAGE_PUBLICATIONS_ENABLED=false \
-              --env RUST_UI_RUNTIME_FIXTURE=true --env "SQLITE_PATH=/data/rust-$mode-runtime-smoke.db" \
-              --env "AVERAGE_PUBLICATION_SQLITE_PATH=/data/rust-$mode-runtime-cache.db" \
-              --name "$owned" "tarkovstats-web:$GITHUB_SHA"
-            docker exec "$owned" node --experimental-strip-types --experimental-sqlite scripts/verify-rust-http-runtime.mjs "--$mode-ui"
-            cleanup
-            owned=''
+          set -euo pipefail
+          evidence="$RUNNER_TEMP/population-pair-evidence"
+          for role in baseline candidate; do
+            if [[ $role == baseline ]]; then revision=$BASELINE_REVISION; else revision=$CANDIDATE_REVISION; fi
+            source="$GITHUB_WORKSPACE/sources/$role"
+            actual=$(git -C "$source" rev-parse HEAD)
+            [[ $actual == "$revision" ]]
+            [[ -z $(git -C "$source" status --porcelain --untracked-files=all) ]]
+            printf '%s %s\n' "$role" "$actual" >> "$evidence/source-revisions.txt"
           done
-      - name: Compare Arena interfaces on the isolated Linux browser runner
-        timeout-minutes: 10
-        env:
-          GH_TOKEN: ""
+          bash -n scripts/benchmark-rust-population-image-pair-container.sh
+          node --experimental-strip-types --experimental-sqlite --test tests/rust-persistent-http-benchmark.test.mjs
+      - name: Build both pinned production images and identify their workers
+        timeout-minutes: 54
         run: |
-          npm ci
-          curl --fail --silent --show-error --location --retry 3 --max-time 90 \
-            --output "$RUNNER_TEMP/arena-caddy.tar.gz" \
-            https://github.com/caddyserver/caddy/releases/download/v2.11.4/caddy_2.11.4_linux_amd64.tar.gz
-          printf '527fbf917c39189a1e3b31d34fa955601680b2d5c8055d2a87b8b9588dec7bb9  %s\n' "$RUNNER_TEMP/arena-caddy.tar.gz" | sha256sum --check
-          mkdir "$RUNNER_TEMP/arena-caddy-bin"
-          tar -xzf "$RUNNER_TEMP/arena-caddy.tar.gz" -C "$RUNNER_TEMP/arena-caddy-bin" caddy
-          export CADDY_BIN="$RUNNER_TEMP/arena-caddy-bin/caddy"
-          bash scripts/benchmark-rust-arena-browser-image.sh --image "tarkovstats-web:$GITHUB_SHA" --output "$RUNNER_TEMP/rust-arena-browser"
-      - name: Save Arena browser correctness and measurement evidence
-        if: always()
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: rust-arena-browser-${{ github.sha }}
-          path: |
-            ${{ runner.temp }}/rust-arena-browser/image-provenance.json
-            ${{ runner.temp }}/rust-arena-browser/evidence/*.json
-            ${{ runner.temp }}/rust-arena-browser/evidence/*.md
-            ${{ runner.temp }}/rust-arena-browser/evidence/*.log
-            ${{ runner.temp }}/rust-arena-browser/evidence/*.png
-          if-no-files-found: warn
-          retention-days: 14
-      - name: Compare persistent interfaces and interactions on the Linux browser runner
-        timeout-minutes: 12
-        env:
-          GH_TOKEN: ""
-        run: |
-          export CADDY_BIN="$RUNNER_TEMP/arena-caddy-bin/caddy"
-          bash scripts/check-rust-persistent-browser-image.sh --image "tarkovstats-web:$GITHUB_SHA" --output "$RUNNER_TEMP/rust-persistent-browser"
-      - name: Save persistent browser correctness and measurement evidence
-        if: always()
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: rust-persistent-browser-${{ github.sha }}
-          path: |
-            ${{ runner.temp }}/rust-persistent-browser/image-provenance.json
-            ${{ runner.temp }}/rust-persistent-browser/evidence/*.json
-            ${{ runner.temp }}/rust-persistent-browser/evidence/*.md
-            ${{ runner.temp }}/rust-persistent-browser/evidence/*.log
-            ${{ runner.temp }}/rust-persistent-browser/evidence/*.png
-          if-no-files-found: warn
-          retention-days: 14
-      - name: Benchmark isolated TypeScript and Rust API workloads
-        timeout-minutes: 20
-        run: bash scripts/benchmark-rust-container.sh "tarkovstats-web:$GITHUB_SHA" "$RUNNER_TEMP/rust-linux-benchmark"
-      - name: Save synthetic Linux benchmark evidence
-        if: always()
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: rust-linux-benchmark-${{ github.sha }}
-          path: |
-            ${{ runner.temp }}/rust-linux-benchmark/*.json
-            ${{ runner.temp }}/rust-linux-benchmark/*.log
-            ${{ runner.temp }}/rust-linux-benchmark/summary.md
-          if-no-files-found: warn
-          retention-days: 14
-      - name: Benchmark production Next and Rust HTTP endpoints
-        timeout-minutes: 12
-        run: bash scripts/benchmark-rust-http-container.sh --image "tarkovstats-web:$GITHUB_SHA" --output "$RUNNER_TEMP/rust-http-benchmark"
-      - name: Save full HTTP benchmark evidence
-        if: always()
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: rust-http-benchmark-${{ github.sha }}
-          path: |
-            ${{ runner.temp }}/rust-http-benchmark/*.json
-            ${{ runner.temp }}/rust-http-benchmark/*.log
-            ${{ runner.temp }}/rust-http-benchmark/summary.md
-          if-no-files-found: warn
-          retention-days: 14
-      - name: Compare isolated production Regular and PvE population APIs
+          set -euo pipefail
+          evidence="$RUNNER_TEMP/population-pair-evidence"
+          docker_binary=$(command -v docker)
+          docker() { timeout --signal=TERM --kill-after=5s 15s "$docker_binary" --context default "$@"; }
+          endpoint=$(docker context inspect default --format '{{(index .Endpoints "docker").Host}}')
+          [[ $endpoint == unix://* ]] || { echo 'Remote Docker endpoint refused.' >&2; exit 2; }
+          token=$(tr -d '-' < /proc/sys/kernel/random/uuid)
+          [[ $token =~ ^[0-9a-f]{32}$ ]] || exit 2
+          active_id=''
+          active_name=''
+          worker_file=''
+          cleanup() {
+            if [[ -n $worker_file ]]; then rm -f -- "$worker_file"; worker_file=''; fi
+            if [[ -z $active_id && -n $active_name ]]; then
+              found=$(docker inspect "$active_name" --format '{{index .Config.Labels "org.tarkovstats.population-proof"}} {{.Id}}' 2>/dev/null || true)
+              read -r owner found_id <<< "$found"
+              if [[ $owner == "$token" && $found_id =~ ^[0-9a-f]{64}$ ]]; then active_id=$found_id; fi
+            fi
+            if [[ -n $active_id ]] && docker rm --force "$active_id" >/dev/null 2>&1; then active_id=''; active_name=''; fi
+            if [[ -n $active_id || -n $active_name ]]; then
+              printf '%s\n' 'owned container cleanup unconfirmed' > "$evidence/extraction-cleanup.txt"
+              return 1
+            fi
+            printf '%s\n' 'no owned container remains' > "$evidence/extraction-cleanup.txt"
+          }
+          trap 'cleanup || true' EXIT
+          trap 'exit 130' INT
+          trap 'exit 143' TERM
+          for role in baseline candidate; do
+            if [[ $role == baseline ]]; then revision=$BASELINE_REVISION; else revision=$CANDIDATE_REVISION; fi
+            source="$GITHUB_WORKSPACE/sources/$role"
+            iidfile="$evidence/$role-image-id.txt"
+            timeout --signal=TERM --kill-after=10s 1500s "$docker_binary" --context default build \
+              --iidfile "$iidfile" --build-arg "SOURCE_REVISION=$revision" "$source" 2>&1 | tee "$evidence/$role-build.log"
+            image_id=$(cat "$iidfile")
+            [[ $image_id =~ ^sha256:[0-9a-f]{64}$ ]]
+            [[ $(docker image inspect "$image_id" --format '{{.Id}}') == "$image_id" ]]
+            [[ $(docker image inspect "$image_id" --format '{{index .Config.Labels "org.opencontainers.image.revision"}}') == "$revision" ]]
+            active_name="rust-population-image-extract-$role-$token"
+            if ! created_id=$(docker create --pull never --name "$active_name" --label "org.tarkovstats.population-proof=$token" "$image_id"); then
+              echo 'Create failed; recovering only by owned name.' >&2; exit 2
+            fi
+            [[ $created_id =~ ^[0-9a-f]{64}$ ]] || { echo 'Invalid create result; recovering only by owned name.' >&2; exit 2; }
+            active_id=$created_id
+            worker_file="$evidence/$role-worker.tmp"
+            docker cp "$active_id:/app/rust/cohort-worker/target/release/tarkov-cohort-worker" "$worker_file"
+            worker_sha=$(sha256sum "$worker_file" | cut -d' ' -f1)
+            [[ $worker_sha =~ ^[0-9a-f]{64}$ ]]
+            printf '%s\n' "$worker_sha" > "$evidence/$role-worker.sha256"
+            cleanup
+          done
+      - name: Compare four isolated Rust image runs
         timeout-minutes: 28
-        run: bash scripts/benchmark-rust-persistent-http-container.sh --image "tarkovstats-web:$GITHUB_SHA" --output "$RUNNER_TEMP/rust-persistent-http"
-      - name: Save persistent API comparison evidence
+        working-directory: sources/candidate
+        run: |
+          set -euo pipefail
+          evidence="$RUNNER_TEMP/population-pair-evidence"
+          [[ $(cat "$evidence/extraction-cleanup.txt") == 'no owned container remains' ]]
+          bash scripts/benchmark-rust-population-image-pair-container.sh \
+            --baseline "$(cat "$evidence/baseline-image-id.txt")" \
+            --candidate "$(cat "$evidence/candidate-image-id.txt")" \
+            --baseline-revision "$BASELINE_REVISION" --candidate-revision "$CANDIDATE_REVISION" \
+            --baseline-sha "$(cat "$evidence/baseline-worker.sha256")" \
+            --candidate-sha "$(cat "$evidence/candidate-worker.sha256")" \
+            --rows 30000 --iterations 20 --output "$RUNNER_TEMP/population-pair-runs"
+      - name: Save observations, provenance and cleanup evidence
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: rust-persistent-http-${{ github.sha }}
+          name: rust-population-image-pair-${{ github.sha }}
           path: |
-            ${{ runner.temp }}/rust-persistent-http/*.json
-            ${{ runner.temp }}/rust-persistent-http/*.log
-            ${{ runner.temp }}/rust-persistent-http/summary.md
+            ${{ runner.temp }}/population-pair-evidence/*.txt
+            ${{ runner.temp }}/population-pair-evidence/*.log
+            ${{ runner.temp }}/population-pair-evidence/*.sha256
+            ${{ runner.temp }}/population-pair-runs/*.json
+            ${{ runner.temp }}/population-pair-runs/*.log
+            ${{ runner.temp }}/population-pair-runs/*.txt
+            ${{ runner.temp }}/population-pair-runs/*.sha256
+            ${{ runner.temp }}/population-pair-runs/*.md
           if-no-files-found: warn
           retention-days: 14
-      - name: Publish a revision-specific image
-        if: github.event_name != 'pull_request'
-        run: |
-          tag="container-$GITHUB_SHA"
-          # Published assets are never overwritten. Failed draft uploads can retry.
-          existing=$(gh release view "$tag" --json isDraft --jq .isDraft 2>/dev/null || true)
-          if [ "$existing" = false ]; then
-            echo "Image already published for $GITHUB_SHA"
-            exit 0
-          fi
-          docker image save "tarkovstats-web:$GITHUB_SHA" | gzip -1 > web.tar.gz
-          sha256sum web.tar.gz > web.tar.gz.sha256
-          if [ -z "$existing" ]; then
-            gh release create "$tag" --target "$GITHUB_SHA" --draft --prerelease --latest=false \
-              --title "VPS image $GITHUB_SHA" --notes "Production Docker image built by GitHub Actions from $GITHUB_SHA."
-          fi
-          gh release upload "$tag" web.tar.gz web.tar.gz.sha256 --clobber
-          gh release edit "$tag" --draft=false --prerelease --latest=false
