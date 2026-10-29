@@ -124,7 +124,7 @@ fn compute(matches: Vec<Match>, standings: &[Standing], now: i64, complete: bool
                 appearances += 1;
                 identities.insert(player.id.clone(),json!({"name":player.name,"avatarUrl":player.avatar_url}));
                 daily.players.insert(player.id.clone());
-                if time >= now - 7 * 86_400_000 && time <= now { recent_active.insert(player.id.clone()); }
+                if time >= end.unwrap_or(now) - 7 * 86_400_000 && time <= end.unwrap_or(now) { recent_active.insert(player.id.clone()); }
                 let record = records.entry(player.id.clone()).or_default();
                 record.games += 1;
                 if let Some(mmr) = player.mmr.filter(|v| v.is_finite()) {
@@ -183,8 +183,14 @@ fn compute(matches: Vec<Match>, standings: &[Standing], now: i64, complete: bool
             .map(|(id,r)|(id.as_str(),f(r)))
             .max_by(|a,b|a.1.total_cmp(&b.1).then_with(||b.0.cmp(a.0)))
     };
+    // An MVP must win consistently, play a meaningful sample, and carry a strong rating.
     let mvp = records.iter().filter(|(_,r)|eligible(r))
-        .filter_map(|(id,_)|ratings.get(id.as_str()).map(|rating|(id.as_str(),*rating)))
+        .filter_map(|(id,r)| {
+            let mmr = ratings.get(id.as_str()).copied().or(r.last_mmr)?;
+            let score = mmr / 10.0 + 100.0 * wilson(r.wins, r.wins + r.losses)
+                + 5.0 * f64::from(r.games).ln_1p();
+            score.is_finite().then_some((id.as_str(),score))
+        })
         .max_by(|a,b|a.1.total_cmp(&b.1))
         .map(|(id,v)|award(id,v));
     // Two consecutive 10-game blocks must both be strong, not only the aggregate.
