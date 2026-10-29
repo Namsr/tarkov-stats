@@ -105,8 +105,8 @@ export default function AxisLeaguePage({ initialView = "standings", initialMatch
       </div>
       <div className="admin-tabs axis-view-switch" role="group" aria-label={t("axis.history.view")}>
         <button type="button" className={view === "standings" ? "is-active" : ""} aria-pressed={view === "standings"} onClick={() => setView("standings")}>{t("axis.standings")}</button>
+        <button type="button" className={view === "statistics" ? "is-active" : ""} aria-pressed={view === "statistics"} onClick={() => setView("statistics")}>{t("axis.stats.tab")}</button>
         <button type="button" className={view === "history" ? "is-active" : ""} aria-pressed={view === "history"} onClick={() => setView("history")}>{t("axis.history.title")}</button>
-        <button type="button" className={view === "statistics" ? "is-active" : ""} aria-pressed={view === "statistics"} onClick={() => setView("statistics")}>{lang === "ru" ? "Статистика" : "Statistics"}</button>
         {canEdit && <button type="button" className={view === "profiles" ? "is-active" : ""} aria-pressed={view === "profiles"} onClick={() => setView("profiles")}>{t("axis.profiles.title")}</button>}
       </div>
       <div hidden={view !== "history"}><AxisMatchHistory initialMatch={initialMatch} players={data?.players} averageKda={data?.averageKda ?? null} active={view === "history"} canEditKda={canEdit === true} canSubmitScreenshot={canSubmit} /></div>

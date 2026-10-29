@@ -19,6 +19,7 @@ const CHANNEL: &str = "1343726040421367842";
 const MIN_GAMES: usize = 20;
 const MIN_PARTY_GAMES: u32 = 8;
 const MIN_DUO_GAMES: u32 = 10;
+const MIN_DISTRIBUTION_GAMES: u32 = 5;
 
 #[derive(Deserialize)]
 struct Match {
@@ -298,7 +299,7 @@ fn compute(
                 + 5.0 * f64::from(r.games).ln_1p();
             score.is_finite().then_some((id.as_str(), score))
         })
-        .max_by(|a, b| a.1.total_cmp(&b.1))
+        .max_by(|a, b| a.1.total_cmp(&b.1).then_with(|| b.0.cmp(a.0)))
         .map(|(id, v)| award(id, v));
     // Two consecutive 10-game blocks must both be strong, not only the aggregate.
     let stable = records
@@ -310,12 +311,12 @@ fn compute(
             let b = tail[10..].iter().filter(|v| **v).count() as f64;
             (id.as_str(), a.min(b) * 10.0)
         })
-        .max_by(|a, b| a.1.total_cmp(&b.1))
+        .max_by(|a, b| a.1.total_cmp(&b.1).then_with(|| b.0.cmp(a.0)))
         .map(|(id, v)| award(id, v));
     let party = |min_size: usize, max_size: usize, min_games: u32| {
         parties.iter().filter(|(ids,g)|ids.len()>=min_size && ids.len()<=max_size &&g.games>=min_games)
             .max_by(|a,b| wilson(a.1.wins,a.1.games).total_cmp(&wilson(b.1.wins,b.1.games))
-                .then_with(||a.1.games.cmp(&b.1.games)))
+                .then_with(||a.1.games.cmp(&b.1.games)).then_with(||b.0.cmp(a.0)))
             .map(|(ids,g)|json!({"players":ids,"games":g.games,"wins":g.wins,"winRate":ratio(g.wins,g.games)*100.0}))
     };
     let best_party = party(3, 5, MIN_PARTY_GAMES);
@@ -324,16 +325,24 @@ fn compute(
         select(&|r| ratio(r.wins, r.wins + r.losses) * 100.0).map(|(id, v)| award(id, v));
     let veteran = records
         .iter()
-        .max_by_key(|(_, r)| r.games)
+        .max_by(|a, b| a.1.games.cmp(&b.1.games).then_with(|| b.0.cmp(a.0)))
         .map(|(id, r)| award(id, r.games as f64));
     let win_streak = records
         .iter()
-        .max_by_key(|(_, r)| r.longest_wins)
+        .max_by(|a, b| {
+            a.1.longest_wins
+                .cmp(&b.1.longest_wins)
+                .then_with(|| b.0.cmp(a.0))
+        })
         .filter(|(_, r)| r.longest_wins > 0)
         .map(|(id, r)| award(id, r.longest_wins as f64));
     let loss_streak = records
         .iter()
-        .max_by_key(|(_, r)| r.longest_losses)
+        .max_by(|a, b| {
+            a.1.longest_losses
+                .cmp(&b.1.longest_losses)
+                .then_with(|| b.0.cmp(a.0))
+        })
         .filter(|(_, r)| r.longest_losses > 0)
         .map(|(id, r)| award(id, r.longest_losses as f64));
     let rising = records
@@ -345,20 +354,21 @@ fn compute(
             } else {
                 ratings.get(id.as_str()).copied().or(r.last_mmr)?
             };
-            let delta = latest - r.first_mmr?;
-            delta.is_finite().then_some((id.as_str(), delta))
+            let first = r.first_mmr?;
+            let delta = latest - first;
+            delta.is_finite().then_some((id.as_str(), delta, first, latest))
         })
-        .filter(|(_, v)| *v > 0.0)
-        .max_by(|a, b| a.1.total_cmp(&b.1))
-        .map(|(id, v)| award(id, v));
+        .filter(|(_, delta, _, _)| *delta > 0.0)
+        .max_by(|a, b| a.1.total_cmp(&b.1).then_with(|| b.0.cmp(a.0)))
+        .map(|(id, delta, first, latest)| json!({"playerId":id,"value":delta,"fromMmr":first,"toMmr":latest}));
     let giant = slayers
         .iter()
         .filter(|(_, wins)| **wins > 0)
-        .max_by_key(|(_, wins)| **wins)
+        .max_by(|a, b| a.1.cmp(b.1).then_with(|| b.0.cmp(a.0)))
         .map(|(id, wins)| award(id, *wins as f64));
     let nemesis = duels
         .iter()
-        .max_by_key(|(_, d)| d.games)
+        .max_by(|a, b| a.1.games.cmp(&b.1.games).then_with(|| b.0.cmp(a.0)))
         .map(|((a, b), d)| json!({"players":[a,b],"games":d.games,"wins":[d.wins_a,d.wins_b]}));
     let mut forms: Vec<_> = records
         .iter()
@@ -381,9 +391,42 @@ fn compute(
         .map(|(id, w, results)| json!({"playerId":id,"wins":w,"losses":10-w,"results":results}))
         .collect();
     let mut distribution = [0_u32; 5];
-    for r in records.values().filter(|r| r.wins + r.losses >= 10) {
+    let mut distribution_ratings = Vec::new();
+    for (id, r) in records
+        .iter()
+        .filter(|(_, r)| r.wins + r.losses >= MIN_DISTRIBUTION_GAMES)
+    {
         let rate = ratio(r.wins, r.wins + r.losses);
         distribution[((rate * 5.0) as usize).min(4)] += 1;
+        let rating = if end.is_some() {
+            r.last_mmr
+        } else {
+            ratings.get(id.as_str()).copied().or(r.last_mmr)
+        };
+        if let Some(rating) = rating.filter(|value| value.is_finite()) {
+            distribution_ratings.push(rating);
+        }
+    }
+    let mut rating_distribution = Vec::new();
+    if !distribution_ratings.is_empty() {
+        let minimum = distribution_ratings
+            .iter()
+            .copied()
+            .fold(f64::INFINITY, f64::min);
+        let maximum = distribution_ratings
+            .iter()
+            .copied()
+            .fold(f64::NEG_INFINITY, f64::max);
+        let step = (((maximum - minimum) / 6.0 / 250.0).ceil() * 250.0).max(250.0);
+        let first = (minimum / step).floor() * step;
+        let buckets = ((maximum - first) / step).floor() as usize + 1;
+        let mut counts = vec![0_u32; buckets];
+        for rating in distribution_ratings {
+            counts[((rating - first) / step).floor() as usize] += 1;
+        }
+        for (index, count) in counts.into_iter().enumerate() {
+            rating_distribution.push(json!({"from":first + index as f64 * step,"to":first + (index + 1) as f64 * step,"players":count}));
+        }
     }
     // Include inactive calendar days, so 7D/30D means days rather than active-day samples.
     let first_day = (start + 3 * 3_600_000).div_euclid(86_400_000);
@@ -407,6 +450,10 @@ fn compute(
         .filter_map(|day| day["matches"].as_u64())
         .max()
         .unwrap_or(0);
+    let peak_date = activity
+        .iter()
+        .find(|day| peak > 0 && day["matches"].as_u64() == Some(peak))
+        .map(|day| day["date"].clone());
     json!({
         "available":true,"archiveComplete":complete,"updatedAt":updated_at,
         "players":identities,
@@ -414,8 +461,8 @@ fn compute(
             "winMachine":win_machine,"veteran":veteran,"rising":rising,"duo":best_duo,"cursed":loss_streak,
             "nemesis":nemesis,"giantSlayer":giant},
         "totals":{"players":records.len(),"matches":match_count,"averageGames":if records.is_empty(){0.0}else{appearances as f64/records.len() as f64},
-            "active7d":recent_active.len(),"lineups":distinct_lineups.len(),"peakDay":peak},
-        "activity":activity,"distribution":distribution,"recentForm":forms
+            "active7d":recent_active.len(),"lineups":distinct_lineups.len(),"peakDay":peak,"peakDayDate":peak_date},
+        "activity":activity,"distribution":distribution,"ratingDistribution":rating_distribution,"recentForm":forms
     })
 }
 
@@ -590,6 +637,105 @@ mod tests {
         assert_eq!(combinable(&["a".into(), "b".into(), "c".into()]).len(), 4);
         assert!(wilson(8, 10) > wilson(1, 1));
         assert!(combinable(&["a".into()]).is_empty());
+    }
+    #[test]
+    fn distributions_include_five_completed_games_and_skip_unknown_ratings() {
+        let start = current_start();
+        let mut games: Vec<_> = (0..5)
+            .map(|n| match_at(n, 0, ("a", "b"), start + n * 1000))
+            .collect();
+        for game in &mut games {
+            game.teams[1].players[0].mmr = None;
+        }
+        games.extend((5..9).map(|n| match_at(n, 0, ("c", "d"), start + n * 1000)));
+        // A draw is recorded, but is not a completed win/loss for eligibility.
+        games.push(match_at(10, -2, ("c", "d"), start + 10_000));
+        let result = compute(games, &[], start + 20_000, true, start, start, None);
+        assert_eq!(result["distribution"], json!([1, 0, 0, 0, 1]));
+        assert_eq!(
+            result["ratingDistribution"],
+            json!([{"from":1000.0,"to":1250.0,"players":1}])
+        );
+        assert_eq!(result["totals"]["peakDay"], 10);
+        assert_eq!(result["totals"]["peakDayDate"], "2026-10-16");
+    }
+    #[test]
+    fn rating_endpoints_follow_the_selected_season() {
+        let start = current_start();
+        let games = || {
+            (0..10)
+                .map(|n| {
+                    let mut game = match_at(n, 0, ("a", "b"), start + n * 1000);
+                    game.teams[0].players[0].mmr = Some(850.0 + n as f64 * 5.0);
+                    game.teams[0].players[0].change = Some(5.0);
+                    game
+                })
+                .collect()
+        };
+        let standings = [Standing {
+            id: "a".into(),
+            mmr: 1200.0,
+        }];
+        let current = compute(
+            games(),
+            &standings,
+            start + 20_000,
+            true,
+            start,
+            start,
+            None,
+        );
+        assert_eq!(
+            current["awards"]["rising"],
+            json!({"playerId":"a","value":350.0,"fromMmr":850.0,"toMmr":1200.0})
+        );
+        assert_eq!(
+            current["ratingDistribution"],
+            json!([{"from":1000.0,"to":1250.0,"players":2}])
+        );
+        let archived = compute(
+            games(),
+            &standings,
+            start + 20_000,
+            true,
+            start,
+            start,
+            Some(start + 15_000),
+        );
+        assert_eq!(archived["awards"]["rising"]["toMmr"], 900.0);
+        assert_eq!(
+            archived["ratingDistribution"],
+            json!([
+                {"from":750.0,"to":1000.0,"players":1}, {"from":1000.0,"to":1250.0,"players":1}
+            ])
+        );
+    }
+    #[test]
+    fn tied_awards_are_repeatable() {
+        let start = current_start();
+        for _ in 0..24 {
+            let games = (0..20)
+                .map(|n| match_at(n, (n % 2) as isize, ("a", "b"), start + n * 1000))
+                .collect();
+            let result = compute(games, &[], start + 30_000, true, start, start, None);
+            for name in [
+                "mvp",
+                "consistent",
+                "streak",
+                "veteran",
+                "cursed",
+                "winMachine",
+            ] {
+                assert_eq!(result["awards"][name]["playerId"], "a", "{name}");
+            }
+        }
+    }
+    #[test]
+    fn empty_season_has_no_rating_buckets_or_peak_date() {
+        let start = current_start();
+        let result = compute(Vec::new(), &[], start + 30_000, true, start, start, None);
+        assert_eq!(result["ratingDistribution"], json!([]));
+        assert!(result["totals"]["peakDayDate"].is_null());
     }
     #[test]
     fn party_and_rivalry_awards_require_repeated_real_matches() {
