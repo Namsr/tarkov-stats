@@ -6,19 +6,35 @@ import type { AxisPlayer } from "@/lib/axis-league";
 import { useI18n } from "@/lib/i18n/context";
 import "./axis-statistics.css";
 
-type Award = { playerId: string; value: number } | null;
-type Party = { players: string[]; games: number; wins: number; winRate: number } | null;
+type Award = {
+  playerId: string; value: number;
+  rating?: number | null; rank?: number | null;
+  games?: number; wins?: number; losses?: number; longestWins?: number; winRate?: number;
+  basis?: "kda" | "wins";
+  meanKda?: number; minKda?: number; maxKda?: number; sd?: number; inBand?: number | null;
+} | null;
+type Party = {
+  players: string[]; games: number; wins: number; winRate: number;
+  kdaGames?: number; kills?: number; deaths?: number; assists?: number; kda?: number | null;
+} | null;
+type CombatPlayer = {
+  matches: number; games: number; wins: number; losses: number;
+  kills: number; deaths: number; assists: number;
+  kda: number; meanKda: number; minKda: number; maxKda: number; sd: number;
+  stability: number | null; inBand: number | null; vsAverage: number | null;
+};
 type Stats = {
   available: boolean; archiveComplete: boolean; updatedAt: number; season: string;
   seasons: { id: string; startsAt: number; endsAt: number | null }[];
   players: Record<string, { name: string; avatarUrl: string | null }>;
   awards: {
-    mvp: Award; consistent: Award; party: Party; streak: Award;
+    mvp: Award; consistent: Award; streak: Award;
     winMachine: Award; veteran: Award;
     rising: { playerId: string; value: number; fromMmr: number; toMmr: number } | null;
     duo: Party; cursed: Award;
     nemesis: { players: string[]; games: number; wins: number[] } | null; giantSlayer: Award;
   };
+  combat?: { averageKda: number | null; players: Record<string, CombatPlayer> } | null;
   totals: { players: number; matches: number; averageGames: number; active7d: number; lineups: number; peakDay: number; peakDayDate: string | null };
   activity: { date: string; matches: number; players: number }[];
   distribution: number[];
@@ -117,6 +133,7 @@ export default function AxisLeagueStatistics({ players, averageKda }: { players?
   }, [season, retry]);
 
   const number = (v: number, digits = 0) => v.toLocaleString(locale, { maximumFractionDigits: digits });
+  const decimal = (v: number, digits = 2) => v.toLocaleString(locale, { minimumFractionDigits: digits, maximumFractionDigits: digits });
   const percent = (v: number) => number(v, 1) + "%";
   function player(id: string) {
     const person = statistics?.players[id];
@@ -130,11 +147,15 @@ export default function AxisLeagueStatistics({ players, averageKda }: { players?
   }
   function awardValue(award: Award, suffix = "", digits = 0) { return award ? number(award.value, digits) + suffix : "—"; }
   const main = statistics?.awards;
+  const combat = statistics?.combat;
+  const mvpCombat = main?.mvp ? combat?.players[main.mvp.playerId] : undefined;
+  const stableCombat = main?.consistent ? combat?.players[main.consistent.playerId] : undefined;
+  const stableBasis = main?.consistent?.basis === "kda" && stableCombat ? "kda" : main?.consistent ? "wins" : null;
+  const ratio = (wins: number, losses: number) => wins + losses > 0 ? wins / (wins + losses) * 100 : 0;
   const recordCards = [
     { id: "winMachine", title: "axis.stats.machine", symbol: "♛", suffix: "%", digits: 1, note: "axis.stats.minMatches" },
     { id: "veteran", title: "axis.stats.veteran", symbol: "◷", suffix: "", digits: 0, note: "axis.stats.matches" },
     { id: "rising", title: "axis.stats.rising", symbol: "↗", suffix: "", digits: 0, note: "axis.column.mmr" },
-    { id: "duo", title: "axis.stats.duo", symbol: "♢", suffix: "%", digits: 1, note: "axis.stats.gamesTogether" },
     { id: "cursed", title: "axis.stats.cursed", symbol: "☠", suffix: " L", digits: 0, note: "axis.stats.losses" },
   ] as const;
   const summary = [
@@ -165,32 +186,116 @@ export default function AxisLeagueStatistics({ players, averageKda }: { players?
       <div className="axis-stat-section-heading"><h3>{t("axis.stats.champions")}</h3></div>
       <div className="axis-stat-heroes">
         <article className="axis-stat-hero axis-stat-hero--mvp">
-          <h4 className="axis-stat-hero-top">✦ {t("axis.stats.mvp")}</h4>
-          <div className="axis-stat-hero-body"><div className="axis-stat-hero-number">{awardValue(main?.mvp ?? null)}</div><small>{t("axis.stats.score")}</small><div className="axis-stat-hero-player">{main?.mvp ? player(main.mvp.playerId) : t("axis.stats.noPlayers")}</div></div>
+          <h4 className="axis-stat-hero-top"><span>✦ {t("axis.stats.mvp")}</span>
+            {main?.mvp?.rank != null && <span className="axis-stat-hero-badge">{t("axis.stats.rank", { n: number(main.mvp.rank) })}</span>}
+          </h4>
+          {main?.mvp ? <div className="axis-stat-hero-body">
+            <div className="axis-stat-hero-rating">
+              <strong>{main.mvp.rating == null ? "—" : number(main.mvp.rating)}</strong>
+              <span>{t("axis.stats.rating")}</span>
+            </div>
+            <div className="axis-stat-hero-player">{player(main.mvp.playerId)}</div>
+            {mvpCombat ? <div className="axis-stat-hero-kda">
+              <div className="axis-stat-hero-kda-head">
+                <span>{t("axis.stats.kda")}</span>
+                <strong>{decimal(mvpCombat.kda)}</strong>
+                {mvpCombat.vsAverage != null && <em className="axis-stat-boost">{t("axis.stats.timesAverage", { n: decimal(mvpCombat.vsAverage) })}</em>}
+              </div>
+              <div className="axis-stat-hero-kda-values">
+                {([["kills", mvpCombat.kills], ["deaths", mvpCombat.deaths], ["assists", mvpCombat.assists]] as const).map(([key, value]) =>
+                  <div key={key}><span>{t("axis.kda.column." + key)}</span><strong>{number(value)}</strong></div>)}
+              </div>
+            </div> : <p className="axis-stat-hero-empty">{t("axis.stats.noKda")}</p>}
+            {main.mvp.games != null && <>
+              <dl className="axis-stat-hero-grid">
+                <div><dt>{t("axis.stats.winrate")}</dt><dd>{percent(ratio(main.mvp.wins ?? 0, main.mvp.losses ?? 0))}</dd></div>
+                <div><dt>{t("axis.stats.games")}</dt><dd>{number(main.mvp.games)}</dd></div>
+                <div><dt>{t("axis.stats.record")}</dt><dd>{number(main.mvp.wins ?? 0)}–{number(main.mvp.losses ?? 0)}</dd></div>
+                <div><dt>{t("axis.stats.bestStreak")}</dt><dd>{number(main.mvp.longestWins ?? 0)}</dd></div>
+              </dl>
+              {mvpCombat && <dl className="axis-stat-hero-grid axis-stat-hero-grid--compact">
+                <div><dt>{t("axis.stats.kdaRange")}</dt><dd>{decimal(mvpCombat.minKda)}–{decimal(mvpCombat.maxKda)}</dd></div>
+                <div><dt>{t("axis.stats.deviation")}</dt><dd>±{decimal(mvpCombat.sd)}</dd></div>
+                <div><dt>{t("axis.stats.statsMatches")}</dt><dd>{number(mvpCombat.matches)}</dd></div>
+                <div><dt>{t("axis.stats.inBand")}</dt><dd>{percent(mvpCombat.inBand ?? 0)}</dd></div>
+              </dl>}
+              <p className="axis-stat-hero-note">{t("axis.stats.mvpWhy", { rank: number(main.mvp.rank ?? 0), winrate: number(ratio(main.mvp.wins ?? 0, main.mvp.losses ?? 0), 1), games: number(main.mvp.games) })}</p>
+            </>}
+            {mvpCombat?.vsAverage != null && combat?.averageKda != null && <p className="axis-stat-hero-note axis-stat-hero-note--muted">
+              {t("axis.stats.mvpWhyKda", { kda: decimal(mvpCombat.kda), multiplier: decimal(mvpCombat.vsAverage), average: decimal(combat.averageKda) })}
+            </p>}
+          </div> : <div className="axis-stat-hero-body"><div className="axis-stat-hero-player">{t("axis.stats.noPlayers")}</div></div>}
         </article>
         <article className="axis-stat-hero axis-stat-hero--consistent">
-          <h4 className="axis-stat-hero-top">◇ {t("axis.stats.consistent")}</h4>
-          <div className="axis-stat-hero-body"><div className="axis-stat-hero-number">{awardValue(main?.consistent ?? null, "%", 1)}</div><div className="axis-stat-hero-player">{main?.consistent ? player(main.consistent.playerId) : t("axis.stats.noPlayers")}</div></div>
+          <h4 className="axis-stat-hero-top"><span>◇ {t("axis.stats.consistent")}</span>
+            {stableBasis === "kda" && <span className="axis-stat-hero-badge">{t("axis.stats.stability")} {percent(stableCombat?.stability ?? 0)}</span>}
+          </h4>
+          {main?.consistent ? <div className="axis-stat-hero-body">
+            <div className="axis-stat-hero-rating">
+              <strong>{stableBasis === "kda" ? decimal(stableCombat?.meanKda ?? 0) : percent(main.consistent.value)}</strong>
+              <span>{stableBasis === "kda" ? t("axis.stats.avgKda") : t("axis.stats.consistencyWins")}</span>
+            </div>
+            <div className="axis-stat-hero-player">{player(main.consistent.playerId)}</div>
+            {stableBasis === "kda" && stableCombat ? <>
+              <dl className="axis-stat-hero-grid">
+                <div><dt>{t("axis.stats.kdaRange")}</dt><dd>{decimal(stableCombat.minKda)}–{decimal(stableCombat.maxKda)}</dd></div>
+                <div><dt>{t("axis.stats.deviation")}</dt><dd>±{decimal(stableCombat.sd)}</dd></div>
+                <div><dt>{t("axis.stats.statsMatches")}</dt><dd>{number(stableCombat.matches)}</dd></div>
+                <div><dt>{t("axis.stats.inBand")}</dt><dd>{percent(stableCombat.inBand ?? 0)}</dd></div>
+              </dl>
+              <p className="axis-stat-hero-note">{t("axis.stats.stableWhy", {
+                mean: decimal(stableCombat.meanKda), min: decimal(stableCombat.minKda),
+                max: decimal(stableCombat.maxKda), games: number(stableCombat.matches),
+              })}</p>
+              <p className="axis-stat-hero-note axis-stat-hero-note--muted">{t("axis.stats.stableBand", { n: number(stableCombat.inBand ?? 0) })}</p>
+            </> : <p className="axis-stat-hero-note">{t("axis.stats.stableWhyWins")}</p>}
+          </div> : <div className="axis-stat-hero-body"><div className="axis-stat-hero-player">{t("axis.stats.noPlayers")}</div></div>}
         </article>
-        <article className="axis-stat-hero"><h4 className="axis-stat-hero-top">♢ {t("axis.stats.party")}</h4>
-          <div className="axis-stat-hero-body"><div className="axis-stat-hero-number">{main?.party ? percent(main.party.winRate) : "—"}</div><small>{main?.party ? t("axis.stats.sharedMatches", { n: number(main.party.games) }) : t("axis.stats.noPlayers")}</small>{main?.party && personIds(main.party.players)}</div>
+        <article className="axis-stat-hero"><h4 className="axis-stat-hero-top">♢ {t("axis.stats.duo")}</h4>
+          <div className="axis-stat-hero-body">
+            <div className="axis-stat-hero-number">{main?.duo ? percent(main.duo.winRate) : "—"}</div>
+            <small>{main?.duo ? t("axis.stats.sharedMatches", { n: number(main.duo.games) }) : t("axis.stats.noPlayers")}</small>
+            {main?.duo && <>
+              {personIds(main.duo.players)}
+              <dl className="axis-stat-hero-grid axis-stat-hero-grid--compact">
+                <div><dt>{t("axis.stats.record")}</dt><dd>{number(main.duo.wins)}–{number(main.duo.games - main.duo.wins)}</dd></div>
+                <div><dt>{t("axis.stats.duoKda")}</dt><dd>{main.duo.kda == null ? "—" : decimal(main.duo.kda)}</dd></div>
+              </dl>
+              {main.duo.kda != null && <p className="axis-stat-hero-line">
+                <span>{t("axis.kda.column.kills")} {number(main.duo.kills ?? 0)}</span>
+                <span>{t("axis.kda.column.deaths")} {number(main.duo.deaths ?? 0)}</span>
+                <span>{t("axis.kda.column.assists")} {number(main.duo.assists ?? 0)}</span>
+                <span>{t("axis.stats.statsMatchesShort", { n: number(main.duo.kdaGames ?? 0) })}</span>
+              </p>}
+              <p className="axis-stat-hero-note">{t("axis.stats.duoWhy", { wins: number(main.duo.wins), games: number(main.duo.games) })}</p>
+            </>}
+          </div>
         </article>
         <article className="axis-stat-hero"><h4 className="axis-stat-hero-top">↗ {t("axis.stats.streak")}</h4>
-          <div className="axis-stat-hero-body"><div className="axis-stat-hero-number">{awardValue(main?.streak ?? null)}</div><small>{t("axis.stats.wins")}</small><div className="axis-stat-hero-player">{main?.streak ? player(main.streak.playerId) : t("axis.stats.noPlayers")}</div></div>
+          <div className="axis-stat-hero-body">
+            <div className="axis-stat-hero-number">{awardValue(main?.streak ?? null)}</div>
+            <small>{t("axis.stats.wins")}</small>
+            <div className="axis-stat-hero-player">{main?.streak ? player(main.streak.playerId) : t("axis.stats.noPlayers")}</div>
+            {main?.streak && main.streak.games != null && <>
+              <dl className="axis-stat-hero-grid axis-stat-hero-grid--compact">
+                <div><dt>{t("axis.stats.record")}</dt><dd>{number(main.streak.wins ?? 0)}–{number(main.streak.losses ?? 0)}</dd></div>
+                <div><dt>{t("arena.metric.win_rate")}</dt><dd>{percent(main.streak.winRate ?? 0)}</dd></div>
+              </dl>
+              <p className="axis-stat-hero-note">{t("axis.stats.streakWhy", { games: number(main.streak.games), winrate: number(main.streak.winRate ?? 0, 1) })}</p>
+            </>}
+          </div>
         </article>
       </div>
       <div className="axis-stat-section-heading"><h3>{t("axis.stats.records")}</h3></div>
       <div className="axis-stat-records">{recordCards.map((record) => {
-        const group = record.id === "duo" ? main?.duo : null;
-        const single = record.id !== "duo" ? main?.[record.id] ?? null : null;
-        const winrate = record.id === "winMachine" || record.id === "duo";
+        const single = main?.[record.id] ?? null;
         return <article key={record.id} className={`axis-stat-record${record.id === "cursed" ? " axis-stat-record--loss" : ""}`}>
           <div className="axis-stat-record-icon" aria-hidden="true">{record.symbol}</div><h4>{t(record.title)}</h4>
           {record.id === "rising" && main?.rising
             ? <strong className="axis-stat-record-value axis-stat-rating-change">{number(main.rising.fromMmr)} → {number(main.rising.toMmr)} <small>{t("axis.column.mmr")}</small></strong>
-            : <strong className="axis-stat-record-value">{group ? percent(group.winRate) : awardValue(single, record.suffix, record.digits)}{winrate && <small>{t("arena.metric.win_rate")}</small>}</strong>}
-          <div className="axis-stat-record-name">{group ? personIds(group.players) : single ? player(single.playerId) : <span>—</span>}</div>
-          <small>{group ? t("axis.stats.sharedMatches", { n: number(group.games) }) : record.id === "rising" ? "" : t(record.note)}</small>
+            : <strong className="axis-stat-record-value">{awardValue(single, record.suffix, record.digits)}{record.id === "winMachine" && <small>{t("arena.metric.win_rate")}</small>}</strong>}
+          <div className="axis-stat-record-name">{single ? player(single.playerId) : <span>—</span>}</div>
+          <small>{record.id === "rising" ? "" : t(record.note)}</small>
         </article>;
       })}</div>
       <div className="axis-stat-section-heading"><h3>{t("axis.stats.overall")}</h3></div>

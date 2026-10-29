@@ -17,9 +17,10 @@ use std::{
 
 const CHANNEL: &str = "1343726040421367842";
 const MIN_GAMES: usize = 20;
-const MIN_PARTY_GAMES: u32 = 8;
 const MIN_DUO_GAMES: u32 = 10;
 const MIN_DISTRIBUTION_GAMES: u32 = 5;
+// K/D/A stability needs enough games to separate a steady player from a lucky one.
+const MIN_KDA_GAMES: usize = 10;
 
 #[derive(Deserialize)]
 struct Match {
@@ -47,6 +48,8 @@ struct Player {
 struct Standing {
     id: String,
     mmr: f64,
+    #[serde(default)]
+    position: Option<u32>,
 }
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -85,6 +88,37 @@ struct Day {
     players: HashSet<String>,
 }
 
+#[derive(Clone, Copy, Default)]
+struct Kda {
+    kills: u32,
+    deaths: u32,
+    assists: u32,
+}
+#[derive(Default)]
+struct Combat {
+    matches: u32,
+    kills: u32,
+    deaths: u32,
+    assists: u32,
+    ratios: Vec<f64>,
+}
+#[derive(Default)]
+struct DuoCombat {
+    games: u32,
+    kills: u32,
+    deaths: u32,
+    assists: u32,
+}
+struct Stability {
+    mean: f64,
+    sd: f64,
+    cv: f64,
+    min: f64,
+    max: f64,
+    score: f64,
+    in_band: f64,
+}
+
 fn current_start() -> i64 {
     DateTime::parse_from_rfc3339("2026-10-16T01:59:00+03:00")
         .expect("fixed season start")
@@ -95,6 +129,63 @@ fn ratio(wins: u32, games: u32) -> f64 {
         0.0
     } else {
         f64::from(wins) / f64::from(games)
+    }
+}
+fn kda_ratio(kills: u32, deaths: u32, assists: u32) -> f64 {
+    (f64::from(kills) + f64::from(assists)) / f64::from(deaths.max(1))
+}
+impl Combat {
+    fn add(&mut self, kda: Kda) {
+        self.matches += 1;
+        self.kills += kda.kills;
+        self.deaths += kda.deaths;
+        self.assists += kda.assists;
+        self.ratios
+            .push(kda_ratio(kda.kills, kda.deaths, kda.assists));
+    }
+    fn ratio(&self) -> f64 {
+        kda_ratio(self.kills, self.deaths, self.assists)
+    }
+    /// A player is steady when the per-match K/D/A barely moves around its own mean.
+    fn stability(&self) -> Option<Stability> {
+        if self.ratios.len() < MIN_KDA_GAMES {
+            return None;
+        }
+        let count = self.ratios.len() as f64;
+        let mean = self.ratios.iter().sum::<f64>() / count;
+        if !mean.is_finite() || mean <= 0.0 {
+            return None;
+        }
+        let variance = self
+            .ratios
+            .iter()
+            .map(|value| (value - mean).powi(2))
+            .sum::<f64>()
+            / count;
+        let sd = variance.sqrt();
+        let cv = sd / mean;
+        let low = mean * 0.75;
+        let high = mean * 1.25;
+        let in_band = self
+            .ratios
+            .iter()
+            .filter(|value| low <= **value && **value <= high)
+            .count() as f64
+            / count
+            * 100.0;
+        Some(Stability {
+            mean,
+            sd,
+            cv,
+            min: self.ratios.iter().copied().fold(f64::INFINITY, f64::min),
+            max: self
+                .ratios
+                .iter()
+                .copied()
+                .fold(f64::NEG_INFINITY, f64::max),
+            score: (1.0 - cv).clamp(0.0, 1.0) * 100.0,
+            in_band,
+        })
     }
 }
 // Wilson's conservative win-rate bound rewards both performance and sample size.
@@ -131,6 +222,7 @@ fn combinable(keys: &[String]) -> Vec<Vec<String>> {
 fn compute(
     matches: Vec<Match>,
     standings: &[Standing],
+    kda_rows: &HashMap<(i64, String), Kda>,
     now: i64,
     complete: bool,
     updated_at: i64,
@@ -138,8 +230,14 @@ fn compute(
     end: Option<i64>,
 ) -> Value {
     let ratings: HashMap<&str, f64> = standings.iter().map(|s| (s.id.as_str(), s.mmr)).collect();
+    let positions: HashMap<&str, u32> = standings
+        .iter()
+        .filter_map(|s| s.position.map(|position| (s.id.as_str(), position)))
+        .collect();
     let mut identities = serde_json::Map::new();
     let mut records: HashMap<String, Record> = HashMap::new();
+    let mut combat: HashMap<String, Combat> = HashMap::new();
+    let mut duo_combat: HashMap<Vec<String>, DuoCombat> = HashMap::new();
     let mut parties: HashMap<Vec<String>, Group> = HashMap::new();
     let mut distinct_lineups: HashSet<Vec<String>> = HashSet::new();
     let mut duels: HashMap<(String, String), Duel> = HashMap::new();
@@ -198,6 +296,9 @@ fn compute(
                 }
                 let record = records.entry(player.id.clone()).or_default();
                 record.games += 1;
+                if let Some(kda) = kda_rows.get(&(m.number, player.id.clone())) {
+                    combat.entry(player.id.clone()).or_default().add(*kda);
+                }
                 if let Some(mmr) = player.mmr.filter(|v| v.is_finite()) {
                     if record.first_mmr.is_none() {
                         record.first_mmr = Some(mmr);
@@ -223,6 +324,23 @@ fn compute(
                             record.win_run = 0;
                             record.longest_losses = record.longest_losses.max(record.loss_run);
                         }
+                    }
+                }
+            }
+            // A duo can be part of a bigger stack, so pair every teammate, not just 2v2 lobbies.
+            for (index, first) in lineup.iter().enumerate() {
+                for second in &lineup[index + 1..] {
+                    if let (Some(a), Some(b)) = (
+                        kda_rows.get(&(m.number, first.clone())),
+                        kda_rows.get(&(m.number, second.clone())),
+                    ) {
+                        let duo = duo_combat
+                            .entry(vec![first.clone(), second.clone()])
+                            .or_default();
+                        duo.games += 1;
+                        duo.kills += a.kills + b.kills;
+                        duo.deaths += a.deaths + b.deaths;
+                        duo.assists += a.assists + b.assists;
                     }
                 }
             }
@@ -297,30 +415,85 @@ fn compute(
             let score = mmr / 10.0
                 + 100.0 * wilson(r.wins, r.wins + r.losses)
                 + 5.0 * f64::from(r.games).ln_1p();
-            score.is_finite().then_some((id.as_str(), score))
+            score.is_finite().then_some((id.as_str(), score, r, mmr))
         })
         .max_by(|a, b| a.1.total_cmp(&b.1).then_with(|| b.0.cmp(a.0)))
-        .map(|(id, v)| award(id, v));
-    // Two consecutive 10-game blocks must both be strong, not only the aggregate.
-    let stable = records
+        .map(|(id, value, r, mmr)| {
+            json!({
+                "playerId": id,
+                "value": value,
+                "rating": mmr,
+                "rank": if end.is_none() { positions.get(id).copied() } else { None },
+                "games": r.games,
+                "wins": r.wins,
+                "losses": r.losses,
+                "longestWins": r.longest_wins,
+            })
+        });
+    // The steadiest player keeps almost the same per-match K/D/A instead of one huge game.
+    let stable = combat
         .iter()
-        .filter(|(_, r)| r.results.len() >= 20)
-        .map(|(id, r)| {
-            let tail = &r.results[r.results.len() - 20..];
-            let a = tail[..10].iter().filter(|v| **v).count() as f64;
-            let b = tail[10..].iter().filter(|v| **v).count() as f64;
-            (id.as_str(), a.min(b) * 10.0)
+        .filter_map(|(id, c)| c.stability().map(|stability| (id.as_str(), stability, c)))
+        .min_by(|a, b| {
+            a.1.cv
+                .total_cmp(&b.1.cv)
+                .then_with(|| b.1.mean.total_cmp(&a.1.mean))
+                .then_with(|| b.2.matches.cmp(&a.2.matches))
+                .then_with(|| a.0.cmp(b.0))
         })
-        .max_by(|a, b| a.1.total_cmp(&b.1).then_with(|| b.0.cmp(a.0)))
-        .map(|(id, v)| award(id, v));
+        .map(|(id, stability, c)| {
+            json!({
+                "playerId": id,
+                "value": stability.score,
+                "basis": "kda",
+                "games": c.matches,
+                "meanKda": stability.mean,
+                "minKda": stability.min,
+                "maxKda": stability.max,
+                "sd": stability.sd,
+                "inBand": stability.in_band,
+            })
+        })
+        // Archived seasons can predate K/D/A uploads; keep the old win-block award as a fallback.
+        .or_else(|| {
+            records
+                .iter()
+                .filter(|(_, r)| r.results.len() >= 20)
+                .map(|(id, r)| {
+                    let tail = &r.results[r.results.len() - 20..];
+                    let a = tail[..10].iter().filter(|v| **v).count() as f64;
+                    let b = tail[10..].iter().filter(|v| **v).count() as f64;
+                    (id.as_str(), a.min(b) * 10.0)
+                })
+                .max_by(|a, b| a.1.total_cmp(&b.1).then_with(|| b.0.cmp(a.0)))
+                .map(|(id, value)| json!({"playerId": id, "value": value, "basis": "wins"}))
+        });
     let party = |min_size: usize, max_size: usize, min_games: u32| {
-        parties.iter().filter(|(ids,g)|ids.len()>=min_size && ids.len()<=max_size &&g.games>=min_games)
-            .max_by(|a,b| wilson(a.1.wins,a.1.games).total_cmp(&wilson(b.1.wins,b.1.games))
-                .then_with(||a.1.games.cmp(&b.1.games)).then_with(||b.0.cmp(a.0)))
-            .map(|(ids,g)|json!({"players":ids,"games":g.games,"wins":g.wins,"winRate":ratio(g.wins,g.games)*100.0}))
+        parties
+            .iter()
+            .filter(|(ids, g)| {
+                ids.len() >= min_size && ids.len() <= max_size && g.games >= min_games
+            })
+            .max_by(|a, b| {
+                wilson(a.1.wins, a.1.games)
+                    .total_cmp(&wilson(b.1.wins, b.1.games))
+                    .then_with(|| a.1.games.cmp(&b.1.games))
+                    .then_with(|| b.0.cmp(a.0))
+            })
+            .map(|(ids, g)| (ids.clone(), g.games, g.wins))
     };
-    let best_party = party(3, 5, MIN_PARTY_GAMES);
-    let best_duo = party(2, 2, MIN_DUO_GAMES);
+    let best_duo = party(2, 2, MIN_DUO_GAMES).map(|(ids, games, wins)| {
+        let duo = duo_combat.get(&ids);
+        json!({
+            "players": ids, "games": games, "wins": wins,
+            "winRate": ratio(wins, games) * 100.0,
+            "kdaGames": duo.map_or(0, |d| d.games),
+            "kills": duo.map_or(0, |d| d.kills),
+            "deaths": duo.map_or(0, |d| d.deaths),
+            "assists": duo.map_or(0, |d| d.assists),
+            "kda": duo.map(|d| kda_ratio(d.kills, d.deaths, d.assists)),
+        })
+    });
     let win_machine =
         select(&|r| ratio(r.wins, r.wins + r.losses) * 100.0).map(|(id, v)| award(id, v));
     let veteran = records
@@ -335,7 +508,16 @@ fn compute(
                 .then_with(|| b.0.cmp(a.0))
         })
         .filter(|(_, r)| r.longest_wins > 0)
-        .map(|(id, r)| award(id, r.longest_wins as f64));
+        .map(|(id, r)| {
+            json!({
+                "playerId": id,
+                "value": r.longest_wins,
+                "games": r.games,
+                "wins": r.wins,
+                "losses": r.losses,
+                "winRate": ratio(r.wins, r.wins + r.losses) * 100.0,
+            })
+        });
     let loss_streak = records
         .iter()
         .max_by(|a, b| {
@@ -454,12 +636,46 @@ fn compute(
         .iter()
         .find(|day| peak > 0 && day["matches"].as_u64() == Some(peak))
         .map(|day| day["date"].clone());
+    let total_kills: u64 = combat.values().map(|c| u64::from(c.kills)).sum();
+    let total_deaths: u64 = combat.values().map(|c| u64::from(c.deaths)).sum();
+    let total_assists: u64 = combat.values().map(|c| u64::from(c.assists)).sum();
+    let average_kda = (!combat.is_empty() && total_kills + total_assists > 0)
+        .then(|| (total_kills + total_assists) as f64 / total_deaths.max(1) as f64);
+    let combat_players: serde_json::Map<String, Value> = combat
+        .iter()
+        .map(|(id, c)| {
+            let stability = c.stability();
+            let kda = c.ratio();
+            let record = records.get(id);
+            (
+                id.clone(),
+                json!({
+                    "matches": c.matches,
+                    "games": record.map_or(0, |r| r.games),
+                    "wins": record.map_or(0, |r| r.wins),
+                    "losses": record.map_or(0, |r| r.losses),
+                    "kills": c.kills,
+                    "deaths": c.deaths,
+                    "assists": c.assists,
+                    "kda": kda,
+                    "meanKda": stability.as_ref().map_or(kda, |s| s.mean),
+                    "minKda": stability.as_ref().map_or(kda, |s| s.min),
+                    "maxKda": stability.as_ref().map_or(kda, |s| s.max),
+                    "sd": stability.as_ref().map_or(0.0, |s| s.sd),
+                    "stability": stability.as_ref().map(|s| s.score),
+                    "inBand": stability.as_ref().map(|s| s.in_band),
+                    "vsAverage": average_kda.filter(|a| *a > 0.0).map(|a| kda / a),
+                }),
+            )
+        })
+        .collect();
     json!({
         "available":true,"archiveComplete":complete,"updatedAt":updated_at,
         "players":identities,
-        "awards":{"mvp":mvp,"consistent":stable,"party":best_party,"streak":win_streak,
+        "awards":{"mvp":mvp,"consistent":stable,"streak":win_streak,
             "winMachine":win_machine,"veteran":veteran,"rising":rising,"duo":best_duo,"cursed":loss_streak,
             "nemesis":nemesis,"giantSlayer":giant},
+        "combat":{"averageKda":average_kda,"players":combat_players},
         "totals":{"players":records.len(),"matches":match_count,"averageGames":if records.is_empty(){0.0}else{appearances as f64/records.len() as f64},
             "active7d":recent_active.len(),"lineups":distinct_lineups.len(),"peakDay":peak,"peakDayDate":peak_date},
         "activity":activity,"distribution":distribution,"ratingDistribution":rating_distribution,"recentForm":forms
@@ -539,9 +755,32 @@ fn read(now: i64, season: &str) -> Result<Value, String> {
         matches
             .push(serde_json::from_str(&raw).map_err(|e| format!("Invalid archived match: {e}"))?);
     }
+    let mut kda_query = db
+        .prepare(
+            "SELECT k.match_number,k.discord_id,k.kills,k.deaths,k.assists
+             FROM axis_match_kda k JOIN axis_archive_matches m ON m.number=k.match_number
+             WHERE json_extract(m.payload,'$.queueId')=?1 AND json_extract(m.payload,'$.time')>=?2
+               AND (?3 IS NULL OR json_extract(m.payload,'$.time')<?3)",
+        )
+        .map_err(|e| e.to_string())?;
+    let kda_rows = kda_query
+        .query_map(rusqlite::params![CHANNEL, starts_at, ends_at], |row| {
+            Ok((
+                (row.get::<_, i64>(0)?, row.get::<_, String>(1)?),
+                Kda {
+                    kills: row.get::<_, i64>(2)?.clamp(0, 9999) as u32,
+                    deaths: row.get::<_, i64>(3)?.clamp(0, 9999) as u32,
+                    assists: row.get::<_, i64>(4)?.clamp(0, 9999) as u32,
+                },
+            ))
+        })
+        .map_err(|e| e.to_string())?
+        .collect::<Result<HashMap<_, _>, _>>()
+        .map_err(|e| e.to_string())?;
     let mut result = compute(
         matches,
         &standings,
+        &kda_rows,
         now,
         complete == 1,
         updated_at,
@@ -624,7 +863,16 @@ mod tests {
             match_at(3, -2, ("a", "b"), start + 3000),
             match_at(4, 2, ("a", "b"), start + 4000),
         ];
-        let result = compute(games, &[], start + 5000, true, start + 5000, start, None);
+        let result = compute(
+            games,
+            &[],
+            &HashMap::new(),
+            start + 5000,
+            true,
+            start + 5000,
+            start,
+            None,
+        );
         assert_eq!(result["totals"]["matches"], 3);
         assert_eq!(result["totals"]["players"], 2);
         assert_eq!(result["totals"]["averageGames"], 3.0);
@@ -650,7 +898,16 @@ mod tests {
         games.extend((5..9).map(|n| match_at(n, 0, ("c", "d"), start + n * 1000)));
         // A draw is recorded, but is not a completed win/loss for eligibility.
         games.push(match_at(10, -2, ("c", "d"), start + 10_000));
-        let result = compute(games, &[], start + 20_000, true, start, start, None);
+        let result = compute(
+            games,
+            &[],
+            &HashMap::new(),
+            start + 20_000,
+            true,
+            start,
+            start,
+            None,
+        );
         assert_eq!(result["distribution"], json!([1, 0, 0, 0, 1]));
         assert_eq!(
             result["ratingDistribution"],
@@ -675,10 +932,12 @@ mod tests {
         let standings = [Standing {
             id: "a".into(),
             mmr: 1200.0,
+            position: Some(1),
         }];
         let current = compute(
             games(),
             &standings,
+            &HashMap::new(),
             start + 20_000,
             true,
             start,
@@ -696,6 +955,7 @@ mod tests {
         let archived = compute(
             games(),
             &standings,
+            &HashMap::new(),
             start + 20_000,
             true,
             start,
@@ -717,7 +977,16 @@ mod tests {
             let games = (0..20)
                 .map(|n| match_at(n, (n % 2) as isize, ("a", "b"), start + n * 1000))
                 .collect();
-            let result = compute(games, &[], start + 30_000, true, start, start, None);
+            let result = compute(
+                games,
+                &[],
+                &HashMap::new(),
+                start + 30_000,
+                true,
+                start,
+                start,
+                None,
+            );
             for name in [
                 "mvp",
                 "consistent",
@@ -733,7 +1002,16 @@ mod tests {
     #[test]
     fn empty_season_has_no_rating_buckets_or_peak_date() {
         let start = current_start();
-        let result = compute(Vec::new(), &[], start + 30_000, true, start, start, None);
+        let result = compute(
+            Vec::new(),
+            &[],
+            &HashMap::new(),
+            start + 30_000,
+            true,
+            start,
+            start,
+            None,
+        );
         assert_eq!(result["ratingDistribution"], json!([]));
         assert!(result["totals"]["peakDayDate"].is_null());
     }
@@ -764,13 +1042,64 @@ mod tests {
                 ],
             })
             .collect();
-        let result = compute(games, &[], start + 15_000, true, start, start, None);
+        let result = compute(
+            games,
+            &[],
+            &HashMap::new(),
+            start + 15_000,
+            true,
+            start,
+            start,
+            None,
+        );
         assert_eq!(result["totals"]["matches"], 12);
         assert_eq!(result["totals"]["lineups"], 2);
-        assert_eq!(result["awards"]["party"]["games"], 12);
-        assert_eq!(result["awards"]["party"]["winRate"], 75.0);
         assert_eq!(result["awards"]["duo"]["games"], 12);
+        assert_eq!(result["awards"]["duo"]["winRate"], 75.0);
         assert_eq!(result["awards"]["nemesis"]["games"], 12);
         assert_eq!(result["awards"]["giantSlayer"]["value"], 9.0);
+    }
+    #[test]
+    fn steadiest_player_is_chosen_by_kda_spread() {
+        let start = current_start();
+        let games: Vec<_> = (1..=12)
+            .map(|n| match_at(n, 0, ("a", "b"), start + n * 1000))
+            .collect();
+        let mut kda = HashMap::new();
+        for n in 1..=12 {
+            kda.insert(
+                (n, "a".to_string()),
+                Kda {
+                    kills: 4,
+                    deaths: 2,
+                    assists: 0,
+                },
+            );
+            let (kills, deaths) = if n % 2 == 0 { (9, 1) } else { (1, 9) };
+            kda.insert(
+                (n, "b".to_string()),
+                Kda {
+                    kills,
+                    deaths,
+                    assists: 0,
+                },
+            );
+        }
+        let result = compute(games, &[], &kda, start + 30_000, true, start, start, None);
+        assert_eq!(result["awards"]["consistent"]["playerId"], "a");
+        assert_eq!(result["awards"]["consistent"]["basis"], "kda");
+        assert_eq!(result["awards"]["consistent"]["value"], 100.0);
+        assert_eq!(result["combat"]["players"]["a"]["kills"], 48);
+        assert_eq!(result["combat"]["players"]["a"]["deaths"], 24);
+        assert_eq!(result["combat"]["players"]["a"]["kda"], 2.0);
+        assert_eq!(result["combat"]["players"]["a"]["minKda"], 2.0);
+        assert_eq!(result["combat"]["players"]["a"]["maxKda"], 2.0);
+        assert_eq!(result["combat"]["players"]["a"]["stability"], 100.0);
+        let average = result["combat"]["averageKda"].as_f64().unwrap();
+        assert!((average - 108.0 / 84.0).abs() < 1e-9);
+        let versus = result["combat"]["players"]["a"]["vsAverage"]
+            .as_f64()
+            .unwrap();
+        assert!((versus - 2.0 / (108.0 / 84.0)).abs() < 1e-9);
     }
 }
