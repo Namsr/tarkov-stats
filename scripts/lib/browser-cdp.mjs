@@ -27,6 +27,6 @@ export class Cdp {
       try { this.socket.send(JSON.stringify({ id, method, params, ...(sessionId ? { sessionId } : {}) })); }
       catch (error) { clearTimeout(timer); this.pending.delete(id); reject(error); } });
   }
-  on(session, event, callback) { const key = `${session}:${event}`; const values = this.listeners.get(key) || []; values.push(callback); this.listeners.set(key, values); }
+  on(session, event, callback) { const key = `${session}:${event}`; const values = this.listeners.get(key) || []; values.push(callback); this.listeners.set(key, values); return () => { const index = values.indexOf(callback); if (index >= 0) values.splice(index, 1); if (!values.length && this.listeners.get(key) === values) this.listeners.delete(key); }; }
   close() { this.socket.close(); }
 }

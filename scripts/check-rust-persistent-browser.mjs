@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import {readFile,writeFile} from "node:fs/promises";
 import {join} from "node:path";
 import {runRustUiBrowser} from "./lib/benchmark-rust-ui-browser.mjs";
+import {holdFilteredResponse} from "./lib/persistent-response-gate.mjs";
 const radio = value => `main input[type=radio][value=${JSON.stringify(value)}]`;
 const messages=JSON.parse(await readFile(new URL("../lib/i18n/messages.json",import.meta.url),"utf8"));
 const conditions = {
@@ -212,47 +213,62 @@ async function functional(tab, backend, context) {
 
   await tab.send("Emulation.setDeviceMetricsOverride", { width: 1280, height: 900, deviceScaleFactor: 1, mobile: false });
   await navigate("/population/pve");
-  await tab.send("Network.emulateNetworkConditionsByRule", { offline: false, matchedNetworkConditions: [{ urlPattern: "*/api/average*", latency: 1200, downloadThroughput: -1, uploadThroughput: -1 }] });
   const lowSelector = 'main input[type=range]';
   const remote = await tab.send("Runtime.evaluate", { expression: "document.querySelector('main input[type=range]')", objectGroup: "persistent-focus" });
   const objectId = remote.result.objectId; assert.ok(objectId);
   const slider = await evaluate(`(()=>{const e=document.querySelector(${JSON.stringify(lowSelector)});e.scrollIntoView({block:'center',behavior:'instant'});e.focus({preventScroll:true});const b=e.getBoundingClientRect(),x=b.left+8+(b.width-16)*Number(e.value)/10000,y=b.top+b.height/2,hit=document.elementFromPoint(x,y);if(!hit||!e.contains(hit))throw Error('Range is not hittable');return{x,y,width:b.width};})()`);
   const beforeDrag=new Set(tab.state.requests.keys());
-  await tab.send("Input.dispatchMouseEvent", { type: "mousePressed", button: "left", clickCount: 1, x: slider.x, y: slider.y });
-  await tab.send("Input.dispatchMouseEvent", { type: "mouseMoved", button: "left", buttons: 1, x: slider.x + slider.width / 8, y: slider.y });
-  await delay(700);
-  const held = await tab.send("Runtime.callFunctionOn", { objectId, functionDeclaration: "function(){return{connected:this.isConnected,disabled:this.disabled,focused:document.activeElement===this}}", returnByValue: true });
-  assert.deepEqual(held.result.value, { connected: true, disabled: false, focused: true });
-  const dragPending=pendingFilteredRequest(tab.state.requests,beforeDrag);
-  assert.ok(dragPending,"real fresh filtered average request must still be pending during held drag");
-  evidence.dragPending={...dragPending,interactionDelayMs:700};
-
-  await tab.send("Input.dispatchMouseEvent", { type: "mouseMoved", button: "left", buttons: 1, x: slider.x + slider.width / 7, y: slider.y });
-  await tab.send("Input.dispatchMouseEvent", { type: "mouseReleased", button: "left", clickCount: 1, x: slider.x + slider.width / 7, y: slider.y });
+  const dragGate=await holdFilteredResponse(tab,beforeDrag);
+  let pressed=false;
+  try {
+    await tab.send("Input.dispatchMouseEvent", { type: "mousePressed", button: "left", clickCount: 1, x: slider.x, y: slider.y });
+    pressed=true;
+    await tab.send("Input.dispatchMouseEvent", { type: "mouseMoved", button: "left", buttons: 1, x: slider.x + slider.width / 8, y: slider.y });
+    const dragMovedAt=Date.now();
+    await delay(700);
+    const paused=await until(()=>dragGate.pending(),15000,"real fresh filtered drag response paused");
+    assert.equal(pendingFilteredRequest(new Map([[paused.networkId,paused.request]]),beforeDrag)?.id,paused.networkId);
+    const held = await tab.send("Runtime.callFunctionOn", { objectId, functionDeclaration: "function(){return{connected:this.isConnected,disabled:this.disabled,focused:document.activeElement===this}}", returnByValue: true });
+    assert.deepEqual(held.result.value, { connected: true, disabled: false, focused: true });
+    assert.equal(dragGate.pending()?.networkId,paused.networkId,"drag request remains pending when the held node is checked");
+    evidence.dragPending={...paused,interactionDelayMs:Date.now()-dragMovedAt};
+    await tab.send("Input.dispatchMouseEvent", { type: "mouseMoved", button: "left", buttons: 1, x: slider.x + slider.width / 7, y: slider.y });
+    await tab.send("Input.dispatchMouseEvent", { type: "mouseReleased", button: "left", clickCount: 1, x: slider.x + slider.width / 7, y: slider.y });
+    pressed=false;
+  } finally {
+    try {
+      if(pressed) await tab.send("Input.dispatchMouseEvent", { type:"mouseReleased", button:"left", clickCount:1, x:slider.x+slider.width/8, y:slider.y });
+    } finally { await dragGate.close(); }
+  }
+  evidence.dragPending.releasedUnchanged=true;
   await ready();
-  await tab.send("Network.emulateNetworkConditionsByRule", { offline: false, matchedNetworkConditions: [] });
   await tab.send("Runtime.releaseObjectGroup", { objectGroup: "persistent-focus" });
-  evidence.checks.push("pointer held700ms across250ms debounce and delayed realAPI keeps same focused enabled slider");
+  evidence.checks.push("pointer held at least 700ms across 250ms debounce and a real paused successful API response keeps same focused enabled slider");
   await until(()=>Date.now()-tab.state.lastNetwork>500&&[...tab.state.requests.values()].every(r=>r.finished),15000,"delayed slider API completes");
-  // A bucket activation must retain the same focused DOM node across the debounce.
-  await tab.send("Network.emulateNetworkConditionsByRule",{offline:false,matchedNetworkConditions:[{urlPattern:"*/api/average*",latency:1200,downloadThroughput:-1,uploadThroughput:-1}]});
-  const bucketSelector='.chart-panel a[role=button][title],.chart-panel button[type=button][title]';
-  const bucket=await tab.send("Runtime.evaluate",{expression:`document.querySelector(${JSON.stringify(bucketSelector)})`,objectGroup:"persistent-bucket"});assert.ok(bucket.result.objectId);
-  const beforeBucket=new Set(tab.state.requests.keys());
-  await evaluate(`document.querySelector(${JSON.stringify(bucketSelector)}).focus()`);await key(" ");await delay(700);
-  const focusedBucket=await tab.send("Runtime.callFunctionOn",{objectId:bucket.result.objectId,functionDeclaration:"function(){return{connected:this.isConnected,focused:document.activeElement===this}}",returnByValue:true});
-  assert.deepEqual(focusedBucket.result.value,{connected:true,focused:true});
-  const bucketPending=pendingFilteredRequest(tab.state.requests,beforeBucket);
-  assert.ok(bucketPending,"real fresh filtered average request must still be pending during bucket focus check");
-  evidence.bucketPending={...bucketPending,interactionDelayMs:700};
 
-  await tab.send("Network.emulateNetworkConditionsByRule",{offline:false,matchedNetworkConditions:[]});
+  // A bucket activation must retain the same focused DOM node across the debounce.
+  // Use the last bucket so its lower bound is positive, as required by the gate.
+  const bucketSelector='.chart-panel a[role=button][title],.chart-panel button[type=button][title]';
+  const bucket=await tab.send("Runtime.evaluate",{expression:`[...document.querySelectorAll(${JSON.stringify(bucketSelector)})].at(-1)`,objectGroup:"persistent-bucket"});assert.ok(bucket.result.objectId);
+  const beforeBucket=new Set(tab.state.requests.keys());
+  const bucketGate=await holdFilteredResponse(tab,beforeBucket);
+  try {
+    await tab.send("Runtime.callFunctionOn",{objectId:bucket.result.objectId,functionDeclaration:"function(){this.focus()}"});
+    await key(" ");const bucketActivatedAt=Date.now();await delay(700);
+    const paused=await until(()=>bucketGate.pending(),15000,"real fresh filtered bucket response paused");
+    assert.equal(pendingFilteredRequest(new Map([[paused.networkId,paused.request]]),beforeBucket)?.id,paused.networkId);
+    const focusedBucket=await tab.send("Runtime.callFunctionOn",{objectId:bucket.result.objectId,functionDeclaration:"function(){return{connected:this.isConnected,focused:document.activeElement===this}}",returnByValue:true});
+    assert.deepEqual(focusedBucket.result.value,{connected:true,focused:true});
+    assert.equal(bucketGate.pending()?.networkId,paused.networkId,"bucket request remains pending when focus is checked");
+    evidence.bucketPending={...paused,interactionDelayMs:Date.now()-bucketActivatedAt};
+  } finally { await bucketGate.close(); }
+  evidence.bucketPending.releasedUnchanged=true;
   await until(()=>Date.now()-tab.state.lastNetwork>500&&[...tab.state.requests.values()].every(r=>r.finished),15000,"bucket API completes");
   await tab.send("Runtime.releaseObjectGroup",{objectGroup:"persistent-bucket"});
   await evaluate("document.querySelector('main input[type=range]').focus()");
   const before=await evaluate("Number(document.querySelector('main input[type=range]').getAttribute('aria-valuenow'))");await key("ArrowRight");
   const after=await wait(`(()=>{const e=document.querySelector('main input[type=range]');const value=Number(e.getAttribute('aria-valuenow'));return value>${before}&&document.activeElement===e?value:false})()`,"keyboard range update");
-  evidence.rangeKeyboard={before,after};evidence.checks.push("focused bucket survives700ms/debounce/delayedAPI; keyboard range remains usable");
+  evidence.rangeKeyboard={before,after};evidence.checks.push("focused bucket survives at least 700ms/debounce/real paused API response; keyboard range remains usable");
   await until(()=>Date.now()-tab.state.lastNetwork>500&&[...tab.state.requests.values()].every(r=>r.finished),15000,"keyboard API completes");
 
   // Real SQLite query failure, not a response override. Clear the range by switching period.

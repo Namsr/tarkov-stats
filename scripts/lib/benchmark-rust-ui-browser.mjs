@@ -131,7 +131,7 @@ async function page(browser, url) {
   await send("Network.overrideNetworkState", network);
   await send("Page.addScriptToEvaluateOnNewDocument", {source:instrumentation});
   if(options.blockedUrls) await send("Network.setBlockedURLs",{urls:options.blockedUrls});
-  return {send,state,url,async evaluate(expression){const value=await send("Runtime.evaluate",{expression,returnByValue:true,awaitPromise:true});if(value.exceptionDetails)throw new Error([value.exceptionDetails.text,value.exceptionDetails.exception?.description].filter(Boolean).join(": "));return value.result.value;},async close(){await browser.cdp.send("Target.disposeBrowserContext",{browserContextId});}};
+  return {send,state,url,on(event,callback){return browser.cdp.on(sessionId,event,callback);},async evaluate(expression){const value=await send("Runtime.evaluate",{expression,returnByValue:true,awaitPromise:true});if(value.exceptionDetails)throw new Error([value.exceptionDetails.text,value.exceptionDetails.exception?.description].filter(Boolean).join(": "));return value.result.value;},async close(){await browser.cdp.send("Target.disposeBrowserContext",{browserContextId});}};
 }
 function totals(requests) {
   const categories={js:{requests:0,bytes:0},wasm:{requests:0,bytes:0},css:{requests:0,bytes:0},other:{requests:0,bytes:0}};
