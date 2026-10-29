@@ -1,4 +1,4 @@
-name: Operator PvE synthetic resource proof
+name: Operator Arena synthetic resource proof
 
 on:
   workflow_dispatch:
@@ -9,7 +9,7 @@ permissions:
 jobs:
   proof:
     runs-on: ubuntu-24.04
-    timeout-minutes: 25
+    timeout-minutes: 40
     env:
       GH_REPO: ${{ github.repository }}
       SOURCE_REVISION: 0a705c50ae9764d72d714c00e7027ebebadadf22
@@ -20,10 +20,11 @@ jobs:
           persist-credentials: false
       - name: Verify source and evidence validator
         run: |
+          set -euo pipefail
           git diff --exit-code "$SOURCE_REVISION" -- app lib rust tests/fixtures scripts/benchmark-rust-cohort.mjs scripts/benchmark-worker-resources.mjs
           test -z "$(git status --porcelain --untracked-files=all)"
-          node --test scripts/test-pve-resource-proof.mjs
-          bash -n scripts/benchmark-pve-resource-proof.sh
+          node --test scripts/test-arena-resource-proof.mjs
+          bash -n scripts/benchmark-arena-resource-proof.sh
       - name: Download and verify the pinned release archive
         timeout-minutes: 4
         env:
@@ -32,25 +33,27 @@ jobs:
           set -euo pipefail
           endpoint=$(timeout --signal=TERM --kill-after=5s 15s docker --context default context inspect default --format '{{(index .Endpoints "docker").Host}}')
           [[ $endpoint == unix://* ]] || { echo 'Remote Docker endpoint refused.' >&2; exit 2; }
-          mkdir -p "$RUNNER_TEMP/pve-image"
-          cd "$RUNNER_TEMP/pve-image"
+          mkdir -p "$RUNNER_TEMP/arena-image"
+          cd "$RUNNER_TEMP/arena-image"
           timeout --signal=TERM --kill-after=10s 120s gh release download "container-$SOURCE_REVISION" --pattern web.tar.gz --pattern web.tar.gz.sha256
           expected=$(awk '$2 == "web.tar.gz" { print $1 }' web.tar.gz.sha256)
           [[ $expected == fd6848ec3753e626c8c9e6e5c5c569562e8f72a802a513a67be6dc069e7ce60a ]]
           printf '%s  web.tar.gz\n' "$expected" | sha256sum --check
           timeout --signal=TERM --kill-after=10s 100s docker --context default load --input web.tar.gz
           echo "PROOF_ARCHIVE_SHA256=$expected" >> "$GITHUB_ENV"
-      - name: Compare PvE cohort workloads in four isolated containers
-        timeout-minutes: 19
-        run: bash scripts/benchmark-pve-resource-proof.sh "$RUNNER_TEMP/pve-resource-proof"
+      - name: Compare Arena cohort workloads in four isolated containers
+        timeout-minutes: 35
+        run: bash scripts/benchmark-arena-resource-proof.sh "$RUNNER_TEMP/arena-resource-proof"
       - name: Save observations and cleanup evidence
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: pve-resource-proof-${{ github.sha }}
+          name: arena-resource-proof-${{ github.sha }}
           path: |
-            ${{ runner.temp }}/pve-resource-proof/*.json
-            ${{ runner.temp }}/pve-resource-proof/*.log
-            ${{ runner.temp }}/pve-resource-proof/summary.md
+            ${{ runner.temp }}/arena-resource-proof/*.json
+            ${{ runner.temp }}/arena-resource-proof/*.log
+            ${{ runner.temp }}/arena-resource-proof/*.sha256
+            ${{ runner.temp }}/arena-resource-proof/*.patch
+            ${{ runner.temp }}/arena-resource-proof/summary.md
           if-no-files-found: warn
           retention-days: 14
