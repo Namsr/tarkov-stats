@@ -627,5 +627,4 @@ mod tests {
         assert_eq!(result["awards"]["nemesis"]["games"], 12);
         assert_eq!(result["awards"]["giantSlayer"]["value"], 9.0);
     }
-
 }
