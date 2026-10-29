@@ -1,5 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { execFileSync, spawnSync } from "node:child_process";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
+
+const bash = process.platform === "win32" ? resolve(execFileSync("git", ["--exec-path"], { encoding:"utf8" }).trim(), "../../../bin/bash.exe") : "bash";
 import { validateAxisRuns } from "../scripts/summarize-axis-materialization.mjs";
 
 function evidence() {
@@ -32,4 +38,83 @@ test("Axis evidence requires paired state parity, all replays, isolation, proven
     runs => { runs[2].report.resources.memoryEvents.oomKill = 1; },
     runs => { runs[1].inspect.mounts.push({ Type: "bind", Destination: "/app/lib", RW: false }); },
   ]) { const invalid = structuredClone(valid); mutate(invalid); assert.throws(() => validateAxisRuns(invalid)); }
+});
+
+
+test("Axis image cleanup removes only owned containers and requires positive absence proof", () => {
+  const source = readFileSync(resolve("scripts/benchmark-axis-materialization.sh"), "utf8").replace(/\r\n/g, "\n");
+  const start = source.indexOf("cleanup() {"), end = source.indexOf("\non_exit() {", start);
+  assert.ok(start >= 0 && end > start);
+  const cleanup = source.slice(start, end);
+  assert.match(source, /docker\(\) \{ timeout --signal=TERM --kill-after=5s 15s/);
+  assert.ok(source.includes('--label "org.tarkovstats.axis-materialization=$token"'));
+  assert.ok(source.includes('if created=$(docker create'));
+  const directory = mkdtempSync(join(tmpdir(), "axis-cleanup-"));
+  const owner = "a".repeat(32), id = "b".repeat(64);
+  try {
+    for (const scenario of [
+      { name:"known", active:id, calls:["rm","container"], ok:true },
+      { name:"lost-create", inspect:owner+" "+id, calls:["inspect","rm","container"], ok:true },
+      { name:"foreign", inspect:"c".repeat(32)+" "+id, calls:["inspect"], ok:false },
+      { name:"invalid-id", inspect:owner+" partial", calls:["inspect"], ok:false },
+      { name:"inspect-error", inspectFail:true, calls:["inspect"], ok:false },
+      { name:"remove-error-still-present", active:id, rmFail:true, remaining:id, calls:["rm","container"], ok:false },
+      { name:"remove-error-verified-absent", active:id, rmFail:true, calls:["rm","container"], ok:true },
+      { name:"list-error", active:id, listFail:true, calls:["rm","container"], ok:false },
+      { name:"still-present", active:id, remaining:id, calls:["rm","container"], ok:false },
+    ]) {
+      const calls = join(directory, "calls-" + scenario.name);
+      const script = `set -u
+active_id="$TEST_ACTIVE"
+active_name=owned
+token="$TEST_OWNER"
+docker() {
+  printf '%s\\n' "$1" >> "$TEST_CALLS"
+  case "$1" in
+    inspect) [[ "$TEST_INSPECT_FAIL" == 0 ]] || return 1; printf '%s\\n' "$TEST_INSPECT";;
+    rm) [[ "$TEST_RM_FAIL" == 0 ]];;
+    container) [[ "$TEST_LIST_FAIL" == 0 ]] || return 1; printf '%s' "$TEST_REMAINING";;
+    *) return 1;;
+  esac
+}
+${cleanup}
+if cleanup; then printf 'confirmed:%s:%s' "$active_id" "$active_name"; else printf 'unconfirmed'; fi
+`;
+      const result = spawnSync(bash, ["-c", script], {
+        encoding:"utf8", env:{ ...process.env, TEST_ACTIVE:scenario.active ?? "", TEST_OWNER:owner, TEST_CALLS:calls,
+          TEST_INSPECT:scenario.inspect ?? "", TEST_INSPECT_FAIL:scenario.inspectFail ? "1" : "0",
+          TEST_RM_FAIL:scenario.rmFail ? "1" : "0", TEST_LIST_FAIL:scenario.listFail ? "1" : "0", TEST_REMAINING:scenario.remaining ?? "" },
+      });
+      assert.equal(result.status, 0, scenario.name + ": " + result.stderr);
+      assert.equal(result.stdout, scenario.ok ? "confirmed::" : "unconfirmed", scenario.name);
+      assert.deepEqual(readFileSync(calls, "utf8").trim().split("\n"), scenario.calls, scenario.name);
+    }
+  } finally { rmSync(directory, { recursive:true, force:true }); }
+});
+
+
+test("Axis exit trap fails closed on unconfirmed cleanup without masking a prior failure", () => {
+  const source = readFileSync(resolve("scripts/benchmark-axis-materialization.sh"), "utf8").replace(/\r\n/g, "\n");
+  const start = source.indexOf("on_exit() {"), end = source.indexOf("\ntrap on_exit EXIT", start);
+  assert.ok(start >= 0 && end > start);
+  const handler = source.slice(start, end), directory = mkdtempSync(join(tmpdir(), "axis-cleanup-exit-"));
+  try {
+    for (const [cleanupStatus, requestedStatus, expectedStatus] of [[1, 0, 1], [1, 7, 7], [0, 0, 0]]) {
+      const evidence = join(directory, "cleanup.json");
+      rmSync(evidence, { force:true });
+      const script = `set -e
+output="$TEST_OUTPUT"
+cleanup() { return "$TEST_CLEANUP"; }
+${handler}
+trap on_exit EXIT
+exit "$TEST_STATUS"
+`;
+      const result = spawnSync(bash, ["-c", script], {
+        encoding:"utf8", env:{ ...process.env, TEST_OUTPUT:directory, TEST_CLEANUP:String(cleanupStatus), TEST_STATUS:String(requestedStatus) },
+      });
+      assert.equal(result.status, expectedStatus, result.stderr);
+      if (cleanupStatus) assert.deepEqual(JSON.parse(readFileSync(evidence, "utf8")), { removed:false, reason:"cleanup unconfirmed" });
+      else assert.throws(() => readFileSync(evidence), { code:"ENOENT" });
+    }
+  } finally { rmSync(directory, { recursive:true, force:true }); }
 });
