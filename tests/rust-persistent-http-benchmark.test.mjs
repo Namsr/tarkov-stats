@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { spawn, spawnSync } from "node:child_process";
+import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
@@ -199,6 +199,11 @@ test("the actual run finalizer reads SQLite operation counts without waiting for
   } finally { db.close(); }
 });
 
+function testBash() {
+  return process.platform === "win32"
+    ? resolve(execFileSync("git", ["--exec-path"], { encoding: "utf8" }).trim(), "../../../bin/bash.exe") : "bash";
+}
+
 test("image-pair cleanup recovers only its own uncertain create and fails closed", () => {
   const source = readFileSync(resolve("scripts/benchmark-rust-population-image-pair-container.sh"), "utf8").replace(/\r\n/g, "\n");
   const start = source.indexOf("cleanup() {"), end = source.indexOf("\n}\ntrap cleanup EXIT", start);
@@ -208,7 +213,7 @@ test("image-pair cleanup recovers only its own uncertain create and fails closed
   assert.ok(source.includes('--label "org.tarkovstats.population-proof=$token"'));
   const directory = mkdtempSync(join(tmpdir(), "population-cleanup-"));
   const owner = "a".repeat(32), id = "b".repeat(64);
-  const bash = process.env.POPULATION_TEST_BASH || "bash";
+  const bash = testBash();
   try {
     for (const scenario of [
       { label: "known", active: id, name: "owned", result: "no owned container remains", calls: ["rm"] },
@@ -223,6 +228,32 @@ test("image-pair cleanup recovers only its own uncertain create and fails closed
       assert.equal(result.status, 0, `${scenario.label}: ${result.stderr}`);
       assert.equal(readFileSync(join(directory, "cleanup.txt"), "utf8").trim(), scenario.result);
       assert.deepEqual(readFileSync(calls, "utf8").trim().split("\n"), scenario.calls);
+    }
+  } finally { rmSync(directory, { recursive: true, force: true }); }
+});
+
+
+test("image-pair create failure never trusts partial stdout for cleanup", () => {
+  const source = readFileSync(resolve("scripts/benchmark-rust-population-image-pair-container.sh"), "utf8").replace(/\r\n/g, "\n");
+  const cleanupStart = source.indexOf("cleanup() {"), cleanupEnd = source.indexOf("\n}\ntrap cleanup EXIT", cleanupStart);
+  const createStart = source.indexOf("    if ! created_id=$(docker create"), createEnd = source.indexOf("\n    active_id=$created_id", createStart);
+  assert.ok(cleanupStart >= 0 && cleanupEnd > cleanupStart && createStart >= 0 && createEnd > createStart);
+  const cleanup = source.slice(cleanupStart, cleanupEnd + 2), create = source.slice(createStart, createEnd + "\n    active_id=$created_id".length);
+  const directory = mkdtempSync(join(tmpdir(), "population-create-"));
+  const owner = "a".repeat(32), owned = "b".repeat(64), foreign = "c".repeat(64);
+  const bash = testBash();
+  try {
+    for (const scenario of [
+      { label: "failed-partial-id", create: foreign, createFail: true, inspect: `${owner} ${owned}`, calls: [`create`, `inspect`, `rm ${owned}`], status: 2 },
+      { label: "invalid-id", create: "bad", inspect: `${owner} ${owned}`, calls: [`create`, `inspect`, `rm ${owned}`], status: 2 },
+      { label: "success", create: owned, calls: [`create`, `rm ${owned}`], status: 0 },
+    ]) {
+      const calls = join(directory, `create-calls-${scenario.label}`);
+      const script = `set -eu\nactive_id=''\nactive_name=owned\nworker_file=''\ntoken="$TEST_OWNER"\noutput="$TEST_OUTPUT"\npayload=/tmp\nimage_id=image\nrevision=revision\nrole=baseline\nrows=5000\niterations=4\nround=1\ndocker() { case "$1" in create) echo create >> "$TEST_CALLS"; printf '%s\n' "$TEST_CREATE"; [[ "$TEST_CREATE_FAIL" == 0 ]];; inspect) echo inspect >> "$TEST_CALLS"; printf '%s\n' "$TEST_INSPECT";; rm) echo "rm $3" >> "$TEST_CALLS";; *) return 1;; esac; }\n${cleanup}\ntrap cleanup EXIT\n${create}\n`;
+      const result = spawnSync(bash, ["-c", script], { encoding: "utf8", env: { ...process.env, TEST_OWNER: owner, TEST_OUTPUT: directory, TEST_CALLS: calls, TEST_CREATE: scenario.create, TEST_CREATE_FAIL: scenario.createFail ? "1" : "0", TEST_INSPECT: scenario.inspect ?? "" } });
+      assert.equal(result.status, scenario.status, `${scenario.label}: ${result.stderr}`);
+      assert.deepEqual(readFileSync(calls, "utf8").trim().split("\n"), scenario.calls);
+      assert.equal(readFileSync(join(directory, "cleanup.txt"), "utf8").trim(), "no owned container remains");
     }
   } finally { rmSync(directory, { recursive: true, force: true }); }
 });

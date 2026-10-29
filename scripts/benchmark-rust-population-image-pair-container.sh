@@ -91,7 +91,7 @@ for round in 1 2; do
     echo "Rust Regular/PvE HTTP: repetition $round, $role (0.5 CPU, 896 MiB, no extra swap)" >&2
     # Only an ID returned by this successful create is eligible for cleanup.
     # A pre-existing name collision fails without deleting the existing object.
-    active_id=$(docker create --pull never --name "$active_name" --label "org.tarkovstats.population-proof=$token" --network none --ipc private \
+    if ! created_id=$(docker create --pull never --name "$active_name" --label "org.tarkovstats.population-proof=$token" --network none --ipc private \
       --cpus 0.5 --memory 896m --memory-swap 896m --read-only --pids-limit 128 \
       --cap-drop ALL --security-opt no-new-privileges \
       --tmpfs /tmp:rw,noexec,nosuid,nodev,size=384m,mode=1777 \
@@ -103,8 +103,11 @@ for round in 1 2; do
       --env BENCHMARK_RUST_PERSISTENT_HTTP_ISOLATED=1 --env "BENCHMARK_IMAGE_ID=$image_id" \
       --env "BENCHMARK_SOURCE_REVISION=$revision" --entrypoint node "$image_id" \
       --experimental-strip-types --experimental-sqlite scripts/benchmark-rust-persistent-http.mjs \
-      --backend rust --comparison-role "$role" --rows "$rows" --iterations "$iterations" --repetition "$round")
-    [[ $active_id =~ ^[0-9a-f]{64}$ ]] || { active_id=''; echo 'Invalid create result; refusing unowned cleanup.' >&2; exit 2; }
+      --backend rust --comparison-role "$role" --rows "$rows" --iterations "$iterations" --repetition "$round"); then
+      echo 'Create failed; recovering only by owned name.' >&2; exit 2
+    fi
+    [[ $created_id =~ ^[0-9a-f]{64}$ ]] || { echo 'Invalid create result; recovering only by owned name.' >&2; exit 2; }
+    active_id=$created_id
     # Extract from this exact created container, check the requested binary pin,
     # and delete the local copy before running the real image-owned code.
     worker_file="$stem.worker"
