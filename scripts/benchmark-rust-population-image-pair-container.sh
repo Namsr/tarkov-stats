@@ -38,7 +38,7 @@ root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 docker_binary=$(command -v docker)
 # An inherited DOCKER_HOST/DOCKER_CONTEXT may target production. Explicitly
 # selecting and checking default ensures only a local Unix socket is used.
-docker() { "$docker_binary" --context default "$@"; }
+docker() { timeout --signal=TERM --kill-after=5s 15s "$docker_binary" --context default "$@"; }
 endpoint=$(docker context inspect default --format '{{(index .Endpoints "docker").Host}}')
 [[ $endpoint == unix://* ]] || { echo 'Refusing a remote Docker endpoint.' >&2; exit 2; }
 for role in baseline candidate; do
@@ -56,13 +56,25 @@ for file in rust-cohort-data.mjs rust-population-data.mjs next-cache-shim.mjs ne
 # No app/, lib/, server.js, start-web or .next mount: both HTTP implementations
 # and the supervisor must come from the immutable production image itself.
 active_id=''
+active_name=''
 worker_file=''
+token=$(tr -d '-' < /proc/sys/kernel/random/uuid)
+[[ $token =~ ^[0-9a-f]{32}$ ]] || { echo 'Unique ownership token required.' >&2; exit 1; }
 cleanup() {
   if [[ -n $worker_file ]]; then rm -f -- "$worker_file"; fi
-  if [[ -n $active_id ]] && ! docker rm --force "$active_id" >/dev/null 2>&1; then
+  if [[ -z $active_id && -n $active_name ]]; then
+    found=$(docker inspect "$active_name" --format '{{index .Config.Labels "org.tarkovstats.population-proof"}} {{.Id}}' 2>/dev/null || true)
+    read -r owner candidate <<< "$found"
+    if [[ $owner == "$token" && $candidate =~ ^[0-9a-f]{64}$ ]]; then
+      active_id=$candidate
+    fi
+  fi
+  if [[ -n $active_id ]]; then
+    if docker rm --force "$active_id" >/dev/null 2>&1; then active_id=''; active_name=''; fi
+  fi
+  if [[ -n $active_id || -n $active_name ]]; then
     printf '%s\n' 'owned container cleanup unconfirmed' > "$output/cleanup.txt"
   else
-    active_id=''
     printf '%s\n' 'no owned container remains' > "$output/cleanup.txt"
   fi
 }
@@ -75,11 +87,11 @@ for round in 1 2; do
   for role in "${roles[@]}"; do
     if [[ $role == baseline ]]; then image_id=$baseline; revision=$baseline_revision; expected_sha=$baseline_sha; else image_id=$candidate; revision=$candidate_revision; expected_sha=$candidate_sha; fi
     stem="$output/persistent-round$round-$role"
-    name="rust-population-image-pair-$round-$role-$$"
+    active_name="rust-population-image-pair-$round-$role-$token"
     echo "Rust Regular/PvE HTTP: repetition $round, $role (0.5 CPU, 896 MiB, no extra swap)" >&2
     # Only an ID returned by this successful create is eligible for cleanup.
     # A pre-existing name collision fails without deleting the existing object.
-    active_id=$(docker create --pull never --name "$name" --network none --ipc private \
+    active_id=$(docker create --pull never --name "$active_name" --label "org.tarkovstats.population-proof=$token" --network none --ipc private \
       --cpus 0.5 --memory 896m --memory-swap 896m --read-only --pids-limit 128 \
       --cap-drop ALL --security-opt no-new-privileges \
       --tmpfs /tmp:rw,noexec,nosuid,nodev,size=384m,mode=1777 \
@@ -110,7 +122,7 @@ for round in 1 2; do
       '{"sourceRevision":{{json (index .Config.Labels "org.opencontainers.image.revision")}},"id":{{json .Id}},"imageId":{{json .Image}},"image":{{json .Config.Image}},"user":{{json .Config.User}},"exitCode":{{.State.ExitCode}},"running":{{.State.Running}},"startedAt":{{json .State.StartedAt}},"finishedAt":{{json .State.FinishedAt}},"oomKilled":{{.State.OOMKilled}},"network":{{json .HostConfig.NetworkMode}},"ipcMode":{{json .HostConfig.IpcMode}},"readOnly":{{.HostConfig.ReadonlyRootfs}},"memory":{{.HostConfig.Memory}},"memorySwap":{{.HostConfig.MemorySwap}},"nanoCpus":{{.HostConfig.NanoCpus}},"pidsLimit":{{.HostConfig.PidsLimit}},"privileged":{{.HostConfig.Privileged}},"capAdd":{{json .HostConfig.CapAdd}},"capDrop":{{json .HostConfig.CapDrop}},"securityOpt":{{json .HostConfig.SecurityOpt}},"portBindings":{{json .HostConfig.PortBindings}},"tmpfs":{{json .HostConfig.Tmpfs}},"mounts":{{json .Mounts}}}' > "$stem.inspect.json"
     if ((status != 0)); then tail -n 45 "$stem.log" >&2; echo "Experiment failed (exit $status); partial evidence retained at $output." >&2; exit "$status"; fi
     docker rm "$active_id" >/dev/null
-    active_id=''
+    active_id=''; active_name=''
   done
 done
 cleanup
