@@ -6,11 +6,12 @@ import { axisLeagueRefreshDelay, cacheAxisLeague, getCachedAxisLeague, getServer
 import AxisPlayerIdentity from "@/components/AxisPlayerIdentity";
 import { AXIS_CURRENT_SEASON_START } from "@/lib/axis-seasons";
 import AxisMatchHistory from "@/components/AxisMatchHistory";
+import AxisLeagueStatistics from "@/components/AxisLeagueStatistics";
 import AdminAxisLeague from "@/components/AdminAxisLeague";
 import { useI18n } from "@/lib/i18n/context";
 import { AXIS_REFRESH_MS, AXIS_SORTS, AXIS_DISCORD_URL, sortAxisPlayers, type AxisPlayer, type AxisSort } from "@/lib/axis-league";
 
-export default function AxisLeaguePage({ initialView = "standings", initialMatch }: { initialMatch?: number; initialView?: "standings" | "history" | "profiles" }) {
+export default function AxisLeaguePage({ initialView = "standings", initialMatch }: { initialMatch?: number; initialView?: "standings" | "history" | "profiles" | "statistics" }) {
   const { t, lang } = useI18n();
   const data = useSyncExternalStore(subscribeAxisLeague, getCachedAxisLeague, getServerAxisLeague);
   const [failed, setFailed] = useState(false);
@@ -19,7 +20,7 @@ export default function AxisLeaguePage({ initialView = "standings", initialMatch
   const [search, setSearch] = useState("");
   const [sort, setSort] = useState<AxisSort>("position");
   const [direction, setDirection] = useState<"asc" | "desc">("asc");
-  const [view, setView] = useState<"standings" | "history" | "profiles">(initialView);
+  const [view, setView] = useState<"standings" | "history" | "profiles" | "statistics">(initialView);
   const [canEdit, setCanEdit] = useState<boolean | null>(null);
   const [canSubmit, setCanSubmit] = useState(false);
   const locale = lang === "ru" ? "ru-RU" : "en-US";
@@ -105,9 +106,11 @@ export default function AxisLeaguePage({ initialView = "standings", initialMatch
       <div className="admin-tabs axis-view-switch" role="group" aria-label={t("axis.history.view")}>
         <button type="button" className={view === "standings" ? "is-active" : ""} aria-pressed={view === "standings"} onClick={() => setView("standings")}>{t("axis.standings")}</button>
         <button type="button" className={view === "history" ? "is-active" : ""} aria-pressed={view === "history"} onClick={() => setView("history")}>{t("axis.history.title")}</button>
+        <button type="button" className={view === "statistics" ? "is-active" : ""} aria-pressed={view === "statistics"} onClick={() => setView("statistics")}>{lang === "ru" ? "Статистика" : "Statistics"}</button>
         {canEdit && <button type="button" className={view === "profiles" ? "is-active" : ""} aria-pressed={view === "profiles"} onClick={() => setView("profiles")}>{t("axis.profiles.title")}</button>}
       </div>
       <div hidden={view !== "history"}><AxisMatchHistory initialMatch={initialMatch} players={data?.players} averageKda={data?.averageKda ?? null} active={view === "history"} canEditKda={canEdit === true} canSubmitScreenshot={canSubmit} /></div>
+      {view === "statistics" && <AxisLeagueStatistics players={data?.players} averageKda={data?.averageKda ?? null} />}
       {view === "profiles" && (canEdit === null ? <p role="status">{t("common.loading")}</p> : canEdit ? <AdminAxisLeague data={data} onChange={cacheAxisLeague} editorOnly /> : <p role="status">{t("axis.profiles.accessDenied")}</p>)}
       {view === "standings" && <>
       <section className="leaderboard-controls axis-controls" aria-label={t("leaderboard.settings")}>
