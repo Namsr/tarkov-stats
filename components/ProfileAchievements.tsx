@@ -378,7 +378,8 @@ export default function ProfileAchievements({
                     return (
                       <tr
                         key={achievement.id}
-                        aria-hidden={canCollapse && !expanded && index > ACHIEVEMENT_PREVIEW_COUNT ? true : undefined}
+                        aria-hidden={canCollapse && !expanded && (variant === "average" ? index >= ACHIEVEMENT_PREVIEW_COUNT : index > ACHIEVEMENT_PREVIEW_COUNT) ? true : undefined}
+                        inert={variant === "average" && canCollapse && !expanded && index >= ACHIEVEMENT_PREVIEW_COUNT ? true : undefined}
                         className={canCollapse && !expanded && index === ACHIEVEMENT_PREVIEW_COUNT
                           ? "profile-collapsible__preview-tail"
                           : undefined}
@@ -419,7 +420,8 @@ export default function ProfileAchievements({
                 return (
                   <article
                     key={achievement.id}
-                    aria-hidden={canCollapse && !expanded && index > ACHIEVEMENT_PREVIEW_COUNT ? true : undefined}
+                    aria-hidden={canCollapse && !expanded && (variant === "average" ? index >= ACHIEVEMENT_PREVIEW_COUNT : index > ACHIEVEMENT_PREVIEW_COUNT) ? true : undefined}
+                    inert={variant === "average" && canCollapse && !expanded && index >= ACHIEVEMENT_PREVIEW_COUNT ? true : undefined}
                     className={`achievement-card ${canCollapse && !expanded && index === ACHIEVEMENT_PREVIEW_COUNT ? "profile-collapsible__preview-tail" : ""}`}
                     role="listitem"
                   >

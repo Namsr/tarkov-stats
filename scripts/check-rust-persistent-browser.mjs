@@ -187,9 +187,18 @@ async function functional(tab, backend, context) {
     const sorted = await evaluate(`(()=>{const visible=${visible};const e=[...document.querySelectorAll('#ach-breakdown button.achievement-table__sort')].find(e=>visible(e)&&e.textContent.replace(/[↑↓]/g,'').trim()===${JSON.stringify(name)});return{pressed:e.getAttribute('aria-pressed'),label:e.getAttribute('aria-label')};})()`);
     assert.equal(sorted.pressed, "true"); assert.ok(sorted.label.includes(messages.ru["achievement.sort.directionDesc"]));
     const expand = "#ach-breakdown .profile-collapsible__toggle";
+    const achievementRows = `Array.from(document.querySelectorAll('#ach-breakdown tbody > tr, #ach-breakdown .achievement-card')).filter(row => row.getClientRects().length > 0)`;
     await click(expand); await wait(`document.querySelector(${JSON.stringify(expand)}).getAttribute('aria-expanded')==='true'`, "expand achievements");
+    await wait(`(()=>{const rows=${achievementRows};return rows.length>3&&rows.every(row=>!row.closest('[inert],[aria-hidden="true"]'));})()`, "expanded achievements accessible");
     await click(expand); await wait(`document.querySelector(${JSON.stringify(expand)}).getAttribute('aria-expanded')==='false'`, "collapse achievements");
-    await wait("document.querySelectorAll('#ach-breakdown [inert]').length>0", "collapsed rows leave keyboard tree");
+    await wait(`(()=>{const rows=${achievementRows};return rows.length>3&&rows.every((row,i)=>i<3?!row.closest('[inert],[aria-hidden="true"]'):!!row.closest('[inert],[aria-hidden="true"]'));})()`, "collapsed achievement tail hidden from accessibility and keyboard");
+    // The current achievement rows have no focusable children. Add two
+    // temporary controls to verify actual Tab navigation across the boundary.
+    await evaluate(`(()=>{const rows=${achievementRows};for(const [i,role] of [[2,'anchor'],[3,'tail']]){const button=document.createElement('button');button.type='button';button.dataset.collapseProbe=role;button.textContent=role;(rows[i].querySelector('td,th')||rows[i]).append(button);}document.querySelector('[data-collapse-probe="anchor"]').focus({preventScroll:true});})()`);
+    assert.equal(await evaluate("document.activeElement?.dataset.collapseProbe"), "anchor");
+    await key("Tab");
+    assert.equal(await evaluate("document.activeElement?.dataset.collapseProbe === 'tail' || document.activeElement?.dataset.collapseProbe === 'anchor' || !!document.activeElement?.closest('[inert],[aria-hidden=\"true\"]')"), false, "Tab must advance past the collapsed tail");
+    await evaluate("document.querySelectorAll('[data-collapse-probe]').forEach(element=>element.remove())");
     await evaluate("[...document.querySelectorAll('main .seasonal-chart__hit')].at(-1).focus()"); await key("Enter");
     const corrected = await wait(String.raw`(()=>{const svg=document.querySelector('main .seasonal-chart__hit')?.ownerSVGElement;const group=svg?.querySelector('.chart-crosshair');if(!group||getComputedStyle(group).opacity==='0')return false;const b=svg.getBoundingClientRect();const labels=[...group.querySelectorAll('text')].map(e=>{const r=e.getBoundingClientRect();return{text:e.textContent,left:r.left,right:r.right}});return labels.length===2&&labels.every(r=>r.left>=b.left-1&&r.right<=b.right+1)?{labels,hiddenTicks:[...svg.querySelectorAll('[data-chart-tick]')].filter(e=>getComputedStyle(e).opacity==='0').length}:false;})()`, "large XP/raid crosshair labels fit SVG");
     assert.ok(corrected.hiddenTicks > 0, "overlapping axis ticks must hide");
