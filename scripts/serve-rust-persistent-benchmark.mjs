@@ -1,6 +1,6 @@
 // Correctness fixture only. Real production Next and Rust are reached directly via Caddy.
 // Both use the same private players/publications with independent production response caches.
-import { createPersistentUiFixture, PERSISTENT_ASSETS_ROOT, assertPersistentPayload, assertPersistentParity } from "../tests/fixtures/rust-persistent-ui.mjs";
+import { createPersistentUiFixture, PERSISTENT_ASSETS_ROOT, assertPersistentPayload, assertPersistentParity, persistentFixtureControl } from "../tests/fixtures/rust-persistent-ui.mjs";
 import { serveRustUiFixture } from "./lib/serve-rust-ui-fixture.mjs";
 const queries = ["pve", "regular"].flatMap(mode => {
   const base = `/api/average?mode=${mode}&statistic=trimmed_mean&period=all&dimension=hours&metric=players`;
@@ -15,11 +15,5 @@ await serveRustUiFixture({
   pagePath: "/population/pve", assetPrefix: "_rust/persistent", event: "rust_persistent_browser_ready",
   dataDescription: "private synthetic300accounts perPvE/Regular + scheduled XP + eight bilingual achievements",
   warmCacheQueries: queries, assertPayload: assertPersistentPayload, assertParity: assertPersistentParity,
-  control(fixture, value) {
-    if (value.action === "break-primary") {
-      fixture.db.exec("ALTER TABLE players RENAME COLUMN kd_ratio TO fixture_missing_kd; ALTER TABLE mode_players RENAME COLUMN kd_ratio TO fixture_missing_kd");
-    } else if (value.action === "repair-primary") {
-      fixture.db.exec("ALTER TABLE players RENAME COLUMN fixture_missing_kd TO kd_ratio; ALTER TABLE mode_players RENAME COLUMN fixture_missing_kd TO kd_ratio");
-    } else if (value.action) throw new Error("Unknown private control action");
-  },
+  control: persistentFixtureControl,
 });

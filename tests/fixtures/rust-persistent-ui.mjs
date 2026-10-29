@@ -11,6 +11,16 @@ import { rustCohortBinary } from "./rust-cohort-data.mjs";
 import { startRustBackend } from "./rust-seasonal-http.mjs";
 import { readBuiltAssets } from "./rust-arena-ui.mjs";
 
+// Break only the PvE source used by the real failure/recovery interaction.
+// Regular prefetches continue to query their independent players table.
+export function persistentFixtureControl(fixture, value) {
+  if (value.action === "break-primary") {
+    fixture.db.exec("ALTER TABLE mode_players RENAME COLUMN kd_ratio TO fixture_missing_kd");
+  } else if (value.action === "repair-primary") {
+    fixture.db.exec("ALTER TABLE mode_players RENAME COLUMN fixture_missing_kd TO kd_ratio");
+  } else if (value.action) throw new Error("Unknown private control action");
+}
+
 export const PERSISTENT_MODES = ["pve", "regular"];
 export const PERSISTENT_ASSETS_ROOT = resolve(process.env.RUST_PERSISTENT_UI_ASSETS || "public/_rust/persistent");
 export const persistentAssets = () => readBuiltAssets(PERSISTENT_ASSETS_ROOT);
