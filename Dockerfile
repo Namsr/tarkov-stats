@@ -13,7 +13,7 @@ RUN rustup target add wasm32-unknown-unknown
 WORKDIR /native
 COPY rust/ui/ ./rust/ui/
 COPY lib/i18n/messages.json ./lib/i18n/messages.json
-RUN cargo build --release --locked --manifest-path rust/ui/Cargo.toml --target wasm32-unknown-unknown --features hydrate
+COPY lib/player-levels-v2026-07-22.json ./lib/player-levels-v2026-07-22.json
 # Official static musl CLI; version matches the locked wasm-bindgen dependency.
 RUN set -eu; case "$TARGETARCH" in \
       amd64) arch=x86_64; sum=82d12bb940e2d4e72e0d5605387fc1b8ca179044e012b620f0ce4e7440e8320e ;; \
@@ -23,14 +23,19 @@ RUN set -eu; case "$TARGETARCH" in \
     wget -q "https://github.com/wasm-bindgen/wasm-bindgen/releases/download/0.2.129/$name.tar.gz" -O /tmp/wasm-bindgen.tar.gz; \
     echo "$sum  /tmp/wasm-bindgen.tar.gz" | sha256sum -c -; \
     tar -xzf /tmp/wasm-bindgen.tar.gz -C /tmp; \
-    "/tmp/$name/wasm-bindgen" rust/ui/target/wasm32-unknown-unknown/release/tarkov_ui.wasm \
-      --target web --no-typescript --out-name tarkov_ui --out-dir /native/wasm
+    for page in arena persistent; do \
+      feature=hydrate; if [ "$page" = persistent ]; then feature=hydrate-persistent; fi; \
+      cargo build --release --locked --manifest-path rust/ui/Cargo.toml --target wasm32-unknown-unknown --features "$feature"; \
+      "/tmp/$name/wasm-bindgen" rust/ui/target/wasm32-unknown-unknown/release/tarkov_ui.wasm \
+        --target web --no-typescript --out-name tarkov_ui --out-dir "/native/wasm/$page"; \
+    done
 
 FROM rust-builder AS rust-api-builder
 WORKDIR /native
 COPY rust/backend/ ./rust/backend/
 COPY rust/ui/ ./rust/ui/
 COPY lib/i18n/messages.json ./lib/i18n/messages.json
+COPY lib/player-levels-v2026-07-22.json ./lib/player-levels-v2026-07-22.json
 RUN cargo build --release --locked --manifest-path rust/backend/Cargo.toml
 
 # ---------- 1. Установка зависимостей ----------
@@ -59,7 +64,10 @@ LABEL org.opencontainers.image.revision=$SOURCE_REVISION
 LABEL org.tarkovstats.rust-http="seasonal-v1"
 LABEL org.tarkovstats.rust-home-showcase="v1"
 LABEL org.tarkovstats.rust-arena-ui="v1"
+LABEL org.tarkovstats.rust-persistent-ui="v1"
+LABEL org.tarkovstats.rust-population-api="v1"
 WORKDIR /app
+RUN apk add --no-cache ca-certificates
 ENV NODE_ENV=production
 ENV NEXT_TELEMETRY_DISABLED=1
 

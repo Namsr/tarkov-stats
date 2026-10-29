@@ -9,12 +9,16 @@ import ts from "typescript";
 
 const source = await readFile(new URL("../scripts/benchmark-rust-arena-browser.mjs", import.meta.url), "utf8");
 const tree = ts.createSourceFile("benchmark.mjs", source, ts.ScriptTarget.Latest, true, ts.ScriptKind.JS);
-const names = ["requireRunning", "start", "stop", "cancel", "until", "browser", "page"];
-const functions = tree.statements.filter(statement => ts.isFunctionDeclaration(statement) && names.includes(statement.name?.text)).map(statement => statement.getText(tree)).join("\n");
-assert.equal(tree.statements.filter(statement => ts.isFunctionDeclaration(statement) && names.includes(statement.name?.text)).length, names.length);
+const engineSource=await readFile(new URL("../scripts/lib/benchmark-rust-ui-browser.mjs",import.meta.url),"utf8");
+const engineTree=ts.createSourceFile("engine.mjs",engineSource,ts.ScriptTarget.Latest,true,ts.ScriptKind.JS);
+const names=["requireRunning","start","stop","cancel","until","browser","page"];
+const declarations=[];
+function visit(node){if(ts.isFunctionDeclaration(node)&&names.includes(node.name?.text))declarations.push(node);ts.forEachChild(node,visit)}
+visit(engineTree);assert.equal(declarations.length,names.length);
+const functions=declarations.map(node=>node.getText(engineTree)).join("\n");
 function lifecycle(extra = {}) {
   const context = { assert, spawn, basename, setTimeout, clearTimeout, delay, cancelled: false, results: {},
-    owned: new Set(), profiles: new Set(), processLogs: [], process: { exitCode: 0 }, ...extra };
+    owned: new Set(), profiles: new Set(), processLogs: [], process: { exitCode: 0 }, options: {profilePrefix:"tarkov-arena-cdp-"}, ...extra };
   const api = runInNewContext(functions + "\n({start,stop,cancel,until,browser,page})", context);
   return { api, context };
 }

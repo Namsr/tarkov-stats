@@ -149,7 +149,7 @@ function AveragePageContent({
   cycleId?: string;
   seasonalCycleId?: string;
 }) {
-  const { t } = useI18n();
+  const { t, lang } = useI18n();
   const pathname = usePathname();
   const router = useRouter();
   const searchParams = useSearchParams();
@@ -556,8 +556,8 @@ function AveragePageContent({
           <div className="mt-6 border-t border-[var(--card-border)] pt-5">
             <p className="mb-3 text-center text-sm text-[var(--muted)]" aria-live="polite">
               {t("average.selectedRange", {
-                min: visibleSelection.min.toLocaleString(),
-                max: visibleSelection.max.toLocaleString(),
+                min: visibleSelection.min.toLocaleString(lang),
+                max: visibleSelection.max.toLocaleString(lang),
                 unit: dimensionUnit,
               })}
             </p>

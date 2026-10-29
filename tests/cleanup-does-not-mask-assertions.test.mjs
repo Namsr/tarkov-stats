@@ -727,10 +727,14 @@ const suitesThatCloseTheHandleOrTheProcessFirst = [
   "tests/caddy-overload.test.mjs",
   // Benchmark fixtures contain JSON only; no SQLite handles are opened.
   "tests/rust-http-benchmark.test.mjs",
+  // Summary fixtures contain JSON only; the separate owned child is awaited before cleanup.
+  "tests/rust-persistent-http-benchmark.test.mjs",
   // Proxy fixture servers and all upstream sockets are closed before deleting files.
   "tests/rust-http-proxy.test.mjs",
   // Supervised HTTP processes exit before their fixture directory is removed.
   "tests/rust-http-supervisor.test.mjs",
+  // Publication singleton reset, fixture handles closed, and both HTTP servers stopped first.
+  "tests/rust-progression-http.test.mjs",
   // The converter closes its source/staging handles in finally; fixture handles also close.
   "tests/compact-storage.test.mjs",
   "tests/deploy-wrapper.test.mjs",

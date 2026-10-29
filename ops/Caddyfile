@@ -128,9 +128,9 @@
 	respond @privateFiles 404
 	# Match the first decoded mode value, like URLSearchParams.get(). A plain
 	# query matcher would also accept a later mode=arena after mode=pve.
-	map {http.request.uri.query} {average_first_mode} {
-		~(^|&)(m|%6[dD])(o|%6[fF])(d|%64)(e|%65)(=([^&]*))?(&|$) "${7}"
-		default ""
+	map {http.request.uri.query} {average_first_mode} {average_mode_state} {
+		~(^|&)(m|%6[dD])(o|%6[fF])(d|%64)(e|%65)(=([^&]*))?(&|$) "${7}" present
+		default "" missing
 	}
 	@arenaAverage {
 		path /api/average /api/average/
@@ -141,6 +141,43 @@
 	}
 	@arenaDocument path /population/arena /population/arena/ /average/arena /average/arena/ /_rust/arena/*
 	reverse_proxy @arenaDocument {$ARENA_UI_UPSTREAM:web:3000} {
+		import web_upstream
+	}
+	# Independent persistent UI/API opt-ins; empty mode remains invalid in Next.
+	@PvePopulation {
+		path /api/average /api/average/ /api/average/metrics /api/average/metrics/ /api/progression/average /api/progression/average/ /api/average/achievements /api/average/achievements/
+		expression `{average_first_mode}.matches('^(p|%70)(v|%76)(e|%65)$')`
+	}
+	reverse_proxy @PvePopulation {$PVE_UI_UPSTREAM:web:3000} {
+		import web_upstream
+	}
+	@RegularPopulation {
+		path /api/average /api/average/ /api/average/metrics /api/average/metrics/ /api/progression/average /api/progression/average/ /api/average/achievements /api/average/achievements/
+		expression `{average_mode_state} == 'missing' || {average_first_mode}.matches('^(r|%72)(e|%65)(g|%67)(u|%75)(l|%6[cC])(a|%61)(r|%72)$')`
+	}
+	reverse_proxy @RegularPopulation {$REGULAR_UI_UPSTREAM:web:3000} {
+		import web_upstream
+	}
+	@PveDocument path /population/pve /population/pve/ /average/pve /average/pve/
+	reverse_proxy @PveDocument {$PVE_UI_UPSTREAM:web:3000} {
+		import web_upstream
+	}
+	@RegularDocument path /population/regular /population/regular/ /average/regular /average/regular/
+	reverse_proxy @RegularDocument {$REGULAR_UI_UPSTREAM:web:3000} {
+		import web_upstream
+	}
+	@PvePersistentAssets {
+		path /_rust/persistent/*
+		expression `'{$PVE_UI_UPSTREAM:web:3000}' != 'web:3000'`
+	}
+	reverse_proxy @PvePersistentAssets {$PVE_UI_UPSTREAM:web:3000} {
+		import web_upstream
+	}
+	@RegularPersistentAssets {
+		path /_rust/persistent/*
+		expression `'{$PVE_UI_UPSTREAM:web:3000}' == 'web:3000'`
+	}
+	reverse_proxy @RegularPersistentAssets {$REGULAR_UI_UPSTREAM:web:3000} {
 		import web_upstream
 	}
 	# Select the complete Seasonal endpoint explicitly. The default still uses Next.
@@ -162,6 +199,84 @@
 		import response_headers
 		@refused expression `{err.status_code} == 502 && {err.message}.matches('^dial tcp .*: (connect: connection refused|connectex: .*actively refused it.*)$')`
 		handle @refused {
+			@retryPvePopulation {
+				path /api/average /api/average/ /api/average/metrics /api/average/metrics/ /api/progression/average /api/progression/average/ /api/average/achievements /api/average/achievements/
+				expression `{average_first_mode}.matches('^(p|%70)(v|%76)(e|%65)$')`
+			}
+			handle @retryPvePopulation {
+				reverse_proxy {$PVE_UI_UPSTREAM:web:3000} {
+					import web_upstream
+					lb_try_duration 4s
+					lb_try_interval 100ms
+					lb_retry_match {
+						expression false
+					}
+				}
+			}
+			@retryRegularPopulation {
+				path /api/average /api/average/ /api/average/metrics /api/average/metrics/ /api/progression/average /api/progression/average/ /api/average/achievements /api/average/achievements/
+				expression `{average_mode_state} == 'missing' || {average_first_mode}.matches('^(r|%72)(e|%65)(g|%67)(u|%75)(l|%6[cC])(a|%61)(r|%72)$')`
+			}
+			handle @retryRegularPopulation {
+				reverse_proxy {$REGULAR_UI_UPSTREAM:web:3000} {
+					import web_upstream
+					lb_try_duration 4s
+					lb_try_interval 100ms
+					lb_retry_match {
+						expression false
+					}
+				}
+			}
+			@retryPveDocument path /population/pve /population/pve/ /average/pve /average/pve/
+			handle @retryPveDocument {
+				reverse_proxy {$PVE_UI_UPSTREAM:web:3000} {
+					import web_upstream
+					lb_try_duration 4s
+					lb_try_interval 100ms
+					lb_retry_match {
+						expression false
+					}
+				}
+			}
+			@retryRegularDocument path /population/regular /population/regular/ /average/regular /average/regular/
+			handle @retryRegularDocument {
+				reverse_proxy {$REGULAR_UI_UPSTREAM:web:3000} {
+					import web_upstream
+					lb_try_duration 4s
+					lb_try_interval 100ms
+					lb_retry_match {
+						expression false
+					}
+				}
+			}
+			@retryPvePersistentAssets {
+				path /_rust/persistent/*
+				expression `'{$PVE_UI_UPSTREAM:web:3000}' != 'web:3000'`
+			}
+			handle @retryPvePersistentAssets {
+				reverse_proxy {$PVE_UI_UPSTREAM:web:3000} {
+					import web_upstream
+					lb_try_duration 4s
+					lb_try_interval 100ms
+					lb_retry_match {
+						expression false
+					}
+				}
+			}
+			@retryRegularPersistentAssets {
+				path /_rust/persistent/*
+				expression `'{$PVE_UI_UPSTREAM:web:3000}' == 'web:3000'`
+			}
+			handle @retryRegularPersistentAssets {
+				reverse_proxy {$REGULAR_UI_UPSTREAM:web:3000} {
+					import web_upstream
+					lb_try_duration 4s
+					lb_try_interval 100ms
+					lb_retry_match {
+						expression false
+					}
+				}
+			}
 			@retrySeasonal path /api/seasonal/cohort /api/seasonal/cohort/
 			handle @retrySeasonal {
 				# A refused Rust dial retries Rust; it never falls back to Next.

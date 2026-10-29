@@ -41,6 +41,8 @@ export default async function RootLayout({
     .toLowerCase();
   const analyticsToken = analyticsTokens[hostname];
   const nativeArena = process.env.ARENA_UI_UPSTREAM === "web:3001";
+  const nativePve = process.env.PVE_UI_UPSTREAM === "web:3001";
+  const nativeRegular = process.env.REGULAR_UI_UPSTREAM === "web:3001";
 
   return (
     <html lang={lang} className="h-full antialiased">
@@ -53,7 +55,7 @@ export default async function RootLayout({
         suppressHydrationWarning
       >
         <LanguageProvider initialLang={lang}>
-          <NativeRoutesProvider arena={nativeArena}>
+          <NativeRoutesProvider arena={nativeArena} pve={nativePve} regular={nativeRegular}>
             <FavoritesProvider>
               <SkipLink />
               <SiteHeader />

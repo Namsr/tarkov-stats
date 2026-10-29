@@ -44,6 +44,7 @@ jobs:
       - run: cargo fmt --manifest-path rust/ui/Cargo.toml -- --check
       - run: cargo clippy --locked --all-targets --features ssr --manifest-path rust/ui/Cargo.toml -- -D warnings
       - run: cargo clippy --locked --lib --features hydrate --target wasm32-unknown-unknown --manifest-path rust/ui/Cargo.toml -- -D warnings
+      - run: cargo clippy --locked --lib --features hydrate-persistent --target wasm32-unknown-unknown --manifest-path rust/ui/Cargo.toml -- -D warnings
       - run: cargo fmt --manifest-path rust/backend/Cargo.toml -- --check
       - run: cargo clippy --locked --all-targets --manifest-path rust/backend/Cargo.toml -- -D warnings
       - run: cargo fmt --manifest-path rust/axis-probability/Cargo.toml -- --check
@@ -69,7 +70,7 @@ jobs:
   build:
     needs: checks
     runs-on: ubuntu-24.04
-    timeout-minutes: 45
+    timeout-minutes: 75
     permissions:
       contents: write
     env:
@@ -97,6 +98,10 @@ jobs:
             assert.equal(services.caddy.environment.HOME_SHOWCASE_API_UPSTREAM, services.web.environment.HOME_SHOWCASE_API_UPSTREAM);
             assert.equal(services.web.environment.ARENA_UI_UPSTREAM, "web:3000");
             assert.equal(services.caddy.environment.ARENA_UI_UPSTREAM, services.web.environment.ARENA_UI_UPSTREAM);
+            for (const flag of ["PVE_UI_UPSTREAM", "REGULAR_UI_UPSTREAM"]) {
+              assert.equal(services.web.environment[flag], "web:3000");
+              assert.equal(services.caddy.environment[flag], services.web.environment[flag]);
+            }
             assert.equal(services.web.ports, undefined);
             assert.equal(Number(services.web.mem_limit), 896 * 1024 ** 2);
             assert.equal(Number(services.worker.mem_limit), 512 * 1024 ** 2);
@@ -108,6 +113,8 @@ jobs:
         run: |
           test "$(docker image inspect --format '{{index .Config.Labels "org.opencontainers.image.revision"}}' "tarkovstats-web:$GITHUB_SHA")" = "$GITHUB_SHA"
           test "$(docker image inspect --format '{{index .Config.Labels "org.tarkovstats.rust-arena-ui"}}' "tarkovstats-web:$GITHUB_SHA")" = "v1"
+          test "$(docker image inspect --format '{{index .Config.Labels "org.tarkovstats.rust-persistent-ui"}}' "tarkovstats-web:$GITHUB_SHA")" = "v1"
+          test "$(docker image inspect --format '{{index .Config.Labels "org.tarkovstats.rust-population-api"}}' "tarkovstats-web:$GITHUB_SHA")" = "v1"
           docker run --rm --network none --entrypoint node "tarkovstats-web:$GITHUB_SHA" --experimental-strip-types --experimental-sqlite -e "require('node:sqlite'); require('discord.js'); require('node:fs').accessSync('/app/server.js'); require('node:fs').accessSync('/app/scripts/axis-discord-bot.mjs')"
           docker run --rm --network none --entrypoint /app/rust/cohort-worker/target/release/tarkov-cohort-worker "tarkovstats-web:$GITHUB_SHA" < /dev/null
           docker network create image-smoke
@@ -175,6 +182,78 @@ jobs:
             --name rust-arena-ui-smoke "tarkovstats-web:$GITHUB_SHA"
           trap 'docker logs rust-arena-ui-smoke; docker rm --force rust-arena-ui-smoke' EXIT
           docker exec rust-arena-ui-smoke node --experimental-strip-types --experimental-sqlite scripts/verify-rust-http-runtime.mjs --arena-ui
+      - name: Verify independently enabled Regular and PvE Rust UI runtimes
+        run: |
+          owned=''
+          cleanup() { if [ -n "$owned" ]; then docker logs "$owned"; docker rm --force "$owned"; fi; }
+          trap cleanup EXIT
+          for mode in regular pve; do
+            regular=web:3000; pve=web:3000
+            if [ "$mode" = regular ]; then regular=web:3001; else pve=web:3001; fi
+            owned="rust-$mode-ui-smoke"
+            docker run --detach --network none --memory 896m --memory-swap 896m --read-only --pids-limit 256 \
+              --cap-drop ALL --security-opt no-new-privileges \
+              --tmpfs /data:rw,noexec,nosuid,nodev,size=64m,uid=1001,gid=1001,mode=0700 \
+              --tmpfs /tmp:rw,noexec,nosuid,nodev,size=32m,mode=1777 \
+              --tmpfs /app/.next/cache:rw,noexec,nosuid,nodev,size=32m,uid=1001,gid=1001,mode=0700 \
+              --env WEB_BACKGROUND_WORKERS=false --env SEASONAL_API_UPSTREAM=web:3000 \
+              --env HOME_SHOWCASE_API_UPSTREAM=web:3000 --env ARENA_UI_UPSTREAM=web:3000 \
+              --env "REGULAR_UI_UPSTREAM=$regular" --env "PVE_UI_UPSTREAM=$pve" \
+              --env SEASONAL_ENABLED=false --env AVERAGE_PUBLICATIONS_ENABLED=false \
+              --env RUST_UI_RUNTIME_FIXTURE=true --env "SQLITE_PATH=/data/rust-$mode-runtime-smoke.db" \
+              --env "AVERAGE_PUBLICATION_SQLITE_PATH=/data/rust-$mode-runtime-cache.db" \
+              --name "$owned" "tarkovstats-web:$GITHUB_SHA"
+            docker exec "$owned" node --experimental-strip-types --experimental-sqlite scripts/verify-rust-http-runtime.mjs "--$mode-ui"
+            cleanup
+            owned=''
+          done
+      - name: Compare Arena interfaces on the isolated Linux browser runner
+        timeout-minutes: 10
+        env:
+          GH_TOKEN: ""
+        run: |
+          npm ci
+          curl --fail --silent --show-error --location --retry 3 --max-time 90 \
+            --output "$RUNNER_TEMP/arena-caddy.tar.gz" \
+            https://github.com/caddyserver/caddy/releases/download/v2.11.4/caddy_2.11.4_linux_amd64.tar.gz
+          printf '527fbf917c39189a1e3b31d34fa955601680b2d5c8055d2a87b8b9588dec7bb9  %s\n' "$RUNNER_TEMP/arena-caddy.tar.gz" | sha256sum --check
+          mkdir "$RUNNER_TEMP/arena-caddy-bin"
+          tar -xzf "$RUNNER_TEMP/arena-caddy.tar.gz" -C "$RUNNER_TEMP/arena-caddy-bin" caddy
+          export CADDY_BIN="$RUNNER_TEMP/arena-caddy-bin/caddy"
+          bash scripts/benchmark-rust-arena-browser-image.sh --image "tarkovstats-web:$GITHUB_SHA" --output "$RUNNER_TEMP/rust-arena-browser"
+      - name: Save Arena browser correctness and measurement evidence
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: rust-arena-browser-${{ github.sha }}
+          path: |
+            ${{ runner.temp }}/rust-arena-browser/image-provenance.json
+            ${{ runner.temp }}/rust-arena-browser/evidence/*.json
+            ${{ runner.temp }}/rust-arena-browser/evidence/*.md
+            ${{ runner.temp }}/rust-arena-browser/evidence/*.log
+            ${{ runner.temp }}/rust-arena-browser/evidence/*.png
+          if-no-files-found: warn
+          retention-days: 14
+      - name: Compare persistent interfaces and interactions on the Linux browser runner
+        timeout-minutes: 12
+        env:
+          GH_TOKEN: ""
+        run: |
+          export CADDY_BIN="$RUNNER_TEMP/arena-caddy-bin/caddy"
+          bash scripts/check-rust-persistent-browser-image.sh --image "tarkovstats-web:$GITHUB_SHA" --output "$RUNNER_TEMP/rust-persistent-browser"
+      - name: Save persistent browser correctness and measurement evidence
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: rust-persistent-browser-${{ github.sha }}
+          path: |
+            ${{ runner.temp }}/rust-persistent-browser/image-provenance.json
+            ${{ runner.temp }}/rust-persistent-browser/evidence/*.json
+            ${{ runner.temp }}/rust-persistent-browser/evidence/*.md
+            ${{ runner.temp }}/rust-persistent-browser/evidence/*.log
+            ${{ runner.temp }}/rust-persistent-browser/evidence/*.png
+          if-no-files-found: warn
+          retention-days: 14
       - name: Benchmark isolated TypeScript and Rust API workloads
         timeout-minutes: 20
         run: bash scripts/benchmark-rust-container.sh "tarkovstats-web:$GITHUB_SHA" "$RUNNER_TEMP/rust-linux-benchmark"
@@ -203,31 +282,18 @@ jobs:
             ${{ runner.temp }}/rust-http-benchmark/summary.md
           if-no-files-found: warn
           retention-days: 14
-      - name: Compare Arena interfaces on the isolated Linux browser runner
-        timeout-minutes: 10
-        env:
-          GH_TOKEN: ""
-        run: |
-          npm ci
-          curl --fail --silent --show-error --location --retry 3 --max-time 90 \
-            --output "$RUNNER_TEMP/arena-caddy.tar.gz" \
-            https://github.com/caddyserver/caddy/releases/download/v2.11.4/caddy_2.11.4_linux_amd64.tar.gz
-          printf '527fbf917c39189a1e3b31d34fa955601680b2d5c8055d2a87b8b9588dec7bb9  %s\n' "$RUNNER_TEMP/arena-caddy.tar.gz" | sha256sum --check
-          mkdir "$RUNNER_TEMP/arena-caddy-bin"
-          tar -xzf "$RUNNER_TEMP/arena-caddy.tar.gz" -C "$RUNNER_TEMP/arena-caddy-bin" caddy
-          export CADDY_BIN="$RUNNER_TEMP/arena-caddy-bin/caddy"
-          bash scripts/benchmark-rust-arena-browser-image.sh --image "tarkovstats-web:$GITHUB_SHA" --output "$RUNNER_TEMP/rust-arena-browser"
-      - name: Save Arena browser correctness and measurement evidence
+      - name: Compare isolated production Regular and PvE population APIs
+        timeout-minutes: 28
+        run: bash scripts/benchmark-rust-persistent-http-container.sh --image "tarkovstats-web:$GITHUB_SHA" --output "$RUNNER_TEMP/rust-persistent-http"
+      - name: Save persistent API comparison evidence
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: rust-arena-browser-${{ github.sha }}
+          name: rust-persistent-http-${{ github.sha }}
           path: |
-            ${{ runner.temp }}/rust-arena-browser/image-provenance.json
-            ${{ runner.temp }}/rust-arena-browser/evidence/*.json
-            ${{ runner.temp }}/rust-arena-browser/evidence/*.md
-            ${{ runner.temp }}/rust-arena-browser/evidence/*.log
-            ${{ runner.temp }}/rust-arena-browser/evidence/*.png
+            ${{ runner.temp }}/rust-persistent-http/*.json
+            ${{ runner.temp }}/rust-persistent-http/*.log
+            ${{ runner.temp }}/rust-persistent-http/summary.md
           if-no-files-found: warn
           retention-days: 14
       - name: Publish a revision-specific image

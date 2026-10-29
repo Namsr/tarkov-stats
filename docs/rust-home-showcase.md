@@ -66,9 +66,11 @@ required independently when its selector is native. Native health is checked
 if either actual running-container selector uses port 3001.
 
 Install a capable image with routing off before any coordinated opt-in. Source
-merges do not activate routes or prove production improvements. Coordinate any server operations with the maintenance owner before activation.
-`tarkovstats-deploy.timer` must remain disabled; source approval and CI do not
-enable routing or deploy the image.
+merges do not activate routes or prove production improvements. Honor the
+existing deployment/data locks during server operations; the former maintenance
+chat is no longer a coordination dependency by direct user instruction.
+`tarkovstats-deploy.timer` remains enabled by the latest user instruction;
+source approval and CI do not themselves enable native routing.
 
 ## Validation and performance limits
 
