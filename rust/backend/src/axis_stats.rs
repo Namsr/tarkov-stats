@@ -574,4 +574,40 @@ mod tests {
         assert!(wilson(8, 10) > wilson(1, 1));
         assert!(combinable(&["a".into()]).is_empty());
     }
+    #[test]
+    fn party_and_rivalry_awards_require_repeated_real_matches() {
+        let start = current_start();
+        let team = |ids: &[&str], rating: f64| Team {
+            players: ids
+                .iter()
+                .map(|id| Player {
+                    id: (*id).into(),
+                    name: (*id).into(),
+                    avatar_url: None,
+                    mmr: Some(rating),
+                })
+                .collect(),
+        };
+        let games = (0..12)
+            .map(|index| Match {
+                number: index + 1,
+                time: Some(start + index * 1000),
+                queue_id: Some(CHANNEL.into()),
+                winner: Some(if index < 9 { 0 } else { 1 }),
+                teams: vec![
+                    team(&["a", "b", "c"], 900.0),
+                    team(&["x", "y", "z"], 1100.0),
+                ],
+            })
+            .collect();
+        let result = compute(games, &[], start + 15_000, true, start, start, None);
+        assert_eq!(result["totals"]["matches"], 12);
+        assert_eq!(result["totals"]["lineups"], 2);
+        assert_eq!(result["awards"]["party"]["games"], 12);
+        assert_eq!(result["awards"]["party"]["winRate"], 75.0);
+        assert_eq!(result["awards"]["duo"]["games"], 12);
+        assert_eq!(result["awards"]["nemesis"]["games"], 12);
+        assert_eq!(result["awards"]["giantSlayer"]["value"], 9.0);
+    }
+
 }
