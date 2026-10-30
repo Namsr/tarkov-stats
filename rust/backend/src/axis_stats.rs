@@ -794,7 +794,10 @@ pub async fn get(RawQuery(raw): RawQuery) -> Response {
         .unwrap_or_else(|| "current".into());
     let cache = STATISTICS_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
     let mut cached = cache.lock().await;
-    let result = if let Some((at, value)) = cached.get(&season).filter(|(at, _)| at.elapsed() < CACHE_TTL) {
+    let result = if let Some((at, value)) = cached
+        .get(&season)
+        .filter(|(at, _)| at.elapsed() < CACHE_TTL)
+    {
         Ok(Ok(value.clone()))
     } else {
         let requested = season.clone();
