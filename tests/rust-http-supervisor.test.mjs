@@ -23,7 +23,7 @@ async function fixture(t, env = {}) {
   `);
   const child = spawn(process.execPath, [entry], { cwd: directory, windowsHide: true,
     env: { ...process.env, WEB_BACKGROUND_WORKERS: "false", RUNTIME_HEALTH_ENABLED: "false",
-      SEASONAL_API_UPSTREAM: "web:3000", HOME_SHOWCASE_API_UPSTREAM: "web:3000", ARENA_UI_UPSTREAM: "web:3000", RUST_API_BIND: "127.0.0.1:0", RUST_API_BIN: binary, ...env },
+      SEASONAL_API_UPSTREAM: "web:3000", HOME_SHOWCASE_API_UPSTREAM: "web:3000", ARENA_UI_UPSTREAM: "web:3000", AXIS_STATISTICS_API_UPSTREAM: "web:3000", RUST_API_BIND: "127.0.0.1:0", RUST_API_BIN: binary, ...env },
     stdio: ["pipe", "pipe", "pipe"] });
   let stdout = "", stderr = "";
   const done = new Promise((resolve) => { child.once("close", (code, signal) => resolve({ code, signal })); });
@@ -66,6 +66,13 @@ test("web startup rejects unknown routing and does not require Rust for the defa
   assert.equal((await original.done).code, 0);
   assert.equal(original.events().filter((event) => event.name === "Rust API").length, 0);
   assert.ok(original.events().some((event) => event.event === "next_fixture_ready"));
+});
+
+test("AXIS statistics alone requires the Rust API", { timeout: 20000 }, async (t) => {
+  const missing = await fixture(t, { AXIS_STATISTICS_API_UPSTREAM: "web:3001", RUST_API_BIN: resolve("missing-rust-http-server") });
+  assert.equal((await missing.done).code, 1);
+  assert.match(missing.stderr(), /Rust API spawn failed/);
+  assert.equal(missing.events().some((event) => event.event === "next_fixture_ready"), false);
 });
 
 test("opted-in Rust spawn failure prevents a falsely healthy Next server", { timeout: 20000 }, async (t) => {

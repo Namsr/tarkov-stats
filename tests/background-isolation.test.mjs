@@ -69,7 +69,9 @@ test("HTTP-only startup launches no materializers and still supervises HTTP exit
     await writeFile(join(dir, "server.js"), 'console.log("HTTP_STARTED"); process.exitCode = 7;');
     const result = spawnSync(process.execPath, [resolve("scripts/start-web.mjs")], {
       cwd: dir, encoding: "utf8", timeout: 20_000,
-      env: { ...process.env, WEB_BACKGROUND_WORKERS: "false" },
+      // The statistics upstream defaults to the Rust process (web:3001), which does
+      // not exist in this temporary HTTP-only directory. Keep the run Next-only.
+      env: { ...process.env, WEB_BACKGROUND_WORKERS: "false", AXIS_STATISTICS_API_UPSTREAM: "web:3000" },
     });
     assert.ifError(result.error);
     assert.equal(result.status, 7, result.stderr);
