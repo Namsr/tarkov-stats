@@ -169,7 +169,7 @@ impl Combat {
         let in_band = self
             .ratios
             .iter()
-            .filter(|value| low <= **value && **value <= high)
+            .filter(|value| (low..=high).contains(*value))
             .count() as f64
             / count
             * 100.0;
@@ -639,8 +639,11 @@ fn compute(
     let total_kills: u64 = combat.values().map(|c| u64::from(c.kills)).sum();
     let total_deaths: u64 = combat.values().map(|c| u64::from(c.deaths)).sum();
     let total_assists: u64 = combat.values().map(|c| u64::from(c.assists)).sum();
-    let average_kda = (!combat.is_empty() && total_kills + total_assists > 0)
-        .then(|| (total_kills + total_assists) as f64 / total_deaths.max(1) as f64);
+    let average_kda = if combat.is_empty() || total_kills + total_assists == 0 {
+        None
+    } else {
+        Some((total_kills + total_assists) as f64 / total_deaths.max(1) as f64)
+    };
     let combat_players: serde_json::Map<String, Value> = combat
         .iter()
         .map(|(id, c)| {
