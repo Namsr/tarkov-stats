@@ -142,7 +142,7 @@ export async function runBenchmark(options) {
   const upstream = backend === "rust" ? "web:3001" : "web:3000";
   const workerBackend = backend === "typescript" ? "typescript" : "rust";
   const env = { ...process.env, PORT: "3000", HOSTNAME: "127.0.0.1", RUST_API_BIND: "127.0.0.1:3001",
-    SEASONAL_API_UPSTREAM: upstream, SEASONAL_COHORT_BACKEND: workerBackend,
+    SEASONAL_API_UPSTREAM: upstream, AXIS_STATISTICS_API_UPSTREAM: "web:3000", SEASONAL_COHORT_BACKEND: workerBackend,
     SEASONAL_ENABLED: "true", SEASONAL_CYCLE_ID: cycle, SEASONAL_STARTS_AT: "2020-01-01T00:00:00Z",
     SEASONAL_UPSTREAM_CONTRACT: "direct_profile", SEASONAL_COLLECTION_SOURCE: "operator",
     SEASONAL_PROFILE_URL_TEMPLATE: "https://players.tarkov.dev/pvp-season/{aid}.json",

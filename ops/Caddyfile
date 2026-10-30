@@ -143,6 +143,11 @@
 	reverse_proxy @arenaDocument {$ARENA_UI_UPSTREAM:web:3000} {
 		import web_upstream
 	}
+	# AXIS aggregate metrics are calculated and served by the Rust HTTP backend.
+	@axisStatistics path /api/axis-league/statistics /api/axis-league/statistics/
+	reverse_proxy @axisStatistics {$AXIS_STATISTICS_API_UPSTREAM:web:3001} {
+		import web_upstream
+	}
 	# Select the complete Seasonal endpoint explicitly. The default still uses Next.
 	@seasonalCohort path /api/seasonal/cohort /api/seasonal/cohort/
 	reverse_proxy @seasonalCohort {$SEASONAL_API_UPSTREAM:web:3000} {

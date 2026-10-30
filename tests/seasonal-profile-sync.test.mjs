@@ -312,7 +312,15 @@ test("Seasonal rate-limit wait is clamped to the run budget", async () => {
       summary.durationMs < 4_000,
       `the run must end on time, not one 10s spacing past the deadline (was ${summary.durationMs}ms)`,
     );
-    assert.match(stdout, / RUN_CUT \{"stopReason":"max_run_ms","remainingMs":0,"phase":"rate_limit","aid":8,"attempt":1\}/);
+    const cutLine = stdout.split(/\r?\n/).find((entry) => entry.includes(" RUN_CUT "));
+    assert.ok(cutLine, "collector logs the rate-limit budget cut");
+    const cut = JSON.parse(cutLine.slice(cutLine.indexOf(" RUN_CUT ") + " RUN_CUT ".length));
+    assert.equal(cut.stopReason, "max_run_ms");
+    assert.equal(cut.phase, "rate_limit");
+    assert.equal(cut.aid, 8);
+    assert.equal(cut.attempt, 1);
+    assert.ok(Number.isInteger(cut.remainingMs) && cut.remainingMs >= 0 && cut.remainingMs <= 50,
+      `the timer may wake slightly before the deadline (remaining ${cut.remainingMs}ms)`);
     const db = new DatabaseSync(dbPath);
     try {
       assert.equal(
