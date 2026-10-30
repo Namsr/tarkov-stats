@@ -12,8 +12,14 @@ use serde_json::{Value, json};
 use std::{
     collections::{HashMap, HashSet},
     env,
-    time::Duration,
+    sync::OnceLock,
+    time::{Duration, Instant},
 };
+use tokio::sync::Mutex;
+
+// One in-flight calculation per process, with a short TTL for repeated visitors.
+static STATISTICS_CACHE: OnceLock<Mutex<HashMap<String, (Instant, Value)>>> = OnceLock::new();
+const CACHE_TTL: Duration = Duration::from_secs(30);
 
 const CHANNEL: &str = "1343726040421367842";
 const MIN_GAMES: usize = 20;
@@ -812,7 +818,20 @@ pub async fn get(RawQuery(raw): RawQuery) -> Response {
         .get("season")
         .cloned()
         .unwrap_or_else(|| "current".into());
-    let result = tokio::task::spawn_blocking(move || read(crate::now_ms(), &season)).await;
+    let cache = STATISTICS_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+    let mut cached = cache.lock().await;
+    let result = if let Some((at, value)) = cached.get(&season).filter(|(at, _)| at.elapsed() < CACHE_TTL) {
+        Ok(Ok(value.clone()))
+    } else {
+        let requested = season.clone();
+        let result = tokio::task::spawn_blocking(move || read(crate::now_ms(), &requested)).await;
+        if let Ok(Ok(value)) = &result {
+            cached.retain(|_, (at, _)| at.elapsed() < CACHE_TTL);
+            cached.insert(season, (Instant::now(), value.clone()));
+        }
+        result
+    };
+    drop(cached);
     let mut response = match result {
         Ok(Ok(value)) => (StatusCode::OK, Json(value)).into_response(),
         Ok(Err(error)) if error == "invalid_season" => (
