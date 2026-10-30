@@ -212,24 +212,6 @@ fn wilson(wins: u32, games: u32) -> f64 {
 fn award(id: &str, value: f64) -> Value {
     json!({"playerId":id,"value":value})
 }
-fn combinable(keys: &[String]) -> Vec<Vec<String>> {
-    if keys.len() < 2 || keys.len() > 5 {
-        return Vec::new();
-    }
-    let mut result = Vec::new();
-    for mask in 1..(1usize << keys.len()) {
-        if mask.count_ones() < 2 {
-            continue;
-        }
-        let members = keys
-            .iter()
-            .enumerate()
-            .filter_map(|(i, id)| (mask & (1 << i) != 0).then_some(id.clone()))
-            .collect();
-        result.push(members);
-    }
-    result
-}
 fn compute(
     matches: Vec<Match>,
     standings: &[Standing],
@@ -338,29 +320,26 @@ fn compute(
                     }
                 }
             }
-            // A duo can be part of a bigger stack, so pair every teammate, not just 2v2 lobbies.
+            // Record only actual duos, not every larger party subset.
             for (index, first) in lineup.iter().enumerate() {
                 for second in &lineup[index + 1..] {
+                    let pair = vec![first.clone(), second.clone()];
+                    if winner != -2 {
+                        let item = parties.entry(pair.clone()).or_default();
+                        item.games += 1;
+                        if winner as usize == team_index {
+                            item.wins += 1;
+                        }
+                    }
                     if let (Some(a), Some(b)) = (
                         kda_rows.get(&(m.number, first.clone())),
                         kda_rows.get(&(m.number, second.clone())),
                     ) {
-                        let duo = duo_combat
-                            .entry(vec![first.clone(), second.clone()])
-                            .or_default();
+                        let duo = duo_combat.entry(pair).or_default();
                         duo.games += 1;
                         duo.kills += a.kills + b.kills;
                         duo.deaths += a.deaths + b.deaths;
                         duo.assists += a.assists + b.assists;
-                    }
-                }
-            }
-            if winner != -2 {
-                for members in combinable(&lineup) {
-                    let item = parties.entry(members).or_default();
-                    item.games += 1;
-                    if winner as usize == team_index {
-                        item.wins += 1;
                     }
                 }
             }
@@ -479,32 +458,27 @@ fn compute(
                 .max_by(|a, b| a.1.total_cmp(&b.1).then_with(|| b.0.cmp(a.0)))
                 .map(|(id, value)| json!({"playerId": id, "value": value, "basis": "wins"}))
         });
-    let party = |min_size: usize, max_size: usize, min_games: u32| {
-        parties
-            .iter()
-            .filter(|(ids, g)| {
-                ids.len() >= min_size && ids.len() <= max_size && g.games >= min_games
-            })
-            .max_by(|a, b| {
-                wilson(a.1.wins, a.1.games)
-                    .total_cmp(&wilson(b.1.wins, b.1.games))
-                    .then_with(|| a.1.games.cmp(&b.1.games))
-                    .then_with(|| b.0.cmp(a.0))
-            })
-            .map(|(ids, g)| (ids.clone(), g.games, g.wins))
-    };
-    let best_duo = party(2, 2, MIN_DUO_GAMES).map(|(ids, games, wins)| {
-        let duo = duo_combat.get(&ids);
-        json!({
-            "players": ids, "games": games, "wins": wins,
-            "winRate": ratio(wins, games) * 100.0,
-            "kdaGames": duo.map_or(0, |d| d.games),
-            "kills": duo.map_or(0, |d| d.kills),
-            "deaths": duo.map_or(0, |d| d.deaths),
-            "assists": duo.map_or(0, |d| d.assists),
-            "kda": duo.map(|d| kda_ratio(d.kills, d.deaths, d.assists)),
+    let best_duo = parties
+        .iter()
+        .filter(|(_, g)| g.games >= MIN_DUO_GAMES)
+        .max_by(|a, b| {
+            wilson(a.1.wins, a.1.games)
+                .total_cmp(&wilson(b.1.wins, b.1.games))
+                .then_with(|| a.1.games.cmp(&b.1.games))
+                .then_with(|| b.0.cmp(a.0))
         })
-    });
+        .map(|(ids, group)| {
+            let duo = duo_combat.get(ids);
+            json!({
+                "players": ids, "games": group.games, "wins": group.wins,
+                "winRate": ratio(group.wins, group.games) * 100.0,
+                "kdaGames": duo.map_or(0, |d| d.games),
+                "kills": duo.map_or(0, |d| d.kills),
+                "deaths": duo.map_or(0, |d| d.deaths),
+                "assists": duo.map_or(0, |d| d.assists),
+                "kda": duo.map(|d| kda_ratio(d.kills, d.deaths, d.assists)),
+            })
+        });
     let win_machine =
         select(&|r| ratio(r.wins, r.wins + r.losses) * 100.0).map(|(id, v)| award(id, v));
     let veteran = records
@@ -909,10 +883,8 @@ mod tests {
         assert!(result["awards"]["mvp"].is_null());
     }
     #[test]
-    fn party_subsets_and_wilson_are_conservative() {
-        assert_eq!(combinable(&["a".into(), "b".into(), "c".into()]).len(), 4);
+    fn wilson_ranking_rewards_sample_size() {
         assert!(wilson(8, 10) > wilson(1, 1));
-        assert!(combinable(&["a".into()]).is_empty());
     }
     #[test]
     fn distributions_include_five_completed_games_and_skip_unknown_ratings() {
