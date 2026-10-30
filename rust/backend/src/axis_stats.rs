@@ -756,7 +756,7 @@ fn read(now: i64, season: &str) -> Result<Value, String> {
         .find(|entry| entry.id == season)
         .ok_or("invalid_season")?;
     let (starts_at, ends_at) = (selected.starts_at, selected.ends_at);
-    let mut query=db.prepare("SELECT payload FROM axis_archive_matches WHERE json_extract(payload,'$.queueId')=?1 AND json_extract(payload,'$.time')>=?2 AND (?3 IS NULL OR json_extract(payload,'$.time')<?3) ORDER BY number")
+    let mut query=db.prepare("SELECT payload FROM axis_archive_matches WHERE json_extract(payload,'$.queueId')=?1 AND json_extract(payload,'$.time')>=?2 AND (?3 IS NULL OR json_extract(payload,'$.time')<?3)")
         .map_err(|e|e.to_string())?;
     let rows = query
         .query_map(rusqlite::params![CHANNEL, starts_at, ends_at], |row| {
