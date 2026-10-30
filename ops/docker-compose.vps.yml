@@ -12,6 +12,8 @@ services:
       - .env.private
     environment:
       WEB_BACKGROUND_WORKERS: "false"
+      # TLS 1.3 handshakes to Cloudflare-hosted NeatQueue stall from this VPS.
+      NODE_OPTIONS: "--tls-max-v1.2"
       SEASONAL_API_UPSTREAM: ${SEASONAL_API_UPSTREAM:-web:3000}
       HOME_SHOWCASE_API_UPSTREAM: ${HOME_SHOWCASE_API_UPSTREAM:-web:3000}
       ARENA_UI_UPSTREAM: ${ARENA_UI_UPSTREAM:-web:3000}
@@ -67,6 +69,8 @@ services:
       - .env.private
     environment:
       WEB_BACKGROUND_WORKERS: "false"
+      # TLS 1.3 handshakes to Cloudflare-hosted NeatQueue stall from this VPS.
+      NODE_OPTIONS: "--tls-max-v1.2"
       # Collectors and warmup call HTTP in the separate web container.
       REGULAR_PROFILE_SYNC_BASE_URL: "http://web:3000"
       PVE_PROFILE_SYNC_BASE_URL: "http://web:3000"
