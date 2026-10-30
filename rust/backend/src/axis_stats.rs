@@ -794,7 +794,7 @@ pub async fn get(RawQuery(raw): RawQuery) -> Response {
         .unwrap_or_else(|| "current".into());
     let cache = STATISTICS_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
     let mut cached = cache.lock().await;
-    let result = if let Some((at, value)) = cached
+    let result = if let Some((_, value)) = cached
         .get(&season)
         .filter(|(at, _)| at.elapsed() < CACHE_TTL)
     {
