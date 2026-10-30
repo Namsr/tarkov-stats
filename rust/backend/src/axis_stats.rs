@@ -58,6 +58,11 @@ struct Season {
     starts_at: i64,
     ends_at: Option<i64>,
 }
+#[derive(Clone, Copy)]
+struct Window {
+    start: i64,
+    end: Option<i64>,
+}
 #[derive(Default)]
 struct Record {
     games: u32,
@@ -226,9 +231,9 @@ fn compute(
     now: i64,
     complete: bool,
     updated_at: i64,
-    start: i64,
-    end: Option<i64>,
+    window: Window,
 ) -> Value {
+    let Window { start, end } = window;
     let ratings: HashMap<&str, f64> = standings.iter().map(|s| (s.id.as_str(), s.mmr)).collect();
     let positions: HashMap<&str, u32> = standings
         .iter()
@@ -787,8 +792,10 @@ fn read(now: i64, season: &str) -> Result<Value, String> {
         now,
         complete == 1,
         updated_at,
-        starts_at,
-        ends_at,
+        Window {
+            start: starts_at,
+            end: ends_at,
+        },
     );
     result["season"] = json!(season);
     result["seasons"] = json!(
@@ -873,8 +880,7 @@ mod tests {
             start + 5000,
             true,
             start + 5000,
-            start,
-            None,
+            Window { start, end: None },
         );
         assert_eq!(result["totals"]["matches"], 3);
         assert_eq!(result["totals"]["players"], 2);
@@ -908,8 +914,7 @@ mod tests {
             start + 20_000,
             true,
             start,
-            start,
-            None,
+            Window { start, end: None },
         );
         assert_eq!(result["distribution"], json!([1, 0, 0, 0, 1]));
         assert_eq!(
@@ -944,8 +949,7 @@ mod tests {
             start + 20_000,
             true,
             start,
-            start,
-            None,
+            Window { start, end: None },
         );
         assert_eq!(
             current["awards"]["rising"],
@@ -962,8 +966,10 @@ mod tests {
             start + 20_000,
             true,
             start,
-            start,
-            Some(start + 15_000),
+            Window {
+                start,
+                end: Some(start + 15_000),
+            },
         );
         assert_eq!(archived["awards"]["rising"]["toMmr"], 900.0);
         assert_eq!(
@@ -987,8 +993,7 @@ mod tests {
                 start + 30_000,
                 true,
                 start,
-                start,
-                None,
+                Window { start, end: None },
             );
             for name in [
                 "mvp",
@@ -1012,8 +1017,7 @@ mod tests {
             start + 30_000,
             true,
             start,
-            start,
-            None,
+            Window { start, end: None },
         );
         assert_eq!(result["ratingDistribution"], json!([]));
         assert!(result["totals"]["peakDayDate"].is_null());
@@ -1052,8 +1056,7 @@ mod tests {
             start + 15_000,
             true,
             start,
-            start,
-            None,
+            Window { start, end: None },
         );
         assert_eq!(result["totals"]["matches"], 12);
         assert_eq!(result["totals"]["lineups"], 2);
@@ -1088,7 +1091,15 @@ mod tests {
                 },
             );
         }
-        let result = compute(games, &[], &kda, start + 30_000, true, start, start, None);
+        let result = compute(
+            games,
+            &[],
+            &kda,
+            start + 30_000,
+            true,
+            start,
+            Window { start, end: None },
+        );
         assert_eq!(result["awards"]["consistent"]["playerId"], "a");
         assert_eq!(result["awards"]["consistent"]["basis"], "kda");
         assert_eq!(result["awards"]["consistent"]["value"], 100.0);
