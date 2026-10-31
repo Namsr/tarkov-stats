@@ -10,17 +10,21 @@ import AxisMatchHistory from "@/components/AxisMatchHistory";
 import AxisLeagueStatistics from "@/components/AxisLeagueStatistics";
 import AdminAxisLeague from "@/components/AdminAxisLeague";
 import { useI18n } from "@/lib/i18n/context";
-import { AXIS_REFRESH_MS, AXIS_SORTS, AXIS_DISCORD_URL, sortAxisPlayers, type AxisPlayer, type AxisSort } from "@/lib/axis-league";
+import { AXIS_REFRESH_MS, AXIS_SORTS, AXIS_DISCORD_URL, axisMatchHref, sortAxisPlayers, type AxisPlayer, type AxisSort } from "@/lib/axis-league";
 
 export default function AxisLeaguePage() {
   const pathname = usePathname();
   const match = useSearchParams().get("match");
   const initialMatch = match && /^[1-9]\d{0,8}$/.test(match) ? Number(match) : undefined;
-  const view = pathname.split("/")[2];
+  const view = decodeURIComponent(pathname.split("/")[2] ?? "");
+  const [historyMatch, setHistoryMatch] = useState(view === "history" ? initialMatch : undefined);
+  // Only an explicit history destination changes the retained match/editor.
+  if (view === "history" && historyMatch !== initialMatch) setHistoryMatch(initialMatch);
+  const historyHref = historyMatch ? axisMatchHref(historyMatch) : "/axis-league/history";
   // Keep filters and history mounted while Next syncs the URL and Back/Forward.
   function navigateView(event: { preventDefault(): void }, href: string) {
     event.preventDefault();
-    if (window.location.pathname !== href || window.location.search || window.location.hash) {
+    if (window.location.href !== new URL(href, window.location.href).href) {
       window.history.pushState(null, "", href);
     }
   }
@@ -117,10 +121,10 @@ export default function AxisLeaguePage() {
       <nav className="admin-tabs axis-view-switch" aria-label={t("axis.history.view")}>
         <Link href="/axis-league/leaderboard" scroll={false} onNavigate={(event) => navigateView(event, "/axis-league/leaderboard")} className={view === "leaderboard" ? "is-active" : ""} aria-current={view === "leaderboard" ? "page" : undefined}>{t("axis.standings")}</Link>
         <Link href="/axis-league/statistics" scroll={false} onNavigate={(event) => navigateView(event, "/axis-league/statistics")} className={view === "statistics" ? "is-active" : ""} aria-current={view === "statistics" ? "page" : undefined}>{t("axis.stats.tab")}</Link>
-        <Link href="/axis-league/history" scroll={false} onNavigate={(event) => navigateView(event, "/axis-league/history")} className={view === "history" ? "is-active" : ""} aria-current={view === "history" ? "page" : undefined}>{t("axis.history.title")}</Link>
+        <Link href={historyHref} scroll={false} onNavigate={(event) => navigateView(event, historyHref)} className={view === "history" ? "is-active" : ""} aria-current={view === "history" ? "page" : undefined}>{t("axis.history.title")}</Link>
         {canEdit && <Link href="/axis-league/profiles" scroll={false} onNavigate={(event) => navigateView(event, "/axis-league/profiles")} className={view === "profiles" ? "is-active" : ""} aria-current={view === "profiles" ? "page" : undefined}>{t("axis.profiles.title")}</Link>}
       </nav>
-      <div hidden={view !== "history"}><AxisMatchHistory key={initialMatch ?? "all"} initialMatch={initialMatch} players={data?.players} averageKda={data?.averageKda ?? null} active={view === "history"} canEditKda={canEdit === true} canSubmitScreenshot={canSubmit} /></div>
+      <div hidden={view !== "history"}><AxisMatchHistory key={historyMatch ?? "all"} initialMatch={historyMatch} players={data?.players} averageKda={data?.averageKda ?? null} active={view === "history"} canEditKda={canEdit === true} canSubmitScreenshot={canSubmit} /></div>
       {view === "statistics" && <AxisLeagueStatistics players={data?.players} averageKda={data?.averageKda ?? null} />}
       {view === "profiles" && (canEdit === null ? <p role="status">{t("common.loading")}</p> : canEdit ? <AdminAxisLeague data={data} onChange={cacheAxisLeague} editorOnly /> : <p role="status">{t("axis.profiles.accessDenied")}</p>)}
       {view === "leaderboard" && <>
