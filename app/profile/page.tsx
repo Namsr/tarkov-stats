@@ -134,7 +134,7 @@ export default function ProfilePage() {
         </div>
         </div>
         {isAdmin && <Link href="/admin" className="tactical-button">{t("profile.admin")}</Link>}
-        {!isAdmin && (canEditAxisKda || canSubmitAxisScreenshot) && <Link href="/axis-league?view=history" className="tactical-button">{t(canEditAxisKda ? "axis.editor.profileLink" : "axis.submission.profileLink")}</Link>}
+        {!isAdmin && (canEditAxisKda || canSubmitAxisScreenshot) && <Link href="/axis-league/history" className="tactical-button">{t(canEditAxisKda ? "axis.editor.profileLink" : "axis.submission.profileLink")}</Link>}
       </div>
 
       {statsError && <p className="text-[var(--danger)] text-sm">{statsError}</p>}

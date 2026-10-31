@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import { usePathname, useSearchParams } from "next/navigation";
 import { Fragment, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { axisLeagueRefreshDelay, cacheAxisLeague, getCachedAxisLeague, getServerAxisLeague, loadClientAxisLeague, subscribeAxisLeague } from "@/lib/client-axis-league";
 import AxisPlayerIdentity from "@/components/AxisPlayerIdentity";
@@ -11,7 +12,18 @@ import AdminAxisLeague from "@/components/AdminAxisLeague";
 import { useI18n } from "@/lib/i18n/context";
 import { AXIS_REFRESH_MS, AXIS_SORTS, AXIS_DISCORD_URL, sortAxisPlayers, type AxisPlayer, type AxisSort } from "@/lib/axis-league";
 
-export default function AxisLeaguePage({ initialView = "standings", initialMatch }: { initialMatch?: number; initialView?: "standings" | "history" | "profiles" | "statistics" }) {
+export default function AxisLeaguePage() {
+  const pathname = usePathname();
+  const match = useSearchParams().get("match");
+  const initialMatch = match && /^[1-9]\d{0,8}$/.test(match) ? Number(match) : undefined;
+  const view = pathname.split("/")[2];
+  // Keep filters and history mounted while Next syncs the URL and Back/Forward.
+  function navigateView(event: { preventDefault(): void }, href: string) {
+    event.preventDefault();
+    if (window.location.pathname !== href || window.location.search || window.location.hash) {
+      window.history.pushState(null, "", href);
+    }
+  }
   const { t, lang } = useI18n();
   const data = useSyncExternalStore(subscribeAxisLeague, getCachedAxisLeague, getServerAxisLeague);
   const [failed, setFailed] = useState(false);
@@ -20,7 +32,6 @@ export default function AxisLeaguePage({ initialView = "standings", initialMatch
   const [search, setSearch] = useState("");
   const [sort, setSort] = useState<AxisSort>("position");
   const [direction, setDirection] = useState<"asc" | "desc">("asc");
-  const [view, setView] = useState<"standings" | "history" | "profiles" | "statistics">(initialView);
   const [canEdit, setCanEdit] = useState<boolean | null>(null);
   const [canSubmit, setCanSubmit] = useState(false);
   const locale = lang === "ru" ? "ru-RU" : "en-US";
@@ -103,16 +114,16 @@ export default function AxisLeaguePage({ initialView = "standings", initialMatch
         <span>{t("axis.season.since", { date: new Date(data?.currentSeason?.startsAt ?? AXIS_CURRENT_SEASON_START).toLocaleString(locale, { timeZone: "Europe/Moscow", day: "numeric", month: "long", hour: "2-digit", minute: "2-digit" }) })}</span>
         {data && <span className="axis-season-count">{t("axis.results", { n: number(data.players.length) })}<span aria-hidden="true"> · </span>{t("axis.gamesPlayed")}: <strong>{number(data.currentSeason?.games ?? null)}</strong></span>}
       </div>
-      <div className="admin-tabs axis-view-switch" role="group" aria-label={t("axis.history.view")}>
-        <button type="button" className={view === "standings" ? "is-active" : ""} aria-pressed={view === "standings"} onClick={() => setView("standings")}>{t("axis.standings")}</button>
-        <button type="button" className={view === "statistics" ? "is-active" : ""} aria-pressed={view === "statistics"} onClick={() => setView("statistics")}>{t("axis.stats.tab")}</button>
-        <button type="button" className={view === "history" ? "is-active" : ""} aria-pressed={view === "history"} onClick={() => setView("history")}>{t("axis.history.title")}</button>
-        {canEdit && <button type="button" className={view === "profiles" ? "is-active" : ""} aria-pressed={view === "profiles"} onClick={() => setView("profiles")}>{t("axis.profiles.title")}</button>}
-      </div>
-      <div hidden={view !== "history"}><AxisMatchHistory initialMatch={initialMatch} players={data?.players} averageKda={data?.averageKda ?? null} active={view === "history"} canEditKda={canEdit === true} canSubmitScreenshot={canSubmit} /></div>
+      <nav className="admin-tabs axis-view-switch" aria-label={t("axis.history.view")}>
+        <Link href="/axis-league/leaderboard" scroll={false} onNavigate={(event) => navigateView(event, "/axis-league/leaderboard")} className={view === "leaderboard" ? "is-active" : ""} aria-current={view === "leaderboard" ? "page" : undefined}>{t("axis.standings")}</Link>
+        <Link href="/axis-league/statistics" scroll={false} onNavigate={(event) => navigateView(event, "/axis-league/statistics")} className={view === "statistics" ? "is-active" : ""} aria-current={view === "statistics" ? "page" : undefined}>{t("axis.stats.tab")}</Link>
+        <Link href="/axis-league/history" scroll={false} onNavigate={(event) => navigateView(event, "/axis-league/history")} className={view === "history" ? "is-active" : ""} aria-current={view === "history" ? "page" : undefined}>{t("axis.history.title")}</Link>
+        {canEdit && <Link href="/axis-league/profiles" scroll={false} onNavigate={(event) => navigateView(event, "/axis-league/profiles")} className={view === "profiles" ? "is-active" : ""} aria-current={view === "profiles" ? "page" : undefined}>{t("axis.profiles.title")}</Link>}
+      </nav>
+      <div hidden={view !== "history"}><AxisMatchHistory key={initialMatch ?? "all"} initialMatch={initialMatch} players={data?.players} averageKda={data?.averageKda ?? null} active={view === "history"} canEditKda={canEdit === true} canSubmitScreenshot={canSubmit} /></div>
       {view === "statistics" && <AxisLeagueStatistics players={data?.players} averageKda={data?.averageKda ?? null} />}
       {view === "profiles" && (canEdit === null ? <p role="status">{t("common.loading")}</p> : canEdit ? <AdminAxisLeague data={data} onChange={cacheAxisLeague} editorOnly /> : <p role="status">{t("axis.profiles.accessDenied")}</p>)}
-      {view === "standings" && <>
+      {view === "leaderboard" && <>
       <section className="leaderboard-controls axis-controls" aria-label={t("leaderboard.settings")}>
         <label><span>{t("axis.search")}</span><input type="search" value={search} onChange={(event) => setSearch(event.target.value)} placeholder={t("axis.searchPlaceholder")} /></label>
         <label><span>{t("leaderboard.sort.label")}</span><select value={sort} onChange={(event) => changeSort(event.target.value as AxisSort)}>
