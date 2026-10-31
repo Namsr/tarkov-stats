@@ -5,6 +5,95 @@ import ts from "typescript";
 import { AXIS_REFRESH_MS } from "../lib/axis-league.ts";
 import { axisPlayerRequest, cachedAxisPlayer, loadAxisPlayer } from "../lib/client-axis-player.ts";
 
+async function axisPageHarness(t, initialUrl) {
+  const { createRequire } = await import("node:module");
+  const require = createRequire(import.meta.url), React = require("react");
+  const axisLeague = await import("../lib/axis-league.ts");
+  const pageModule = { exports: {} }, slots = [];
+  let location = new URL(initialUrl, "https://tarkovstats.ru"), cursor, changed;
+  const originalWindow = globalThis.window;
+  t.after(() => { globalThis.window = originalWindow; });
+  globalThis.window = {
+    get location() { return location; },
+    history: { pushState(_state, _unused, href) { location = new URL(href, location); } },
+  };
+  const History = () => null;
+  const compiled = ts.transpileModule(await readFile("components/AxisLeaguePage.tsx", "utf8"), {
+    compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS, jsx: ts.JsxEmit.ReactJSX, esModuleInterop: true },
+  }).outputText;
+  new Function("require", "module", "exports", compiled)(name => {
+    if (name === "react") return { ...React,
+      useState(initial) {
+        const index = cursor++;
+        if (!(index in slots)) slots[index] = typeof initial === "function" ? initial() : initial;
+        return [slots[index], value => {
+          const next = typeof value === "function" ? value(slots[index]) : value;
+          if (!Object.is(slots[index], next)) { slots[index] = next; changed = true; }
+        }];
+      },
+      useRef: initial => ({ current: initial }), useMemo: fn => fn(), useEffect() {}, useSyncExternalStore: () => null,
+    };
+    if (name === "next/link") return "a";
+    if (name === "next/navigation") return { usePathname: () => location.pathname, useSearchParams: () => location.searchParams };
+    if (name === "@/lib/axis-league") return axisLeague;
+    if (name === "@/lib/axis-seasons") return { AXIS_CURRENT_SEASON_START: 0 };
+    if (name === "@/lib/i18n/context") return { useI18n: () => ({ lang: "en", t: key => key }) };
+    if (name === "@/lib/client-axis-league") return {};
+    if (name === "@/components/AxisMatchHistory") return History;
+    if (name.startsWith("@/components/")) return () => null;
+    return require(name);
+  }, pageModule, pageModule.exports);
+  function render() {
+    let tree;
+    for (let attempt = 0; attempt < 5; attempt++) {
+      cursor = 0; changed = false;
+      tree = pageModule.exports.default();
+      if (!changed) break;
+      assert.ok(attempt < 4, "page render must settle");
+    }
+    function find(node, predicate) {
+      if (!node || typeof node !== "object") return undefined;
+      if (predicate(node)) return node;
+      for (const child of React.Children.toArray(node.props?.children)) {
+        const found = find(child, predicate);
+        if (found) return found;
+      }
+    }
+    const nav = find(tree, node => node.type === "nav");
+    return { history: find(tree, node => node.type === History), links: React.Children.toArray(nav.props.children) };
+  }
+  return { render, get url() { return location; },
+    visit(href) { location = new URL(href, location); return render(); },
+    click(link) { let prevented = false; link.props.onNavigate({ preventDefault() { prevented = true; } }); assert.equal(prevented, true); return render(); },
+  };
+}
+
+test("AXIS accepts encoded tab URLs and marks the decoded view active", async t => {
+  const page = await axisPageHarness(t, "/axis-league/%68istory");
+  const rendered = page.render();
+  assert.equal(rendered.history.props.active, true);
+  assert.equal(rendered.links.find(link => link.props["aria-current"] === "page").props.href, "/axis-league/history");
+});
+
+test("leaving a linked match keeps its mounted editor and returning restores its URL", async t => {
+  const page = await axisPageHarness(t, "/axis-league/history?match=123#axis-match-123");
+  const initial = page.render(), matchKey = initial.history.key;
+  const away = page.click(initial.links.find(link => link.props.href === "/axis-league/statistics"));
+  assert.equal(page.url.pathname, "/axis-league/statistics");
+  assert.equal(page.url.search, "");
+  assert.equal(away.history.key, matchKey, "a tab switch must not discard the mounted match editor and its draft");
+  assert.equal(away.history.props.initialMatch, 123);
+  const historyLink = away.links.find(link => new URL(link.props.href, page.url).pathname === "/axis-league/history");
+  const restored = page.click(historyLink);
+  assert.equal(page.url.searchParams.get("match"), "123");
+  assert.equal(restored.history.key, matchKey);
+  assert.equal(restored.history.props.active, true);
+  const otherMatch = page.visit("/axis-league/history?match=124");
+  assert.equal(otherMatch.history.props.initialMatch, 124);
+  assert.notEqual(otherMatch.history.key, matchKey, "a different match must initialize its own editor");
+  assert.equal(page.visit("/axis-league/history").history.props.initialMatch, undefined);
+});
+
 const playerBody = (aid, page = 1) => ({ aid, season: "current", identity: {}, stats: {}, averages: {}, highlights: {}, story: {}, recent: [], teammates: [], opponents: [], maps: [], history: { page, matches: [] } });
 test("history preloads only the intended filter and cancels on navigation", async t => {
   const original = globalThis.fetch;
