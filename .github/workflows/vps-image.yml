@@ -1,4 +1,4 @@
-name: Operator Rust population image pair proof
+name: Operator Rust population CPU tail diagnostic
 
 on:
   workflow_dispatch:
@@ -28,11 +28,17 @@ jobs:
           ref: 657642fa096a89e324108018b84f22bbd3bfff24
           path: sources/candidate
           persist-credentials: false
+      - name: Check out operator diagnostic
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ github.sha }}
+          path: sources/operator
+          persist-credentials: false
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
           node-version: 22
       - name: Verify exact clean sources and driver
-        working-directory: sources/candidate
+        working-directory: sources/operator
         run: |
           set -euo pipefail
           evidence="$RUNNER_TEMP/population-pair-evidence"
@@ -43,6 +49,18 @@ jobs:
             [[ $actual == "$revision" ]]
             [[ -z $(git -C "$source" status --porcelain --untracked-files=all) ]]
             printf '%s %s\n' "$role" "$actual" >> "$evidence/source-revisions.txt"
+          done
+          [[ $(git rev-parse HEAD) == "$GITHUB_SHA" ]]
+          [[ -z $(git status --porcelain --untracked-files=all) ]]
+          printf 'operator %s\n' "$GITHUB_SHA" >> "$evidence/source-revisions.txt"
+          for role in baseline candidate operator; do
+            source="$GITHUB_WORKSPACE/sources/$role"
+            printf '%s %s\n' "$role" "$(git -C "$source" rev-parse HEAD:scripts/benchmark-rust-persistent-http.mjs)" >> "$evidence/driver-git-blobs.txt"
+            git -C "$source" show HEAD:scripts/benchmark-rust-persistent-http.mjs > "$evidence/$role-canonical-driver.mjs"
+            sha256sum "$evidence/$role-canonical-driver.mjs" | cut -d' ' -f1 > "$evidence/$role-canonical-driver.sha256"
+          done
+          for file in scripts/benchmark-rust-persistent-http.mjs scripts/benchmark-rust-http.mjs scripts/benchmark-worker-resources.mjs tests/fixtures/rust-cohort-data.mjs tests/fixtures/rust-population-data.mjs tests/fixtures/next-cache-shim.mjs tests/fixtures/next-server-entry.mjs; do
+            [[ $(git rev-parse "HEAD:$file") == "$(git -C "$GITHUB_WORKSPACE/sources/candidate" rev-parse "HEAD:$file")" ]] || { echo "Operator canonical fixture differs from candidate: $file" >&2; exit 2; }
           done
           bash -n scripts/benchmark-rust-population-image-pair-container.sh
           node --experimental-strip-types --experimental-sqlite --test tests/rust-persistent-http-benchmark.test.mjs
@@ -60,21 +78,37 @@ jobs:
           active_id=''
           active_name=''
           worker_file=''
+          cleanup_file="$evidence/extraction-cleanup.txt"
           cleanup() {
-            if [[ -n $worker_file ]]; then rm -f -- "$worker_file"; worker_file=''; fi
+            local found owner candidate remaining
+            if [[ -n $worker_file ]]; then rm -f -- "$worker_file" || return 1; worker_file=''; fi
             if [[ -z $active_id && -n $active_name ]]; then
-              found=$(docker inspect "$active_name" --format '{{index .Config.Labels "org.tarkovstats.population-proof"}} {{.Id}}' 2>/dev/null || true)
-              read -r owner found_id <<< "$found"
-              if [[ $owner == "$token" && $found_id =~ ^[0-9a-f]{64}$ ]]; then active_id=$found_id; fi
+              found=$(docker inspect "$active_name" --format '{{index .Config.Labels "org.tarkovstats.population-proof"}} {{.Id}}') || return 1
+              read -r owner candidate <<< "$found"
+              [[ $owner == "$token" && $candidate =~ ^[0-9a-f]{64}$ ]] || return 1
+              active_id=$candidate
             fi
-            if [[ -n $active_id ]] && docker rm --force "$active_id" >/dev/null 2>&1; then active_id=''; active_name=''; fi
-            if [[ -n $active_id || -n $active_name ]]; then
-              printf '%s\n' 'owned container cleanup unconfirmed' > "$evidence/extraction-cleanup.txt"
-              return 1
+            if [[ -n $active_id ]]; then
+              [[ $active_id =~ ^[0-9a-f]{64}$ ]] || return 1
+              docker rm --force "$active_id" >/dev/null 2>&1 || true
             fi
-            printf '%s\n' 'no owned container remains' > "$evidence/extraction-cleanup.txt"
+            remaining=$(docker container ls --all --no-trunc --filter "label=org.tarkovstats.population-proof=$token" --format '{{.ID}}') || return 1
+            [[ -z $remaining ]] || return 1
+            active_id=''; active_name=''
           }
-          trap 'cleanup || true' EXIT
+          on_exit() {
+            local status=$?
+            trap - EXIT
+            if cleanup; then
+              if ! printf '%s\n' 'no owned container remains' > "$cleanup_file"; then ((status != 0)) || status=1; fi
+            else
+              printf '%s\n' 'owned container cleanup unconfirmed' > "$cleanup_file" || true
+              echo 'Owned container cleanup unconfirmed; inspect the local Docker daemon.' >&2 || true
+              ((status != 0)) || status=1
+            fi
+            exit "$status"
+          }
+          trap on_exit EXIT
           trap 'exit 130' INT
           trap 'exit 143' TERM
           for role in baseline candidate; do
@@ -98,11 +132,11 @@ jobs:
             worker_sha=$(sha256sum "$worker_file" | cut -d' ' -f1)
             [[ $worker_sha =~ ^[0-9a-f]{64}$ ]]
             printf '%s\n' "$worker_sha" > "$evidence/$role-worker.sha256"
-            cleanup
+            cleanup || { echo 'Extraction container cleanup unconfirmed.' >&2; exit 1; }
           done
-      - name: Compare four isolated Rust image runs
+      - name: Diagnose four isolated Rust image runs
         timeout-minutes: 28
-        working-directory: sources/candidate
+        working-directory: sources/operator
         run: |
           set -euo pipefail
           evidence="$RUNNER_TEMP/population-pair-evidence"
@@ -123,10 +157,13 @@ jobs:
             ${{ runner.temp }}/population-pair-evidence/*.txt
             ${{ runner.temp }}/population-pair-evidence/*.log
             ${{ runner.temp }}/population-pair-evidence/*.sha256
+            ${{ runner.temp }}/population-pair-evidence/*.mjs
             ${{ runner.temp }}/population-pair-runs/*.json
             ${{ runner.temp }}/population-pair-runs/*.log
             ${{ runner.temp }}/population-pair-runs/*.txt
             ${{ runner.temp }}/population-pair-runs/*.sha256
             ${{ runner.temp }}/population-pair-runs/*.md
+            ${{ runner.temp }}/population-pair-runs/*.mjs
+            ${{ runner.temp }}/population-pair-runs/*.patch
           if-no-files-found: warn
           retention-days: 14

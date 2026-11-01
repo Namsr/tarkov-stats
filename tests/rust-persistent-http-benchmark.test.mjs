@@ -1,16 +1,19 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawn, spawnSync } from "node:child_process";
-import { mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import test from "node:test";
 import { BACKENDS, BINDS, MEMORY_BYTES, SYNTHETIC_RUSSIAN_NAME, assertPayloadParity, buildPlan, diagnosticStream, distribution, expectedAnalytics, finalizeAnalytics, parseArguments, stopOwnedChild, validateAuxiliary, validateIsolation, validateResponse } from "../scripts/benchmark-rust-persistent-http.mjs";
 import { comparePair, summarizeDirectory, validateRun } from "../scripts/summarize-rust-persistent-http-benchmark.mjs";
 import { validateImagePair } from "../scripts/summarize-rust-population-image-pair.mjs";
+import { CPU_COUNTERS, parseCpuStat } from "../scripts/benchmark-rust-population-cpu-diagnostic.mjs";
+import { expectedCpuBatches, summarizeCpuDiagnostic, validateCpuDiagnostic } from "../scripts/summarize-rust-population-cpu-diagnostic.mjs";
 const headers = { "content-type": "application/json", "cache-control": "no-store", "x-average-source": "dynamic", "x-statistics-stale": "0", "retry-after": null, "set-cookie": null, "access-control-allow-origin": null };
 const IMAGE = `sha256:${"a".repeat(64)}`, REVISION = "b".repeat(40);
-function example(backend = "typescript", repetition = 1) {
-  const plan = buildPlan(4), samples = [], population = Object.fromEntries(["regular", "pve"].map(mode => [mode, { all: 5000, "90d": 4000 }]));
+function example(backend = "typescript", repetition = 1, iterations = 4, rows = 5000) {
+  const plan = buildPlan(iterations), samples = [], population = Object.fromEntries(["regular", "pve"].map(mode => [mode, { all: rows, "90d": rows * 0.8 }]));
   const add = input => {
     const sample = { sequence: samples.length + 1, id: input.id, path: input.path, status: 200, bytes: 1000, generation: "1793000000000", headers: { ...headers }, totalMs: 2 };
     if (input.scope) sample.body = { mode: input.mode, cycleId: "persistent", statistic: input.statistic, period: input.period, dimension: "hours", metric: "players", total: population[input.mode][input.period], averages: { n: input.scope === "context" ? population[input.mode][input.period] : 500, kd_ratio: 2.5 }, histogram: [], buckets: [], brackets: [] };
@@ -22,16 +25,16 @@ function example(backend = "typescript", repetition = 1) {
     measure([group.warmup], "miss", 1);
     for (const concurrency of [1, 4]) results.push({ mode: group.mode, statistic: group.statistic, period: group.period, scope: group.scope, ...measure(group[`miss${concurrency}`], "miss", concurrency) });
     measure(group.hits, "miss", 1);
-    results.push({ mode: group.mode, statistic: group.statistic, period: group.period, scope: group.scope, ...measure(group.hits, "hit", 4) });
+    results.push({ mode: group.mode, statistic: group.statistic, period: group.period, scope: group.scope, ...measure(Array.from({ length:iterations }, (_, index) => group.hits[index % 4]), "hit", 4) });
   }
   const auxiliary = [];
   for (const mode of ["regular", "pve"]) {
     for (const statistic of ["median", "trimmed_mean"]) for (const period of ["all", "90d"]) { const s = add({ id: `metrics-${mode}-${statistic}-${period}`, path: `/api/average/metrics?mode=${mode}&statistic=${statistic}&period=${period}` }); s.body = { mode, cycleId: "persistent", statistic, period, series: Object.fromEntries(["kd_ratio", "survival_rate", "kills_per_raid", "total_kills", "deaths", "total_raids"].map(k => [k, []])) }; auxiliary.push(s); }
     const progression = add({ id: `p-${mode}`, path: `/api/progression/average?mode=${mode}` }); progression.body = { mode, cycleId: "persistent", axis: "pmc_raids", series: {} }; auxiliary.push(progression);
-    const achievement = add({ id: `a-${mode}`, path: `/api/average/achievements?mode=${mode}` }); achievement.body = { total: 5000, achievements: [{ id: "synthetic-achievement", name: "Synthetic achievement", nameRu: "Синтетическое достижение", officialPct: 10, owners: Math.floor(5000 / (mode === "regular" ? 2 : 3)) }] }; auxiliary.push(achievement);
+    const achievement = add({ id: `a-${mode}`, path: `/api/average/achievements?mode=${mode}` }); achievement.body = { total: rows, achievements: [{ id: "synthetic-achievement", name: "Synthetic achievement", nameRu: "Синтетическое достижение", officialPct: 10, owners: Math.floor(rows / (mode === "regular" ? 2 : 3)) }] }; auxiliary.push(achievement);
   }
-  const report = { formatVersion: 2, benchmark: "production-persistent-population-http", backend, repetition, rows: 5000, iterations: 4, complete: true, failures: [],
-    fixture: { synthetic: true, rowsPerMode: 5000, population, minimumHours: { regular: 1000, pve: 1000 }, normalizedSha256: "c".repeat(64), planSha256: plan.sha256, uniqueKeys: plan.unique.length },
+  const report = { formatVersion: 2, benchmark: "production-persistent-population-http", backend, repetition, rows, iterations, complete: true, failures: [],
+    fixture: { synthetic: true, rowsPerMode: rows, population, minimumHours: { regular: 1000, pve: 1000 }, normalizedSha256: "c".repeat(64), planSha256: plan.sha256, uniqueKeys: plan.unique.length },
     methodology: { backendOrder: repetition === 1 ? BACKENDS : [...BACKENDS].reverse() }, environment: { imageId: IMAGE, sourceRevision: REVISION },
     samples, cold, contexts, results, auxiliary, analytics: { rows: samples.length - 2, expectedRows: samples.length - 2, operations: { average: samples.length - 4, average_achievements: 2 }, uninstrumentedRequests: 2, awaitedForEachTimedBatch: true }, shutdown: { code: 0 },
     startup: [{ event: "web_critical_process_v1", name: "Next.js", pid: 11 }, ...(backend === "rust" ? [{ event: "web_critical_process_v1", name: "Rust API", pid: 12 }, { event: "rust_api_ready" }] : [])],
@@ -204,56 +207,193 @@ function testBash() {
     ? resolve(execFileSync("git", ["--exec-path"], { encoding: "utf8" }).trim(), "../../../bin/bash.exe") : "bash";
 }
 
-test("image-pair cleanup recovers only its own uncertain create and fails closed", () => {
-  const source = readFileSync(resolve("scripts/benchmark-rust-population-image-pair-container.sh"), "utf8").replace(/\r\n/g, "\n");
-  const start = source.indexOf("cleanup() {"), end = source.indexOf("\n}\ntrap cleanup EXIT", start);
-  assert.ok(start >= 0 && end > start);
-  const cleanup = source.slice(start, end + 2);
-  assert.match(source, /docker\(\) \{ timeout --signal=TERM --kill-after=5s 15s/);
-  assert.ok(source.includes('--label "org.tarkovstats.population-proof=$token"'));
-  const directory = mkdtempSync(join(tmpdir(), "population-cleanup-"));
-  const owner = "a".repeat(32), id = "b".repeat(64);
-  const bash = testBash();
+function populationCleanupSources() {
+  const runner = readFileSync("scripts/benchmark-rust-population-image-pair-container.sh", "utf8").replace(/\r\n/g, "\n");
+  const workflow = readFileSync(".github/workflows/vps-image.yml", "utf8").replace(/\r\n/g, "\n").split("\n").map(line => line.startsWith("          ") ? line.slice(10) : line).join("\n");
+  return [runner, workflow].map(source => {
+    assert.match(source, /docker\(\) \{ timeout --signal=TERM --kill-after=5s 15s/);
+    assert.ok(source.includes('--label "org.tarkovstats.population-proof=$token"'));
+    const start = source.indexOf("cleanup() {"), end = source.indexOf("\ntrap on_exit EXIT", start);
+    const createStart = source.indexOf("if ! created_id=$(docker create", end);
+    const createEnd = source.slice(createStart).match(/^\s*active_id=\$created_id/m);
+    assert.ok(start >= 0 && end > start && createStart > end && createEnd);
+    return { source, cleanupAndTrap:source.slice(start, end), create:source.slice(createStart, createStart + createEnd.index + createEnd[0].length) };
+  });
+}
+
+test("both population cleanups ignore failed partial inspect and require owned-label absence", () => {
+  const sources = populationCleanupSources(), directory = mkdtempSync(join(tmpdir(), "population-cleanup-"));
+  const owner = "a".repeat(32), id = "b".repeat(64), foreign = "c".repeat(64);
   try {
-    for (const scenario of [
-      { label: "known", active: id, name: "owned", result: "no owned container remains", calls: ["rm"] },
-      { label: "lost", active: "", name: "owned", inspect: `${owner} ${id}`, result: "no owned container remains", calls: ["inspect", "rm"] },
-      { label: "foreign", active: "", name: "owned", inspect: `${"c".repeat(32)} ${id}`, result: "owned container cleanup unconfirmed", calls: ["inspect"] },
-      { label: "inspect-fails", active: "", name: "owned", inspectFail: true, result: "owned container cleanup unconfirmed", calls: ["inspect"] },
-      { label: "rm-fails", active: id, name: "owned", rmFail: true, result: "owned container cleanup unconfirmed", calls: ["rm"] },
+    for (const [sourceIndex, { cleanupAndTrap }] of sources.entries()) for (const scenario of [
+      { name:"no-active", calls:["container"], ok:true },
+      { name:"known", active:id, nameValue:"owned", calls:["rm", "container"], ok:true },
+      { name:"lost-create", nameValue:"owned", inspect:`${owner} ${id}`, calls:["inspect", "rm", "container"], ok:true },
+      { name:"foreign-collision", nameValue:"owned", inspect:`${"d".repeat(32)} ${foreign}`, calls:["inspect"], ok:false },
+      { name:"invalid-id", nameValue:"owned", inspect:`${owner} partial`, calls:["inspect"], ok:false },
+      { name:"failed-inspect-partial-owned-output", nameValue:"owned", inspect:`${owner} ${id}`, inspectFail:true, calls:["inspect"], ok:false },
+      { name:"remove-fails-absent", active:id, nameValue:"owned", rmFail:true, calls:["rm", "container"], ok:true },
+      { name:"remove-fails-survives", active:id, nameValue:"owned", rmFail:true, remaining:id, calls:["rm", "container"], ok:false },
+      { name:"remove-success-survives", active:id, nameValue:"owned", remaining:id, calls:["rm", "container"], ok:false },
+      { name:"another-owned-survives", active:id, nameValue:"owned", remaining:foreign, calls:["rm", "container"], ok:false },
+      { name:"failed-list-partial-empty", active:id, nameValue:"owned", listFail:true, calls:["rm", "container"], ok:false },
+      { name:"failed-list-partial-id", active:id, nameValue:"owned", listFail:true, remaining:id, calls:["rm", "container"], ok:false },
     ]) {
-      const calls = join(directory, `calls-${scenario.label}`);
-      const script = `set -u\nactive_id="$TEST_ACTIVE"\nactive_name="$TEST_NAME"\nworker_file=''\ntoken="$TEST_OWNER"\noutput="$TEST_OUTPUT"\ndocker() { printf '%s\n' "$1" >> "$TEST_CALLS"; case "$1" in inspect) [[ "$TEST_INSPECT_FAIL" == 0 ]] || return 1; printf '%s\n' "$TEST_INSPECT";; rm) [[ "$TEST_RM_FAIL" == 0 ]] || return 1;; *) return 1;; esac; }\n${cleanup}\ncleanup\n`;
-      const result = spawnSync(bash, ["-c", script], { encoding: "utf8", env: { ...process.env, TEST_ACTIVE: scenario.active, TEST_NAME: scenario.name, TEST_OWNER: owner, TEST_OUTPUT: directory, TEST_CALLS: calls, TEST_INSPECT: scenario.inspect ?? "", TEST_INSPECT_FAIL: scenario.inspectFail ? "1" : "0", TEST_RM_FAIL: scenario.rmFail ? "1" : "0" } });
-      assert.equal(result.status, 0, `${scenario.label}: ${result.stderr}`);
-      assert.equal(readFileSync(join(directory, "cleanup.txt"), "utf8").trim(), scenario.result);
-      assert.deepEqual(readFileSync(calls, "utf8").trim().split("\n"), scenario.calls);
+      const calls = join(directory, `calls-${sourceIndex}-${scenario.name}`), evidence = join(directory, `evidence-${sourceIndex}-${scenario.name}`);
+      const script = `set -u\nactive_id="$TEST_ACTIVE"\nactive_name="$TEST_NAME"\nworker_file=''\ntoken="$TEST_OWNER"\ncleanup_file="$TEST_EVIDENCE"\ndocker() { printf '%s\\n' "$1" >> "$TEST_CALLS"; case "$1" in inspect) printf '%s\\n' "$TEST_INSPECT"; [[ "$TEST_INSPECT_FAIL" == 0 ]];; rm) [[ "$TEST_RM_FAIL" == 0 ]];; container) [[ "$*" == "container ls --all --no-trunc --filter label=org.tarkovstats.population-proof=$TEST_OWNER --format {{.ID}}" ]] || return 2; printf '%s' "$TEST_REMAINING"; [[ "$TEST_LIST_FAIL" == 0 ]];; *) return 1;; esac; }\n${cleanupAndTrap}\nif cleanup; then printf 'confirmed:%s:%s' "$active_id" "$active_name"; else printf 'unconfirmed'; fi\n`;
+      const result = spawnSync(testBash(), ["-c", script], { encoding:"utf8", env:{ ...process.env, TEST_ACTIVE:scenario.active ?? "", TEST_NAME:scenario.nameValue ?? "", TEST_OWNER:owner, TEST_CALLS:calls, TEST_EVIDENCE:evidence, TEST_INSPECT:scenario.inspect ?? "", TEST_INSPECT_FAIL:scenario.inspectFail ? "1" : "0", TEST_RM_FAIL:scenario.rmFail ? "1" : "0", TEST_LIST_FAIL:scenario.listFail ? "1" : "0", TEST_REMAINING:scenario.remaining ?? "" } });
+      assert.equal(result.status, 0, `${sourceIndex}/${scenario.name}: ${result.stderr}`);
+      assert.equal(result.stdout, scenario.ok ? "confirmed::" : "unconfirmed", `${sourceIndex}/${scenario.name}`);
+      assert.deepEqual(readFileSync(calls, "utf8").trim().split("\n"), scenario.calls, `${sourceIndex}/${scenario.name}`);
     }
-  } finally { rmSync(directory, { recursive: true, force: true }); }
+  } finally { rmSync(directory, { recursive:true, force:true }); }
+});
+
+test("both population exit handlers preserve errors and fail closed on unconfirmed cleanup", () => {
+  const directory = mkdtempSync(join(tmpdir(), "population-exit-"));
+  try {
+    for (const [sourceIndex, { cleanupAndTrap }] of populationCleanupSources().entries()) {
+      const handler = cleanupAndTrap.slice(cleanupAndTrap.indexOf("on_exit() {"));
+      for (const [cleanupStatus, requestedStatus, expectedStatus] of [[1, 0, 1], [1, 7, 7], [0, 0, 0], [0, 7, 7]]) {
+        const evidence = join(directory, `${sourceIndex}-${cleanupStatus}-${requestedStatus}`);
+        const script = `set -e\ncleanup_file="$TEST_EVIDENCE"\ncleanup() { return "$TEST_CLEANUP"; }\n${handler}\ntrap on_exit EXIT\nexit "$TEST_STATUS"\n`;
+        const result = spawnSync(testBash(), ["-c", script], { encoding:"utf8", env:{ ...process.env, TEST_EVIDENCE:evidence, TEST_CLEANUP:String(cleanupStatus), TEST_STATUS:String(requestedStatus) } });
+        assert.equal(result.status, expectedStatus, `${sourceIndex}: ${result.stderr}`);
+        assert.equal(readFileSync(evidence, "utf8").trim(), cleanupStatus ? "owned container cleanup unconfirmed" : "no owned container remains");
+      }
+      for (const [cleanupStatus, requestedStatus, expectedStatus] of [[0, 0, 1], [0, 7, 7], [1, 7, 7]]) {
+        const evidence = join(directory, "missing-directory", "evidence");
+        const script = `set -e\ncleanup_file="$TEST_EVIDENCE"\ncleanup() { return "$TEST_CLEANUP"; }\n${handler}\ntrap on_exit EXIT\nexit "$TEST_STATUS"\n`;
+        const result = spawnSync(testBash(), ["-c", script], { encoding:"utf8", env:{ ...process.env, TEST_EVIDENCE:evidence, TEST_CLEANUP:String(cleanupStatus), TEST_STATUS:String(requestedStatus) } });
+        assert.equal(result.status, expectedStatus, `${sourceIndex}: evidence write failure: ${result.stderr}`);
+      }
+    }
+  } finally { rmSync(directory, { recursive:true, force:true }); }
+});
+
+test("both create paths reject partial stdout and recover only inspected owned IDs", () => {
+  const directory = mkdtempSync(join(tmpdir(), "population-create-")), owner = "a".repeat(32), owned = "b".repeat(64), foreign = "c".repeat(64);
+  try {
+    for (const [sourceIndex, { cleanupAndTrap, create }] of populationCleanupSources().entries()) for (const scenario of [
+      { name:"failed-partial-id", result:foreign, fail:true, inspect:`${owner} ${owned}`, status:2, calls:["create", "inspect", `rm ${owned}`, "container"] },
+      { name:"invalid-id", result:"bad", inspect:`${owner} ${owned}`, status:2, calls:["create", "inspect", `rm ${owned}`, "container"] },
+      { name:"success", result:owned, status:0, calls:["create", `rm ${owned}`, "container"] },
+      { name:"failed-inspection-output", result:foreign, fail:true, inspect:`${owner} ${foreign}`, inspectFail:true, status:2, calls:["create", "inspect"], unconfirmed:true },
+      { name:"foreign-name", result:foreign, fail:true, inspect:`${"d".repeat(32)} ${foreign}`, status:2, calls:["create", "inspect"], unconfirmed:true },
+    ]) {
+      const calls = join(directory, `calls-${sourceIndex}-${scenario.name}`), evidence = join(directory, `evidence-${sourceIndex}-${scenario.name}`);
+      const script = `set -eu\nactive_id=''\nactive_name=owned\nworker_file=''\ntoken="$TEST_OWNER"\ncleanup_file="$TEST_EVIDENCE"\npayload=/tmp\nimage_id=image\nrevision=revision\nrole=baseline\nrows=5000\niterations=4\nround=1\ndocker() { case "$1" in create) echo create >> "$TEST_CALLS"; printf '%s\\n' "$TEST_CREATE"; [[ "$TEST_CREATE_FAIL" == 0 ]];; inspect) echo inspect >> "$TEST_CALLS"; printf '%s\\n' "$TEST_INSPECT"; [[ "$TEST_INSPECT_FAIL" == 0 ]];; rm) echo "rm $3" >> "$TEST_CALLS";; container) echo container >> "$TEST_CALLS";; *) return 1;; esac; }\n${cleanupAndTrap}\ntrap on_exit EXIT\n${create}\n`;
+      const result = spawnSync(testBash(), ["-c", script], { encoding:"utf8", env:{ ...process.env, TEST_OWNER:owner, TEST_EVIDENCE:evidence, TEST_CALLS:calls, TEST_CREATE:scenario.result, TEST_CREATE_FAIL:scenario.fail ? "1" : "0", TEST_INSPECT:scenario.inspect ?? "", TEST_INSPECT_FAIL:scenario.inspectFail ? "1" : "0" } });
+      assert.equal(result.status, scenario.status, `${sourceIndex}/${scenario.name}: ${result.stderr}`);
+      assert.deepEqual(readFileSync(calls, "utf8").trim().split("\n"), scenario.calls);
+      assert.equal(readFileSync(evidence, "utf8").trim(), scenario.unconfirmed ? "owned container cleanup unconfirmed" : "no owned container remains");
+    }
+  } finally { rmSync(directory, { recursive:true, force:true }); }
 });
 
 
-test("image-pair create failure never trusts partial stdout for cleanup", () => {
-  const source = readFileSync(resolve("scripts/benchmark-rust-population-image-pair-container.sh"), "utf8").replace(/\r\n/g, "\n");
-  const cleanupStart = source.indexOf("cleanup() {"), cleanupEnd = source.indexOf("\n}\ntrap cleanup EXIT", cleanupStart);
-  const createStart = source.indexOf("    if ! created_id=$(docker create"), createEnd = source.indexOf("\n    active_id=$created_id", createStart);
-  assert.ok(cleanupStart >= 0 && cleanupEnd > cleanupStart && createStart >= 0 && createEnd > createStart);
-  const cleanup = source.slice(cleanupStart, cleanupEnd + 2), create = source.slice(createStart, createEnd + "\n    active_id=$created_id".length);
-  const directory = mkdtempSync(join(tmpdir(), "population-create-"));
-  const owner = "a".repeat(32), owned = "b".repeat(64), foreign = "c".repeat(64);
-  const bash = testBash();
+test("CPU diagnostic requires exact cgroup counters and rejects malformed values", () => {
+  const raw = "usage_usec 100\nuser_usec 60\nsystem_usec 40\nnr_periods 12\nnr_throttled 4\nthrottled_usec 90\n";
+  assert.deepEqual(parseCpuStat(raw), { usage_usec:100, nr_periods:12, nr_throttled:4, throttled_usec:90 });
+  for (const bad of [raw.replace("nr_throttled 4\n", ""), raw.replace("throttled_usec 90", "throttled_usec -1"), raw + "usage_usec 1\n", raw.replace("nr_periods 12", "nr_periods 9007199254740992")]) assert.throws(() => parseCpuStat(bad));
+});
+
+function attachCpuDiagnostic(report) {
+  const expected = expectedCpuBatches(report.iterations);
+  let sequence = 0;
+  const counters = n => Object.fromEntries(CPU_COUNTERS.map((key, index) => [key, n * 10 + index]));
+  report.cpuDiagnostic = { clock:"performance.now", counterScope:"whole current cgroup", limitations:"overlap cannot prove causation", batches:expected.map((value, index) => {
+    const start = 10 * index, id = index + 1;
+    const sequences = value.inputs.map(input => {
+      const sample = report.samples[sequence++];
+      sample.id = input.id; sample.path = input.path; sample.startedMs = start + 2; sample.batchId = id;
+      return sample.sequence;
+    });
+    return { id, phase:value.phase, cache:value.cache, concurrency:value.concurrency, offset:value.offset, sequences,
+      before:{ readStartMs:start, readEndMs:start + 1, counters:counters(2 * index) },
+      after:{ readStartMs:start + 5, readEndMs:start + 6, counters:counters(2 * index + 1) } };
+  }) };
+  assert.equal(sequence, report.samples.length);
+  return expected;
+}
+
+test("CPU diagnostic brackets every original request and rejects incomplete, reordered or impossible evidence", () => {
+  const { report } = example("rust", 1), expected = attachCpuDiagnostic(report);
+  const summaries = validateCpuDiagnostic(report);
+  assert.equal(summaries.length, expected.length);
+  assert.deepEqual(summaries[0].delta, Object.fromEntries(CPU_COUNTERS.map(key => [key, 10])));
+  assert.deepEqual(summaries[0].http, distribution([2]));
+  // Concurrent responses may complete in a different order from their starts.
+  const reordered = structuredClone(report), batch = reordered.cpuDiagnostic.batches.find(value => value.sequences.length === 4);
+  const positions = [...batch.sequences], values = positions.map(value => reordered.samples[value - 1]).reverse();
+  positions.forEach((position, i) => { reordered.samples[position - 1] = values[i]; values[i].sequence = position; });
+  batch.sequences.reverse();
+  assert.doesNotThrow(() => validateCpuDiagnostic(reordered));
+  for (const mutate of [
+    r => { delete r.cpuDiagnostic.batches[0].before.counters.nr_throttled; },
+    r => { r.cpuDiagnostic.batches[0].after.counters.throttled_usec = -1; },
+    r => { r.cpuDiagnostic.batches[1].before.counters.usage_usec = 0; },
+    r => { r.cpuDiagnostic.batches[0].after.readStartMs = 3; },
+    r => { r.cpuDiagnostic.batches[1].before.readStartMs = 5; },
+    r => { r.cpuDiagnostic.batches[0].sequences[0] = r.cpuDiagnostic.batches[1].sequences[0]; },
+    r => { r.cpuDiagnostic.batches[0].phase = "group:0:hit4"; },
+    r => { r.cpuDiagnostic.batches.pop(); },
+    r => { r.samples[0].batchId = 2; },
+    r => { r.samples[0].startedMs = 0; },
+  ]) { const bad = structuredClone(report); mutate(bad); assert.throws(() => validateCpuDiagnostic(bad)); }
+});
+
+test("operator-only CPU driver keeps the original HTTP timer and exact image-owned mounts", () => {
+  const driver = readFileSync("scripts/benchmark-rust-population-cpu-diagnostic.mjs", "utf8");
+  const original = readFileSync("scripts/benchmark-rust-persistent-http.mjs", "utf8");
+  for (const statement of ["const started = performance.now(); let sample;", "totalMs: performance.now() - started", "const text = await reply.text();", "const body = JSON.parse(text);"])
+    assert.ok(driver.includes(statement) && original.includes(statement), statement);
+  const runner = readFileSync("scripts/benchmark-rust-population-image-pair-container.sh", "utf8");
+  assert.match(runner, /cp "\$output\/diagnostic-driver\.mjs" "\$payload\/scripts\/benchmark-rust-persistent-http\.mjs"/);
+  assert.match(runner, /git diff --no-index --no-prefix/);
+  assert.ok(!/dst=\/app\/(?:app|lib|server\.js|\.next)(?:,|\/)/.test(runner.match(/--mount[^\n]*/g).join("\n")));
+});
+
+
+test("CPU diagnostic summary verifies four full synthetic pair reports and archived patch", () => {
+  const dir = mkdtempSync(join(tmpdir(), "cpu-diagnostic-"));
   try {
-    for (const scenario of [
-      { label: "failed-partial-id", create: foreign, createFail: true, inspect: `${owner} ${owned}`, calls: [`create`, `inspect`, `rm ${owned}`], status: 2 },
-      { label: "invalid-id", create: "bad", inspect: `${owner} ${owned}`, calls: [`create`, `inspect`, `rm ${owned}`], status: 2 },
-      { label: "success", create: owned, calls: [`create`, `rm ${owned}`], status: 0 },
-    ]) {
-      const calls = join(directory, `create-calls-${scenario.label}`);
-      const script = `set -eu\nactive_id=''\nactive_name=owned\nworker_file=''\ntoken="$TEST_OWNER"\noutput="$TEST_OUTPUT"\npayload=/tmp\nimage_id=image\nrevision=revision\nrole=baseline\nrows=5000\niterations=4\nround=1\ndocker() { case "$1" in create) echo create >> "$TEST_CALLS"; printf '%s\n' "$TEST_CREATE"; [[ "$TEST_CREATE_FAIL" == 0 ]];; inspect) echo inspect >> "$TEST_CALLS"; printf '%s\n' "$TEST_INSPECT";; rm) echo "rm $3" >> "$TEST_CALLS";; *) return 1;; esac; }\n${cleanup}\ntrap cleanup EXIT\n${create}\n`;
-      const result = spawnSync(bash, ["-c", script], { encoding: "utf8", env: { ...process.env, TEST_OWNER: owner, TEST_OUTPUT: directory, TEST_CALLS: calls, TEST_CREATE: scenario.create, TEST_CREATE_FAIL: scenario.createFail ? "1" : "0", TEST_INSPECT: scenario.inspect ?? "" } });
-      assert.equal(result.status, scenario.status, `${scenario.label}: ${result.stderr}`);
-      assert.deepEqual(readFileSync(calls, "utf8").trim().split("\n"), scenario.calls);
-      assert.equal(readFileSync(join(directory, "cleanup.txt"), "utf8").trim(), "no owned container remains");
+    const pins = { baseline:{ imageId:`sha256:${"a".repeat(64)}`, revision:"0e5254526f3f1ecd9e4f28d85053090f0a0e7b77", workerSha256:"c".repeat(64) }, candidate:{ imageId:`sha256:${"d".repeat(64)}`, revision:"657642fa096a89e324108018b84f22bbd3bfff24", workerSha256:"f".repeat(64) } };
+    for (const [i, [round, role]] of [[1, "baseline"], [1, "candidate"], [2, "candidate"], [2, "baseline"]].entries()) {
+      const { report, inspect } = example("rust", round, 20, 30000), pin = pins[role];
+      report.comparisonRole = role; report.methodology.backendOrder = round === 1 ? ["baseline", "candidate"] : ["candidate", "baseline"];
+      report.environment.imageId = inspect.imageId = inspect.image = pin.imageId;
+      report.environment.sourceRevision = inspect.sourceRevision = pin.revision;
+      inspect.id = String(i + 1).repeat(64); inspect.startedAt = new Date(i * 2000).toISOString(); inspect.finishedAt = new Date(i * 2000 + 1000).toISOString();
+      attachCpuDiagnostic(report);
+      const stem = join(dir, `persistent-round${round}-${role}`);
+      writeFileSync(`${stem}.json`, JSON.stringify(report)); writeFileSync(`${stem}.inspect.json`, JSON.stringify(inspect)); writeFileSync(`${stem}.worker.sha256`, pin.workerSha256);
     }
-  } finally { rmSync(directory, { recursive: true, force: true }); }
+    writeFileSync(join(dir, "cleanup.txt"), "no owned container remains\n");
+    writeFileSync(join(dir, "canonical-driver.mjs"), "const x = 1;\n");
+    writeFileSync(join(dir, "diagnostic-driver.mjs"), "const x = 2;\n");
+    const patch = spawnSync("git", ["diff", "--no-index", "--no-prefix", "--", "canonical-driver.mjs", "diagnostic-driver.mjs"], { cwd:dir, encoding:"utf8" });
+    assert.equal(patch.status, 1); writeFileSync(join(dir, "driver.patch"), patch.stdout);
+    for (const file of ["canonical-driver.mjs", "diagnostic-driver.mjs", "driver.patch"]) {
+      const hash = createHash("sha256").update(readFileSync(join(dir, file))).digest("hex");
+      writeFileSync(join(dir, `${file}.sha256`), hash);
+    }
+    writeFileSync(join(dir, "driver.patch"), patch.stdout + "tampered\n");
+    assert.throws(() => summarizeCpuDiagnostic(dir, pins), /hash mismatch/);
+    assert.equal(existsSync(join(dir, "summary.json")), false);
+    writeFileSync(join(dir, "driver.patch"), patch.stdout);
+    const reportPath = join(dir, "persistent-round1-candidate.json"), originalReport = readFileSync(reportPath, "utf8");
+    const missing = JSON.parse(originalReport); delete missing.cpuDiagnostic.batches[0].before.counters.nr_throttled;
+    writeFileSync(reportPath, JSON.stringify(missing)); assert.throws(() => summarizeCpuDiagnostic(dir, pins));
+    const badQuantile = JSON.parse(originalReport); badQuantile.results[0].http.p95Ms++;
+    writeFileSync(reportPath, JSON.stringify(badQuantile)); assert.throws(() => summarizeCpuDiagnostic(dir, pins));
+    assert.equal(existsSync(join(dir, "summary.json")), false);
+    writeFileSync(reportPath, originalReport);
+    const result = summarizeCpuDiagnostic(dir, pins);
+    assert.equal(result.runs.length, 4);
+    assert.equal(JSON.parse(readFileSync(join(dir, "summary.json"), "utf8")).comparisons.length, 24);
+    assert.equal(JSON.parse(readFileSync(join(dir, "cpu-diagnostic.json"), "utf8")).runs[0].batches.length, expectedCpuBatches(20).length);
+    assert.match(readFileSync(join(dir, "cpu-diagnostic.md"), "utf8"), /baseline.*regular \/ selected/);
+    assert.throws(() => summarizeCpuDiagnostic(dir, pins), /overwrite/);
+  } finally { rmSync(dir, { recursive:true, force:true }); }
 });
