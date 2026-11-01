@@ -269,8 +269,8 @@ test("PvE browser schema fault leaves Regular HTTP and unrelated data intact", {
     REGULAR_COHORT_BACKEND:"typescript", PVE_COHORT_BACKEND:"typescript", ARENA_COHORT_BACKEND:"typescript" };
   const instances = [];
   t.after(async () => { for (const instance of instances) await instance.stop(); await fixture.close(); });
-  const actual = await startRustBackend(env); instances.push(actual);
-  const expected = await reference(env); instances.push(expected);
+  const actual = await startRustBackend({ ...env, AVERAGE_PUBLICATION_SQLITE_PATH:join(fixture.directory, "rust-statistics.db") }); instances.push(actual);
+  const expected = await reference({ ...env, AVERAGE_PUBLICATION_SQLITE_PATH:join(fixture.directory, "ts-statistics.db") }); instances.push(expected);
   const read = async (server, q, path) => {
     const response = await fetch(server.base + path + "?" + q, { headers:{ [TRUSTED]:"fixture-" + ++requests }, signal:AbortSignal.timeout(35000) });
     const text = await response.text();
@@ -282,8 +282,9 @@ test("PvE browser schema fault leaves Regular HTTP and unrelated data intact", {
     const wanted = await read(expected, q, path), got = await read(actual, q, path);
     parity(got, wanted, path + "?" + q); return got;
   };
-  const pve = query({ dimension:"hours", metric:"players", statistic:"trimmed_mean", period:"90d" });
-  const regular = query({ mode:"regular", dimension:"hours", metric:"players", statistic:"trimmed_mean", period:"90d" });
+  const browserQuery = (mode, period) => new URLSearchParams({ mode, dimension:"hours", metric:"players", statistic:"trimmed_mean", period }).toString();
+  const pve = browserQuery("pve", "90d");
+  const regular = browserQuery("regular", "90d");
   const data = () => ({
     regular: fixture.db.prepare("SELECT * FROM players ORDER BY aid").all(),
     modes: fixture.db.prepare("SELECT * FROM mode_players ORDER BY mode,aid").all().map(row => {
@@ -291,11 +292,16 @@ test("PvE browser schema fault leaves Regular HTTP and unrelated data intact", {
       return fixture_missing_kd === undefined ? fields : { ...fields, kd_ratio:fixture_missing_kd };
     }),
   });
+  // The browser fixture warms the real stores before injecting the fault.
+  // Use distinct periods so the 90d failure requests remain uncached.
+  assert.equal((await compare(browserQuery("pve", "all"))).status, 200);
+  assert.equal((await compare("mode=pve&statistic=trimmed_mean&period=all", "/api/average/metrics")).status, 200);
   const before = data();
   persistentFixtureControl(fixture, { action:"break-primary" });
   try {
     assert.deepEqual(data(), before);
-    assert.equal((await compare(pve)).status, 500);
+    const failed = await compare(pve);
+    assert.equal(failed.status, 500, JSON.stringify({ body:failed.body, ts:expected.logs(), rust:actual.logs() }));
     assert.equal((await compare("mode=pve&statistic=trimmed_mean&period=90d", "/api/average/metrics")).status, 500);
     const regularResponse = await compare(regular);
     assert.equal(regularResponse.status, 200); assert.ok(regularResponse.body.averages.n > 0);
