@@ -7,7 +7,7 @@ import { cpus, release } from "node:os";
 import { join, resolve } from "node:path";
 import { StringDecoder } from "node:string_decoder";
 import { pathToFileURL } from "node:url";
-import { distribution, MEMORY_BYTES } from "./benchmark-rust-http.mjs";
+import { distribution, MEMORY_BYTES, openBenchmarkObservers } from "./benchmark-rust-http.mjs";
 import { snapshotContainerResources } from "./benchmark-worker-resources.mjs";
 export { distribution, MEMORY_BYTES };
 export const BACKENDS = ["typescript", "rust"];
@@ -187,8 +187,7 @@ async function fixture(rows) {
   const { getArenaBackend } = await import("../lib/db.ts"); (await getArenaBackend())?.db.close();
   const { getAnalyticsStore } = await import("../lib/admin/analytics-db.ts"); assert.ok(await getAnalyticsStore());
   const { writeStatisticsResponse } = await import("../lib/average-publication.ts"); await writeStatisticsResponse("benchmark-initialize", {}, now);
-  const analytics = new DatabaseSync(process.env.ADMIN_ANALYTICS_SQLITE_PATH, { readOnly: true });
-  const cache = new DatabaseSync(process.env.AVERAGE_PUBLICATION_SQLITE_PATH, { readOnly: true });
+  const { analytics, cache } = openBenchmarkObservers(DatabaseSync, process.env.ADMIN_ANALYTICS_SQLITE_PATH, process.env.AVERAGE_PUBLICATION_SQLITE_PATH);
   return { directory: value.directory, population, minima, hash: digest.digest("hex"), analytics, cache, now };
 }
 export async function runBenchmark(options) {
@@ -268,7 +267,7 @@ export async function runBenchmark(options) {
     for (const sample of report.auxiliary) validateAuxiliary(sample, state.population);
     report.analytics = await finalizeAnalytics(state.analytics, report.samples, until);
     report.complete = true;
-  } catch (error) { report.failures.push(String(error)); }
+  } catch (error) { report.failures.push(error instanceof Error ? error.stack || String(error) : String(error)); }
   finally {
     if (record) {
       report.shutdown = await stopOwnedChild(record);
@@ -287,7 +286,7 @@ export async function runBenchmark(options) {
     } catch (error) { report.complete = false; report.failures.push(String(error)); }
     process.removeListener("SIGTERM", signal); process.removeListener("SIGINT", signal);
   }
-  report.methodology = { latencyProfile: "Regular/PvE selected/context with default trimmed_mean/all only; median/90d have one-off correctness probes, not repeated timing evidence", backendOrder: options.repetition === 1 ? BACKENDS : [...BACKENDS].reverse(), quantiles: "nearest rank; retain raw samples; p95 with n<=19 is the maximum; never average rounds", cache: "unique actual min bounds for every cold/warmup/miss/prewarm; no cache clears/revision tricks; context minima below every seeded peer; actual unfiltered context also checked", durable: "production enabled by NODE_ENV; cold writes acknowledged; analytics asynchronous flush outside HTTP timers; progression publication reads emit no request_events", rateLimit: "real limiter retained; explicitly trusted private synthetic client header distributes requests, not proxy-user traffic", queue: "existing Next average maxPending16/native8; compute30s and HTTP25s unchanged; concurrency4; any errors fail the evidence gate", http: "loopback actual production Next TS vs full Rust HTTP/cache/child; JSON parsing included; Next frontend remains running in both", resources: "whole cgroup lifetime through final post-shutdown sample: fixture/client/Next/Rust/compute/analytics/tmpfs/page-cache; not RSS or only timed requests", limitations: "synthetic positive-hours shifted data; zero/corrupt edge cases remain separate correctness tests; no page-cache flush, proxy/TLS/CDN/browser/upstream; reversed order does not eliminate runner noise; no universal speed claim or speed threshold" };
+  report.methodology = { latencyProfile: "Regular/PvE selected/context with default trimmed_mean/all only; median/90d have one-off correctness probes, not repeated timing evidence", backendOrder: options.repetition === 1 ? BACKENDS : [...BACKENDS].reverse(), quantiles: "nearest rank; retain raw samples; p95 with n<=19 is the maximum; never average rounds", cache: "unique actual min bounds for every cold/warmup/miss/prewarm; no cache clears/revision tricks; context minima below every seeded peer; actual unfiltered context also checked", durable: "production enabled by NODE_ENV; cold writes acknowledged; analytics asynchronous flush outside HTTP timers; progression publication reads emit no request_events; observer SQLite reads use a 1000ms busy timeout outside HTTP timers; scheduling may extend elapsed time", rateLimit: "real limiter retained; explicitly trusted private synthetic client header distributes requests, not proxy-user traffic", queue: "existing Next average maxPending16/native8; compute30s and HTTP25s unchanged; concurrency4; any errors fail the evidence gate", http: "loopback actual production Next TS vs full Rust HTTP/cache/child; JSON parsing included; Next frontend remains running in both", resources: "whole cgroup lifetime through final post-shutdown sample: fixture/client/Next/Rust/compute/analytics/tmpfs/page-cache; not RSS or only timed requests", limitations: "synthetic positive-hours shifted data; zero/corrupt edge cases remain separate correctness tests; no page-cache flush, proxy/TLS/CDN/browser/upstream; reversed order does not eliminate runner noise; no universal speed claim or speed threshold; observer waits may shift subsequent request scheduling" };
   process.stdout.write(`${JSON.stringify(report)}\n`);
   return report;
 }

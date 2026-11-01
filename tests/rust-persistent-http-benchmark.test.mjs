@@ -1,11 +1,14 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
+import { once } from "node:events";
+import { Worker } from "node:worker_threads";
 import { mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import test from "node:test";
 import { BACKENDS, BINDS, MEMORY_BYTES, SYNTHETIC_RUSSIAN_NAME, assertPayloadParity, buildPlan, diagnosticStream, distribution, expectedAnalytics, finalizeAnalytics, parseArguments, stopOwnedChild, validateAuxiliary, validateIsolation, validateResponse } from "../scripts/benchmark-rust-persistent-http.mjs";
 import { comparePair, summarizeDirectory, validateRun } from "../scripts/summarize-rust-persistent-http-benchmark.mjs";
+import { openBenchmarkObserver, openBenchmarkObservers } from "../scripts/benchmark-rust-http.mjs";
 const headers = { "content-type": "application/json", "cache-control": "no-store", "x-average-source": "dynamic", "x-statistics-stale": "0", "retry-after": null, "set-cookie": null, "access-control-allow-origin": null };
 const IMAGE = `sha256:${"a".repeat(64)}`, REVISION = "b".repeat(40);
 function example(backend = "typescript", repetition = 1) {
@@ -163,4 +166,102 @@ test("the actual run finalizer reads SQLite operation counts without waiting for
     assert.match(source, /report\.analytics = await finalizeAnalytics\(state\.analytics, report\.samples, until\)/, "runBenchmark must call this tested SQLite finalizer");
     assert.ok(!source.includes("rowCount() >= report.samples.length"));
   } finally { db.close(); }
+});
+
+
+test("read-only benchmark observers wait for transient rollback locks but reject sustained locks", { timeout: 20000 }, async () => {
+  const { DatabaseSync } = await import("node:sqlite");
+  const directory = mkdtempSync(join(tmpdir(), "benchmark-observer-lock-"));
+  const workerSource = `
+    const { parentPort, workerData } = require("node:worker_threads");
+    const { DatabaseSync } = require("node:sqlite");
+    const signal = new Int32Array(workerData.signal);
+    const db = new DatabaseSync(workerData.file);
+    try {
+      db.exec("BEGIN EXCLUSIVE");
+      if (workerData.kind === "analytics") db.exec("INSERT INTO request_events(operation) VALUES('average')");
+      else db.exec("UPDATE statistics_response_cache SET payload_json='written' WHERE cache_key='key'");
+      parentPort.postMessage("locked");
+      if (Atomics.wait(signal, 0, 0, 12000) === "timed-out") throw new Error("parent did not release owned writer");
+      if (workerData.transient) Atomics.wait(signal, 1, 0, 200);
+      Atomics.store(signal, 1, 1);
+      db.exec("COMMIT");
+      parentPort.postMessage("committed");
+    } finally { db.close(); }
+  `;
+  try {
+    for (const kind of ["analytics", "cache"]) {
+      const file = join(directory, `${kind}.db`), setup = new DatabaseSync(file);
+      try {
+        assert.equal(setup.prepare("PRAGMA journal_mode=DELETE").get().journal_mode, "delete");
+        setup.exec("CREATE TABLE request_events(operation TEXT); INSERT INTO request_events VALUES('average'); CREATE TABLE statistics_response_cache(cache_key TEXT PRIMARY KEY,payload_json TEXT); INSERT INTO statistics_response_cache VALUES('key','initial')");
+      } finally { setup.close(); }
+      const observer = openBenchmarkObserver(DatabaseSync, file);
+      try {
+        assert.equal(observer.prepare("PRAGMA busy_timeout").get().timeout, 1000);
+        for (const transient of [true, false]) {
+          const signal = new Int32Array(new SharedArrayBuffer(8));
+          const worker = new Worker(workerSource, { eval:true, workerData:{ file, kind, transient, signal:signal.buffer } });
+          try {
+            assert.equal((await once(worker, "message"))[0], "locked");
+            const sql = kind === "analytics" ? "SELECT COUNT(*) AS value FROM request_events" : "SELECT payload_json AS value FROM statistics_response_cache WHERE cache_key='key'";
+            const noWait = new DatabaseSync(file, { readOnly:true });
+            try { assert.throws(() => noWait.prepare(sql).get(), /locked/); } finally { noWait.close(); }
+            const finished = once(worker, "message");
+            if (transient) {
+              Atomics.store(signal, 0, 1); Atomics.notify(signal, 0);
+              assert.equal(Atomics.load(signal, 1), 0, "writer must still hold the lock when the observer starts");
+              const row = observer.prepare(sql).get();
+              assert.equal(row.value, kind === "analytics" ? 2 : "written");
+            } else {
+              const started = performance.now();
+              assert.throws(() => observer.prepare(sql).get(), /locked/);
+              const elapsed = performance.now() - started;
+              assert.ok(elapsed >= 500 && elapsed < 10000, `busy wait must end within a bounded interval: ${elapsed}ms`);
+              Atomics.store(signal, 0, 1); Atomics.notify(signal, 0);
+            }
+            assert.equal((await finished)[0], "committed");
+          } finally {
+            Atomics.store(signal, 0, 1); Atomics.notify(signal, 0);
+            await worker.terminate();
+          }
+        }
+        assert.throws(() => observer.exec("CREATE TABLE should_remain_read_only(x)"), /readonly|read-only/i);
+      } finally { observer.close(); }
+    }
+    const persistent = readFileSync("scripts/benchmark-rust-persistent-http.mjs", "utf8");
+    const seasonal = readFileSync("scripts/benchmark-rust-http.mjs", "utf8");
+    for (const source of [persistent, seasonal])
+      assert.ok(source.includes("openBenchmarkObservers(DatabaseSync, process.env.ADMIN_ANALYTICS_SQLITE_PATH, process.env.AVERAGE_PUBLICATION_SQLITE_PATH)"), "both observers must use bounded waits");
+    const pair = openBenchmarkObservers(DatabaseSync, join(directory, "analytics.db"), join(directory, "cache.db"));
+    try { for (const db of [pair.analytics, pair.cache]) assert.equal(db.prepare("PRAGMA busy_timeout").get().timeout, 1000); }
+    finally { pair.analytics.close(); pair.cache.close(); }
+  } finally {
+    const path = realpathSync(directory);
+    assert.equal(dirname(path).toLowerCase(), realpathSync(tmpdir()).toLowerCase());
+    assert.ok(basename(path).startsWith("benchmark-observer-lock-"));
+    rmSync(path, { recursive:true, force:true, maxRetries:20, retryDelay:25 });
+  }
+});
+
+test("failed observer configuration closes the handle and preserves the original error", () => {
+  const failure = new Error("invalid observer configuration"); let closed = false;
+  class FailedDatabase {
+    exec() { throw failure; }
+    close() { closed = true; throw new Error("close failed"); }
+  }
+  assert.throws(() => openBenchmarkObserver(FailedDatabase, "unused"), error => error === failure);
+  assert.equal(closed, true);
+});
+
+
+test("a second observer setup failure closes both owned connections without masking the error", () => {
+  const failure = new Error("cache setup failed"), closed = [];
+  class PartialDatabase {
+    constructor(path, options) { this.path=path; assert.deepEqual(options, { readOnly:true }); }
+    exec() { if (this.path === "cache") throw failure; }
+    close() { closed.push(this.path); throw new Error("close failed"); }
+  }
+  assert.throws(() => openBenchmarkObservers(PartialDatabase, "analytics", "cache"), error => error === failure);
+  assert.deepEqual(closed, ["cache", "analytics"]);
 });
