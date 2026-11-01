@@ -61,6 +61,17 @@ function pendingFilteredRequest(requests,before) {
   });
 }
 
+// CDP can leave a prior document's successful RSC prefetch without a terminal
+// event after navigation. Keep it in evidence, but do not let it block the new
+// document's completion; every other old or new request remains required.
+function functionalNetworkSettled(state, previousRequests, now, origin) {
+  return now-state.lastNetwork>500&&[...state.requests.values()].every(request=>{
+    if(request.finished)return true;
+    if(!previousRequests.has(request)||request.method!=="GET"||request.type!=="Fetch"||request.status!==200||request.mime!=="text/x-component"||request.error)return false;
+    const url=new URL(request.url);return url.origin===origin&&url.searchParams.has("_rsc");
+  });
+}
+
 async function validate({ snapshot, requests, tab, backend }) {
   assert.equal(snapshot.dom.lang, "ru"); assert.equal(snapshot.dom.visibility, "visible");
   assert.equal(snapshot.dom.sample, "300"); assert.equal(snapshot.dom.metrics.length, 13);
@@ -212,6 +223,7 @@ async function functional(tab, backend, context) {
   }
 
   await tab.send("Emulation.setDeviceMetricsOverride", { width: 1280, height: 900, deviceScaleFactor: 1, mobile: false });
+  const previousRequests = new Set(tab.state.requests.values()), origin = new URL(tab.url).origin;
   await navigate("/population/pve");
   const lowSelector = 'main input[type=range]';
   const remote = await tab.send("Runtime.evaluate", { expression: "document.querySelector('main input[type=range]')", objectGroup: "persistent-focus" });
@@ -244,7 +256,7 @@ async function functional(tab, backend, context) {
   await ready();
   await tab.send("Runtime.releaseObjectGroup", { objectGroup: "persistent-focus" });
   evidence.checks.push("pointer held at least 700ms across 250ms debounce and a real paused successful API response keeps same focused enabled slider");
-  await until(()=>Date.now()-tab.state.lastNetwork>500&&[...tab.state.requests.values()].every(r=>r.finished),15000,"delayed slider API completes");
+  await until(()=>functionalNetworkSettled(tab.state,previousRequests,Date.now(),origin),15000,"delayed slider API completes");
 
   // A bucket activation must retain the same focused DOM node across the debounce.
   // Use the last bucket so its lower bound is positive, as required by the gate.
@@ -263,13 +275,13 @@ async function functional(tab, backend, context) {
     evidence.bucketPending={...paused,interactionDelayMs:Date.now()-bucketActivatedAt};
   } finally { await bucketGate.close(); }
   evidence.bucketPending.releasedUnchanged=true;
-  await until(()=>Date.now()-tab.state.lastNetwork>500&&[...tab.state.requests.values()].every(r=>r.finished),15000,"bucket API completes");
+  await until(()=>functionalNetworkSettled(tab.state,previousRequests,Date.now(),origin),15000,"bucket API completes");
   await tab.send("Runtime.releaseObjectGroup",{objectGroup:"persistent-bucket"});
   await evaluate("document.querySelector('main input[type=range]').focus()");
   const before=await evaluate("Number(document.querySelector('main input[type=range]').getAttribute('aria-valuenow'))");await key("ArrowRight");
   const after=await wait(`(()=>{const e=document.querySelector('main input[type=range]');const value=Number(e.getAttribute('aria-valuenow'));return value>${before}&&document.activeElement===e?value:false})()`,"keyboard range update");
   evidence.rangeKeyboard={before,after};evidence.checks.push("focused bucket survives at least 700ms/debounce/real paused API response; keyboard range remains usable");
-  await until(()=>Date.now()-tab.state.lastNetwork>500&&[...tab.state.requests.values()].every(r=>r.finished),15000,"keyboard API completes");
+  await until(()=>functionalNetworkSettled(tab.state,previousRequests,Date.now(),origin),15000,"keyboard API completes");
 
   // Real SQLite query failure, not a response override. Clear the range by switching period.
   const control=async(action)=>{const response=await fetch(fixture.control,{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({action}),signal:AbortSignal.timeout(10000)});assert.equal(response.status,200);await response.body?.cancel();};
@@ -279,7 +291,7 @@ async function functional(tab, backend, context) {
     await wait(`(()=>{const show=${visible};return [...document.querySelectorAll('main p')].some(e=>show(e)&&e.textContent.trim()===${JSON.stringify(messages.ru["common.loadFailed"])});})()`,"actual database error is visible");
   } finally {await control("repair-primary");}
   await click(radio("all"));await ready();evidence.checks.push("real storage error and user-controlled recovery");
-  await until(()=>Date.now()-tab.state.lastNetwork>500&&[...tab.state.requests.values()].every(r=>r.finished),15000,"functional network completion");
+  await until(()=>functionalNetworkSettled(tab.state,previousRequests,Date.now(),origin),15000,"functional network completion");
   if(backend==="rust") {
     const url=new URL("/population/pve?unknown=first&unknown=second",tab.url);
     const nojs=await context.page(context.browser,url.href);

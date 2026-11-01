@@ -112,3 +112,28 @@ test("focus delay proof requires a NEW real pending filtered PvE average, not an
  const requests=new Map(rejected.map(r=>[r.id,r]));assert.equal(pending(requests,before),undefined);
  const real=request("new-demand","http://local/api/average?mode=pve&min=1450&max=11999");requests.set(real.id,real);assert.equal(pending(requests,before),real);
 });
+
+
+test("functional completion excludes only successful RSC prefetches from before navigation", () => {
+  const declaration=tree.statements.find(node=>ts.isFunctionDeclaration(node)&&node.name?.text==="functionalNetworkSettled");assert.ok(declaration);
+  const functional=tree.statements.find(node=>ts.isFunctionDeclaration(node)&&node.name?.text==="functional");assert.ok(functional);
+  const waits=[];function visit(node){if(ts.isCallExpression(node)&&node.expression.getText(tree)==="functionalNetworkSettled")waits.push(node);ts.forEachChild(node,visit);}visit(functional);
+  assert.equal(waits.length,4,"all functional network barriers use the same boundary");
+  const settled=runInNewContext(declaration.getText(tree)+"\nfunctionalNetworkSettled",{URL});
+  const priorRsc={ id:"old",url:"http://localhost/population/arena?_rsc=old",type:"Fetch",method:"GET",status:200,mime:"text/x-component",finished:false };
+  const state={ lastNetwork:1000,requests:new Map([[priorRsc.id,priorRsc]]) }, previous=new Set([priorRsc]);
+  assert.equal(settled(state,previous,1500,"http://localhost"),false,"unchanged quiet-period requirement");
+  assert.equal(settled(state,previous,1501,"http://localhost"),true);
+  assert.equal(priorRsc.finished,false,"historical evidence must not be rewritten");
+  const fresh={...priorRsc,id:"new"};state.requests.set(fresh.id,fresh);
+  assert.equal(settled(state,previous,1501,"http://localhost"),false,"new prefetch must finish");fresh.finished=true;assert.equal(settled(state,previous,1501,"http://localhost"),true);
+  const reused={...priorRsc};state.requests.set(priorRsc.id,reused);
+  assert.equal(settled(state,previous,1501,"http://localhost"),false,"a reused CDP id must not inherit old request identity");state.requests.set(priorRsc.id,priorRsc);
+  for(const override of [{status:null},{status:500},{mime:"application/json"},{method:"POST"},{type:"Document"},{url:"http://localhost/api/average?mode=pve"},{url:"http://elsewhere/population/arena?_rsc=old"},{error:"network failure"}]) {
+    const old={...priorRsc,...override};state.requests.set("old",old);assert.equal(settled(state,new Set([old]),1501,"http://localhost"),false,JSON.stringify(override));
+  }
+  state.requests.set("old",priorRsc);
+  const average={id:"api",url:"http://localhost/api/average?mode=pve&min=1094",type:"Fetch",method:"GET",status:200,finished:false};state.requests.set(average.id,average);
+  assert.equal(settled(state,previous,1501,"http://localhost"),false,"real delayed average cannot be omitted");average.finished=true;
+  assert.equal(settled(state,previous,1501,"http://localhost"),true);
+});
