@@ -9,8 +9,8 @@ const productionImage = 'sha256:d64895bb623aaa921ff775ae02b1a8dc4dca80b3d57fa8bd
 const image = 'sha256:66b12d087fbcf4a2e133c8ca05032d78747d94983b5a236b41a37138a5dfc9fb';
 const revision = '0a705c50ae9764d72d714c00e7027ebebadadf22';
 const native = 'f2e4ee25851e890a312fe29540778140bcac6de4059425fd3dcba54d5e62618c';
-const provenance = { testedImageId: image, productionImageId: productionImage, imageIdentityMatchesProduction: false, releaseTag: `tarkovstats-web:${revision}`, sourceRevision: revision, nativeSha256: native, archiveSha256: 'fd6848ec3753e626c8c9e6e5c5c569562e8f72a802a513a67be6dc069e7ce60a', hashContainerId: 'f'.repeat(64), hashContainerImageId: image, hashContainerRemoved: true, ownershipToken: 'b'.repeat(32) };
-const initialFields = ['testedImageId','productionImageId','imageIdentityMatchesProduction','releaseTag','sourceRevision','archiveSha256'];
+const provenance = { testedImageId: image, historicalProductionImageId: productionImage, imageIdentityMatchesHistoricalProduction: false, releaseTag: `tarkovstats-web:${revision}`, sourceRevision: revision, nativeSha256: native, archiveSha256: 'fd6848ec3753e626c8c9e6e5c5c569562e8f72a802a513a67be6dc069e7ce60a', hashContainerId: 'f'.repeat(64), hashContainerImageId: image, hashContainerRemoved: true, ownershipToken: 'b'.repeat(32) };
+const initialFields = ['testedImageId','historicalProductionImageId','imageIdentityMatchesHistoricalProduction','releaseTag','sourceRevision','archiveSha256'];
 const initial = Object.fromEntries(initialFields.map(field => [field, provenance[field]]));
 const memory = 512 * 1024 ** 2;
 function fakeRuns() {
@@ -22,7 +22,7 @@ function fakeRuns() {
       const arenaMode=scenario==='matched'?'lastHero':'overall';
       const rawSamples=raw.map((totalMs,i)=>{const aid=(scenario==='matched'?100001:100005)+(i%concurrency); return {
         query:new URLSearchParams({mode:'arena',aid:String(aid),statistic,period:'all',arenaMode}).toString(),status:200,totalMs,phases:{total:totalMs},
-        body:{aid,gameMode:'arena',mode:arenaMode,strategy:scenario,statistic,sampleN:100,identity:{aid,mode:'arena',cycleId:'persistent',arenaMode},metrics:{kd_ratio:{value:2.5,count:100}},coverage:{fraction:.5},reason:null}
+        body:{aid,gameMode:'arena',mode:arenaMode,strategy:scenario,statistic,sampleN:scenario==='population'?100003:100,identity:{aid,mode:'arena',cycleId:'persistent',arenaMode},metrics:{kd_ratio:{value:2.5,count:scenario==='population'?97301:100}},coverage:{fraction:.5},reason:null}
       };});
       results.push({backend,scenario,statistic,cache,concurrency,errors:[],http:dist(20),server:dist(20),queue:dist(miss?20:0),worker:dist(miss?20:0),rawSamples,rawQueueMs:miss?raw:[],rawWorkerMs:miss?raw:[],workerJobs:miss?20:0,workerBackends:miss?[backend]:[],cacheHits:miss?0:20,responseBytes:500});
     }
@@ -56,10 +56,17 @@ test('Arena proof requires complete paired scenarios, fixed image, resource boun
     runs=>{runs[1].report.results[1].rawSamples[0].query='wrong';},
     runs=>{runs[1].report.results[1].rawQueueMs[0]=Number.NaN;},
   ]) {const invalid=structuredClone(good);mutate(invalid);assert.throws(()=>validateArenaProof(invalid,provenance,initial));}
+  for (const field of ['sampleN', 'kdCount']) {
+    const invalid=structuredClone(good);
+    for (const run of invalid) for (const row of run.report.results.filter(item=>item.scenario==='population')) for (const sample of row.rawSamples) {
+      if (field==='sampleN') sample.body.sampleN=1; else sample.body.metrics.kd_ratio.count=1;
+    }
+    assert.throws(()=>validateArenaProof(invalid,provenance,initial));
+  }
   assert.throws(()=>validateArenaProof(good,{...provenance,archiveSha256:'f'.repeat(64)},{...initial,archiveSha256:'f'.repeat(64)}));
   assert.throws(()=>validateArenaProof(good,{...provenance,sourceRevision:'c'.repeat(40)},{...initial,sourceRevision:'c'.repeat(40)}));
   assert.throws(()=>validateArenaProof(good,{...provenance,testedImageId:'not-an-image',hashContainerImageId:'not-an-image'},{...initial,testedImageId:'not-an-image'}));
-  assert.throws(()=>validateArenaProof(good,{...provenance,imageIdentityMatchesProduction:true},{...initial,imageIdentityMatchesProduction:true}));
+  assert.throws(()=>validateArenaProof(good,{...provenance,imageIdentityMatchesHistoricalProduction:true},{...initial,imageIdentityMatchesHistoricalProduction:true}));
   assert.throws(()=>validateArenaProof(good,{...provenance,hashContainerImageId:productionImage},initial));
   const wrongContainer=structuredClone(good); wrongContainer[1].inspect.imageId=productionImage;
   assert.throws(()=>validateArenaProof(wrongContainer,provenance,initial));

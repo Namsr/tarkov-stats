@@ -3,7 +3,7 @@ import { appendFileSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 const RELEASE_IMAGE = 'sha256:66b12d087fbcf4a2e133c8ca05032d78747d94983b5a236b41a37138a5dfc9fb';
-const PRODUCTION_IMAGE = 'sha256:d64895bb623aaa921ff775ae02b1a8dc4dca80b3d57fa8bdbba19b67f9edabc7';
+const HISTORICAL_PRODUCTION_IMAGE = 'sha256:d64895bb623aaa921ff775ae02b1a8dc4dca80b3d57fa8bdbba19b67f9edabc7';
 const REVISION = '0a705c50ae9764d72d714c00e7027ebebadadf22';
 const NATIVE = 'f2e4ee25851e890a312fe29540778140bcac6de4059425fd3dcba54d5e62618c';
 const ARCHIVE = 'fd6848ec3753e626c8c9e6e5c5c569562e8f72a802a513a67be6dc069e7ce60a';
@@ -38,13 +38,13 @@ function assertPayloadParity(actual, expected, context) {
   assert.deepEqual(normalize(normalized, expected, 'body'), expected, context);
 }
 export function validateArenaProof(runs, provenance, imageProvenance) {
-  const initialFields = ['testedImageId', 'productionImageId', 'imageIdentityMatchesProduction', 'releaseTag', 'sourceRevision', 'archiveSha256'];
+  const initialFields = ['testedImageId', 'historicalProductionImageId', 'imageIdentityMatchesHistoricalProduction', 'releaseTag', 'sourceRevision', 'archiveSha256'];
   assert.deepEqual(imageProvenance, Object.fromEntries(initialFields.map(field => [field, provenance[field]])));
-  assert.deepEqual({ productionImageId: provenance.productionImageId, sourceRevision: provenance.sourceRevision, nativeSha256: provenance.nativeSha256,
+  assert.deepEqual({ historicalProductionImageId: provenance.historicalProductionImageId, sourceRevision: provenance.sourceRevision, nativeSha256: provenance.nativeSha256,
     archiveSha256: provenance.archiveSha256, releaseTag: provenance.releaseTag },
-    { productionImageId: PRODUCTION_IMAGE, sourceRevision: REVISION, nativeSha256: NATIVE, archiveSha256: ARCHIVE, releaseTag: RELEASE_TAG });
+    { historicalProductionImageId: HISTORICAL_PRODUCTION_IMAGE, sourceRevision: REVISION, nativeSha256: NATIVE, archiveSha256: ARCHIVE, releaseTag: RELEASE_TAG });
   assert.equal(provenance.testedImageId, RELEASE_IMAGE);
-  assert.equal(provenance.imageIdentityMatchesProduction, provenance.testedImageId === PRODUCTION_IMAGE);
+  assert.equal(provenance.imageIdentityMatchesHistoricalProduction, provenance.testedImageId === HISTORICAL_PRODUCTION_IMAGE);
   assert.match(provenance.ownershipToken, /^[0-9a-f]{32}$/);
   assert.match(provenance.hashContainerId, /^[0-9a-f]{64}$/); assert.equal(provenance.hashContainerImageId, provenance.testedImageId); assert.equal(provenance.hashContainerRemoved, true);
   assert.equal(runs.length, 4); assert.equal(new Set(runs.map(run => run.inspect.id)).size, 4);
@@ -93,6 +93,11 @@ export function validateArenaProof(runs, provenance, imageProvenance) {
         assert.equal(sample.body.aid, aid); assert.equal(sample.body.statistic, row.statistic);
         assert.deepEqual(sample.body.identity, { aid, mode: 'arena', cycleId: 'persistent', arenaMode });
         assert.ok(Number.isSafeInteger(sample.body.sampleN) && sample.body.sampleN > 0);
+        if (row.scenario === 'population') {
+          // 100,000 seeded peers plus three other owners; every 37th peer has no kd_ratio.
+          assert.equal(sample.body.sampleN, 100003);
+          assert.equal(sample.body.metrics?.kd_ratio?.count, 97301);
+        }
         assert.equal(expected.query, sample.query); assert.equal(expected.status, sample.status);
         assertPayloadParity(sample.body, expected.body, `${i}/${key(row)}/${index}`);
       }
@@ -122,9 +127,9 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   const lines = ['# Synthetic Arena cohort resource proof', '',
     'Four fresh benchmark containers, 100,000 synthetic peers per Arena mode (200,000 physical peer rows), 20 samples per scenario, both backend orders. A separate short-lived container hashes the image binary and is removed before benchmarking. Loopback HTTP uses the existing source route adapter and Next request/cache shims; /app/lib and native executable come from the pinned image. This is not production Next HTTP, live-data parity, a full-site benchmark or evidence of a production gain. No speed threshold.', '',
     '| Round | Scenario | TS p95 ms | Rust p95 ms | Difference |', '| --- | --- | ---: | ---: | ---: |'];
-  lines.splice(4, 0, provenance.imageIdentityMatchesProduction
-    ? 'Tested image ID matches the recorded VPS image ID; this does not establish live-data parity.'
-    : 'Закреплённый release той же ревизии и native SHA, identity с VPS НЕ доказана.', '');
+  lines.splice(4, 0, provenance.imageIdentityMatchesHistoricalProduction
+    ? 'Tested image ID matches the historical VPS image ID; this does not establish live-data parity.'
+    : 'The tested release does not match the historical VPS image ID. The latest reported production image on 2026-11-01 was sha256:c75304f9b148b1010ebe4a8149425e351e2fde55bac7ef0024a93199b1d52115 at revision 14490e2039a135e312a5d1b5f3d73f474887c3bc; its native SHA has not been freshly verified by this proof. No equivalence or current production identity is asserted.', '');
   for (const [index, round] of [[0, 1], [2, 2]]) {
     const ts = runs[index + (round === 1 ? 0 : 1)].report.results.filter(x => x.http);
     const rust = runs[index + (round === 1 ? 1 : 0)].report.results.filter(x => x.http);

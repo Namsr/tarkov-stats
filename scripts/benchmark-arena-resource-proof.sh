@@ -2,7 +2,8 @@
 # Operator-only synthetic Arena comparison on an immutable locally loaded image.
 set -euo pipefail
 release_image_id='sha256:66b12d087fbcf4a2e133c8ca05032d78747d94983b5a236b41a37138a5dfc9fb'
-production_image_id='sha256:d64895bb623aaa921ff775ae02b1a8dc4dca80b3d57fa8bdbba19b67f9edabc7'
+# Historical VPS image observation; this is not the current production image.
+historical_production_image_id='sha256:d64895bb623aaa921ff775ae02b1a8dc4dca80b3d57fa8bdbba19b67f9edabc7'
 release_tag='tarkovstats-web:0a705c50ae9764d72d714c00e7027ebebadadf22'
 archive_sha='fd6848ec3753e626c8c9e6e5c5c569562e8f72a802a513a67be6dc069e7ce60a'
 revision='0a705c50ae9764d72d714c00e7027ebebadadf22'
@@ -21,9 +22,9 @@ output=$(cd "$output" && pwd)
 image_id=$(docker image inspect "$release_tag" --format '{{.Id}}')
 [[ $image_id == "$release_image_id" ]] || { echo 'Release image ID mismatch.' >&2; exit 1; }
 [[ $(docker image inspect "$image_id" --format '{{index .Config.Labels "org.opencontainers.image.revision"}}') == "$revision" ]] || { echo 'Release revision mismatch.' >&2; exit 1; }
-image_matches_production=false
-if [[ $image_id == "$production_image_id" ]]; then image_matches_production=true; fi
-printf '{"testedImageId":"%s","productionImageId":"%s","imageIdentityMatchesProduction":%s,"releaseTag":"%s","sourceRevision":"%s","archiveSha256":"%s"}\n' "$image_id" "$production_image_id" "$image_matches_production" "$release_tag" "$revision" "$archive_sha" > "$output/image-provenance.json"
+image_matches_historical_production=false
+if [[ $image_id == "$historical_production_image_id" ]]; then image_matches_historical_production=true; fi
+printf '{"testedImageId":"%s","historicalProductionImageId":"%s","imageIdentityMatchesHistoricalProduction":%s,"releaseTag":"%s","sourceRevision":"%s","archiveSha256":"%s"}\n' "$image_id" "$historical_production_image_id" "$image_matches_historical_production" "$release_tag" "$revision" "$archive_sha" > "$output/image-provenance.json"
 active_id=''
 active_name=''
 token=$(tr -d '-' < /proc/sys/kernel/random/uuid)
@@ -75,7 +76,7 @@ hash_status=$?
 set -e
 cleanup || { echo 'Hash container cleanup unconfirmed.' >&2; exit 1; }
 [[ $hash_status == 0 && ${actual_native%% *} == "$native_sha" ]] || { echo 'Native binary mismatch or hash failure.' >&2; exit 1; }
-printf '{"testedImageId":"%s","productionImageId":"%s","imageIdentityMatchesProduction":%s,"releaseTag":"%s","sourceRevision":"%s","nativeSha256":"%s","archiveSha256":"%s","hashContainerId":"%s","hashContainerImageId":"%s","hashContainerRemoved":true,"ownershipToken":"%s"}\n' "$image_id" "$production_image_id" "$image_matches_production" "$release_tag" "$revision" "$native_sha" "$archive_sha" "$hash_id" "$hash_image_id" "$token" > "$output/provenance.json"
+printf '{"testedImageId":"%s","historicalProductionImageId":"%s","imageIdentityMatchesHistoricalProduction":%s,"releaseTag":"%s","sourceRevision":"%s","nativeSha256":"%s","archiveSha256":"%s","hashContainerId":"%s","hashContainerImageId":"%s","hashContainerRemoved":true,"ownershipToken":"%s"}\n' "$image_id" "$historical_production_image_id" "$image_matches_historical_production" "$release_tag" "$revision" "$native_sha" "$archive_sha" "$hash_id" "$hash_image_id" "$token" > "$output/provenance.json"
 payload="$output/payload"
 mkdir -p "$payload/scripts" "$payload/tests/fixtures" "$payload/app/api/average/cohort" "$payload/app/api/seasonal/cohort"
 cp "$root/scripts/benchmark-arena-resource-driver.mjs" "$payload/scripts/benchmark-rust-cohort.mjs"
