@@ -7,15 +7,15 @@ import { join, resolve } from 'node:path';
 import { syntheticSeasonalRows } from '../tests/fixtures/rust-arena-seasonal-data.mjs';
 import { validateSeasonalProof } from './summarize-seasonal-resource-proof.mjs';
 
-const image = 'sha256:c75304f9b148b1010ebe4a8149425e351e2fde55bac7ef0024a93199b1d52115';
-const historical = 'sha256:d64895bb623aaa921ff775ae02b1a8dc4dca80b3d57fa8bdbba19b67f9edabc7';
+const image = 'sha256:b7c1ad5c860e8037e1a174902fd0560d35d24267514aa7855e16b5ed5fdc6741';
+const manifest = 'sha256:c75304f9b148b1010ebe4a8149425e351e2fde55bac7ef0024a93199b1d52115';
 const revision = '14490e2039a135e312a5d1b5f3d73f474887c3bc';
-const provenance = { testedImageId:image, historicalProductionImageId:historical, imageIdentityMatchesHistoricalProduction:false,
+const provenance = { testedImageId:image, releaseManifestDigest:manifest, releaseConfigDigest:image, observedVpsImageDigest:manifest,
   releaseTag:`tarkovstats-web:${revision}`, sourceRevision:revision,
   nativeSha256:'f2e4ee25851e890a312fe29540778140bcac6de4059425fd3dcba54d5e62618c',
   archiveSha256:'3a4342c382b49821e2d37aab634c3435595ce967e6b798134a485e8dcae97ebb',
   hashContainerId:'f'.repeat(64), hashContainerImageId:image, hashContainerRemoved:true, ownershipToken:'b'.repeat(32) };
-const initialFields = ['testedImageId','historicalProductionImageId','imageIdentityMatchesHistoricalProduction','releaseTag','sourceRevision','archiveSha256'];
+const initialFields = ['testedImageId','releaseManifestDigest','releaseConfigDigest','observedVpsImageDigest','releaseTag','sourceRevision','archiveSha256'];
 const initial = Object.fromEntries(initialFields.map(field => [field, provenance[field]]));
 const memory = 512 * 1024 ** 2;
 
@@ -107,6 +107,11 @@ test('full Seasonal matrix validates count and finite-value oracles independentl
   const wrongMatched=structuredClone(good);
   for (const run of wrongMatched) for (const row of run.report.results.filter(item=>item.scenario==='matched')) for (const sample of row.rawSamples) sample.body.n=20;
   assert.throws(()=>validateSeasonalProof(wrongMatched,provenance,initial));
+  for (const field of ['testedImageId','releaseManifestDigest','releaseConfigDigest','observedVpsImageDigest']) {
+    const wrong={...provenance,[field]:'sha256:'+('a'.repeat(64))};
+    const wrongInitial={...initial,[field]:wrong[field]};
+    assert.throws(()=>validateSeasonalProof(good,wrong,wrongInitial),field);
+  }
   assert.throws(()=>validateSeasonalProof(good,{...provenance,nativeSha256:'f'.repeat(64)},initial));
   assert.throws(()=>validateSeasonalProof(good,{...provenance,hashContainerRemoved:false},initial));
   assert.throws(()=>validateSeasonalProof(good,{...provenance,archiveSha256:'f'.repeat(64)},{...initial,archiveSha256:'f'.repeat(64)}));
@@ -233,4 +238,19 @@ test("failed or invalid create stdout never becomes a trusted cleanup ID", () =>
       else { assert.equal(readFileSync(calls, "utf8").trim(), owned); assert.throws(() => readFileSync(evidence), { code: "ENOENT" }); }
     }
   } finally { rmSync(directory, { recursive: true, force: true }); }
+});
+
+test('unexpected Docker image ID is retained as JSON before the release guard refuses it',()=>{
+  const source=readFileSync(resolve('scripts/benchmark-seasonal-resource-proof.sh'),'utf8').replace(/\r\n/g,'\n');
+  const start=source.indexOf('image_id=$(docker image inspect'),end=source.indexOf('[[ $(docker image inspect "$image_id"',start);
+  assert.ok(start>=0 && end>start);
+  const fragment=source.slice(start,end),directory=mkdtempSync(join(tmpdir(),'seasonal-image-id-'));
+  try {
+    for(const [observed,status] of [[image,0],['sha256:'+('a'.repeat(64)),1],['bad"id',1]]) {
+      const script=`set -eu\noutput="$TEST_OUTPUT"\nrelease_tag=release\nrelease_image_id="$TEST_EXPECTED"\ndocker() { printf '%s' "$TEST_OBSERVED"; }\n${fragment}`;
+      const result=spawnSync(bash,['-c',script],{encoding:'utf8',env:{...process.env,TEST_OUTPUT:directory,TEST_EXPECTED:image,TEST_OBSERVED:observed}});
+      assert.equal(result.status,status,result.stderr);
+      assert.deepEqual(JSON.parse(readFileSync(join(directory,'image-observation.json'),'utf8')),{observedImageId:observed,expectedConfigDigest:image});
+    }
+  } finally {rmSync(directory,{recursive:true,force:true});}
 });

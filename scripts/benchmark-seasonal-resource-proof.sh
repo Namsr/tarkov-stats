@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # Operator-only synthetic Seasonal comparison on an immutable locally loaded image.
 set -euo pipefail
-release_image_id='sha256:c75304f9b148b1010ebe4a8149425e351e2fde55bac7ef0024a93199b1d52115'
-# Historical VPS image observation; this is not the current production image.
-historical_production_image_id='sha256:d64895bb623aaa921ff775ae02b1a8dc4dca80b3d57fa8bdbba19b67f9edabc7'
+release_image_id='sha256:b7c1ad5c860e8037e1a174902fd0560d35d24267514aa7855e16b5ed5fdc6741'
+release_manifest_digest='sha256:c75304f9b148b1010ebe4a8149425e351e2fde55bac7ef0024a93199b1d52115'
+observed_vps_image_digest='sha256:c75304f9b148b1010ebe4a8149425e351e2fde55bac7ef0024a93199b1d52115'
 release_tag='tarkovstats-web:14490e2039a135e312a5d1b5f3d73f474887c3bc'
 archive_sha='3a4342c382b49821e2d37aab634c3435595ce967e6b798134a485e8dcae97ebb'
 revision='14490e2039a135e312a5d1b5f3d73f474887c3bc'
@@ -20,11 +20,12 @@ mkdir -p -- "$output"
 output=$(cd "$output" && pwd)
 [[ ${PROOF_ARCHIVE_SHA256:-} == "$archive_sha" ]] || { echo 'Release archive SHA mismatch.' >&2; exit 1; }
 image_id=$(docker image inspect "$release_tag" --format '{{.Id}}')
+# Retain even an unexpected observed ID before refusing it; encode it as JSON
+# without treating Docker output as shell syntax.
+node -e 'const fs=require("node:fs");fs.writeFileSync(process.argv[1],JSON.stringify({observedImageId:process.argv[2],expectedConfigDigest:process.argv[3]})+"\n")' "$output/image-observation.json" "$image_id" "$release_image_id"
 [[ $image_id == "$release_image_id" ]] || { echo 'Release image ID mismatch.' >&2; exit 1; }
 [[ $(docker image inspect "$image_id" --format '{{index .Config.Labels "org.opencontainers.image.revision"}}') == "$revision" ]] || { echo 'Release revision mismatch.' >&2; exit 1; }
-image_matches_historical_production=false
-if [[ $image_id == "$historical_production_image_id" ]]; then image_matches_historical_production=true; fi
-printf '{"testedImageId":"%s","historicalProductionImageId":"%s","imageIdentityMatchesHistoricalProduction":%s,"releaseTag":"%s","sourceRevision":"%s","archiveSha256":"%s"}\n' "$image_id" "$historical_production_image_id" "$image_matches_historical_production" "$release_tag" "$revision" "$archive_sha" > "$output/image-provenance.json"
+printf '{"testedImageId":"%s","releaseManifestDigest":"%s","releaseConfigDigest":"%s","observedVpsImageDigest":"%s","releaseTag":"%s","sourceRevision":"%s","archiveSha256":"%s"}\n' "$image_id" "$release_manifest_digest" "$release_image_id" "$observed_vps_image_digest" "$release_tag" "$revision" "$archive_sha" > "$output/image-provenance.json"
 active_id=''
 active_name=''
 token=$(tr -d '-' < /proc/sys/kernel/random/uuid)
@@ -76,7 +77,7 @@ hash_status=$?
 set -e
 cleanup || { echo 'Hash container cleanup unconfirmed.' >&2; exit 1; }
 [[ $hash_status == 0 && ${actual_native%% *} == "$native_sha" ]] || { echo 'Native binary mismatch or hash failure.' >&2; exit 1; }
-printf '{"testedImageId":"%s","historicalProductionImageId":"%s","imageIdentityMatchesHistoricalProduction":%s,"releaseTag":"%s","sourceRevision":"%s","nativeSha256":"%s","archiveSha256":"%s","hashContainerId":"%s","hashContainerImageId":"%s","hashContainerRemoved":true,"ownershipToken":"%s"}\n' "$image_id" "$historical_production_image_id" "$image_matches_historical_production" "$release_tag" "$revision" "$native_sha" "$archive_sha" "$hash_id" "$hash_image_id" "$token" > "$output/provenance.json"
+printf '{"testedImageId":"%s","releaseManifestDigest":"%s","releaseConfigDigest":"%s","observedVpsImageDigest":"%s","releaseTag":"%s","sourceRevision":"%s","nativeSha256":"%s","archiveSha256":"%s","hashContainerId":"%s","hashContainerImageId":"%s","hashContainerRemoved":true,"ownershipToken":"%s"}\n' "$image_id" "$release_manifest_digest" "$release_image_id" "$observed_vps_image_digest" "$release_tag" "$revision" "$native_sha" "$archive_sha" "$hash_id" "$hash_image_id" "$token" > "$output/provenance.json"
 payload="$output/payload"
 mkdir -p "$payload/scripts" "$payload/tests/fixtures" "$payload/app/api/average/cohort" "$payload/app/api/seasonal/cohort"
 cp "$root/scripts/benchmark-seasonal-resource-driver.mjs" "$payload/scripts/benchmark-rust-cohort.mjs"

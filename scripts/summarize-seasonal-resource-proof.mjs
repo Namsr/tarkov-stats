@@ -2,8 +2,9 @@ import assert from 'node:assert/strict';
 import { appendFileSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
-const RELEASE_IMAGE = 'sha256:c75304f9b148b1010ebe4a8149425e351e2fde55bac7ef0024a93199b1d52115';
-const HISTORICAL_PRODUCTION_IMAGE = 'sha256:d64895bb623aaa921ff775ae02b1a8dc4dca80b3d57fa8bdbba19b67f9edabc7';
+const RELEASE_CONFIG = 'sha256:b7c1ad5c860e8037e1a174902fd0560d35d24267514aa7855e16b5ed5fdc6741';
+const RELEASE_MANIFEST = 'sha256:c75304f9b148b1010ebe4a8149425e351e2fde55bac7ef0024a93199b1d52115';
+const OBSERVED_VPS_IMAGE = 'sha256:c75304f9b148b1010ebe4a8149425e351e2fde55bac7ef0024a93199b1d52115';
 const REVISION = '14490e2039a135e312a5d1b5f3d73f474887c3bc';
 const NATIVE = 'f2e4ee25851e890a312fe29540778140bcac6de4059425fd3dcba54d5e62618c';
 const ARCHIVE = '3a4342c382b49821e2d37aab634c3435595ce967e6b798134a485e8dcae97ebb';
@@ -65,13 +66,13 @@ function assertPayloadParity(actual, expected, context) {
   assert.deepEqual(normalize(normalized, expected, 'body'), expected, context);
 }
 export function validateSeasonalProof(runs, provenance, imageProvenance) {
-  const initialFields = ['testedImageId', 'historicalProductionImageId', 'imageIdentityMatchesHistoricalProduction', 'releaseTag', 'sourceRevision', 'archiveSha256'];
+  const initialFields = ['testedImageId', 'releaseManifestDigest', 'releaseConfigDigest', 'observedVpsImageDigest', 'releaseTag', 'sourceRevision', 'archiveSha256'];
   assert.deepEqual(imageProvenance, Object.fromEntries(initialFields.map(field => [field, provenance[field]])));
-  assert.deepEqual({ historicalProductionImageId: provenance.historicalProductionImageId, sourceRevision: provenance.sourceRevision, nativeSha256: provenance.nativeSha256,
-    archiveSha256: provenance.archiveSha256, releaseTag: provenance.releaseTag },
-    { historicalProductionImageId: HISTORICAL_PRODUCTION_IMAGE, sourceRevision: REVISION, nativeSha256: NATIVE, archiveSha256: ARCHIVE, releaseTag: RELEASE_TAG });
-  assert.equal(provenance.testedImageId, RELEASE_IMAGE);
-  assert.equal(provenance.imageIdentityMatchesHistoricalProduction, provenance.testedImageId === HISTORICAL_PRODUCTION_IMAGE);
+  assert.deepEqual({ testedImageId: provenance.testedImageId, releaseManifestDigest: provenance.releaseManifestDigest,
+    releaseConfigDigest: provenance.releaseConfigDigest, observedVpsImageDigest: provenance.observedVpsImageDigest,
+    sourceRevision: provenance.sourceRevision, nativeSha256: provenance.nativeSha256, archiveSha256: provenance.archiveSha256, releaseTag: provenance.releaseTag },
+    { testedImageId: RELEASE_CONFIG, releaseManifestDigest: RELEASE_MANIFEST, releaseConfigDigest: RELEASE_CONFIG,
+      observedVpsImageDigest: OBSERVED_VPS_IMAGE, sourceRevision: REVISION, nativeSha256: NATIVE, archiveSha256: ARCHIVE, releaseTag: RELEASE_TAG });
   assert.match(provenance.ownershipToken, /^[0-9a-f]{32}$/);
   assert.match(provenance.hashContainerId, /^[0-9a-f]{64}$/); assert.equal(provenance.hashContainerImageId, provenance.testedImageId); assert.equal(provenance.hashContainerRemoved, true);
   assert.equal(runs.length, 4); assert.equal(new Set(runs.map(run => run.inspect.id)).size, 4);
@@ -157,10 +158,11 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   const read = file => JSON.parse(readFileSync(join(dir, file), 'utf8'));
   const runs = names.map(name => ({ report: read(name + '.json'), inspect: read(name + '.inspect.json'), cleanup: read(name + '.cleanup.json'), timing: read(name + '.timing.json') }));
   const provenance = read('provenance.json'), imageProvenance = read('image-provenance.json'); validateSeasonalProof(runs, provenance, imageProvenance);
+  assert.deepEqual(read('image-observation.json'), { observedImageId: provenance.testedImageId, expectedConfigDigest: provenance.releaseConfigDigest });
   const lines = ['# Synthetic Seasonal cohort resource proof', '',
     'Four fresh benchmark containers, 50,000 fresh synthetic peers, 10,000 peers older than 90 days and eight owners. Both periods, dimensions, statistics, strategies and backend orders use 20 samples per scenario. The proposed live cap remains 50,000 peers. Loopback HTTP uses the existing source route adapter; /app/lib and native executable come from the pinned image. This is not live-data parity, production HTTP or evidence of a production gain.', '',
     '| Round | Scenario | TS p95 ms | Rust p95 ms | Difference |', '| --- | --- | ---: | ---: | ---: |'];
-  lines.splice(4, 0, 'The tested release image matches the observed current image identity at preparation time; this synthetic run does not establish live parity or current runtime state.', '');
+  lines.splice(4, 0, 'The independently verified release archive contains manifest digest c753 referencing config digest b7c1. The CI Docker image ID is the config digest; the previously observed VPS image digest is the manifest digest. These distinct identifiers are not asserted equal. This synthetic run does not establish live parity or current runtime state.', '');
   for (const [index, round] of [[0, 1], [2, 2]]) {
     const ts = runs[index + (round === 1 ? 0 : 1)].report.results.filter(x => x.http);
     const rust = runs[index + (round === 1 ? 1 : 0)].report.results.filter(x => x.http);
