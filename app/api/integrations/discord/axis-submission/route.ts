@@ -1,6 +1,6 @@
 import { ADMIN_NO_STORE_HEADERS } from "@/lib/admin/mutation";
 import { readAxisPhotoBody } from "@/lib/axis-photo-upload";
-import { axisSubmissionStatus, submitAxisScreenshot } from "@/lib/axis-submission-service";
+import { axisSubmissionStatus, captureAxisScreenshot, submitAxisScreenshot } from "@/lib/axis-submission-service";
 import { checkRateLimit } from "@/lib/rate-limiter";
 import {
   isAxisDiscordSnowflake,
@@ -20,6 +20,7 @@ type DiscordSubmissionBody = {
   attachmentId: unknown;
   authorId: unknown;
   photo: unknown;
+  captureOnly?: unknown;
 };
 
 function invalidSubmission(): never {
@@ -40,10 +41,12 @@ function readDiscordSubmission(value: unknown): {
   attachmentId: string;
   authorId: string;
   photoData: string;
+  captureOnly: boolean;
 } {
   if (!value || typeof value !== "object" || Array.isArray(value)) invalidSubmission();
   const body = value as DiscordSubmissionBody;
-  if (!Number.isSafeInteger(body.matchNumber) || Number(body.matchNumber) <= 0) invalidSubmission();
+  if (!Number.isSafeInteger(body.matchNumber) || Number(body.matchNumber) <= 0
+    || body.captureOnly !== undefined && typeof body.captureOnly !== "boolean") invalidSubmission();
   const guildId = requiredSnowflake(body.guildId);
   const channelId = requiredSnowflake(body.channelId);
   const parentChannelId = body.parentChannelId === null ? null : requiredSnowflake(body.parentChannelId);
@@ -62,6 +65,7 @@ function readDiscordSubmission(value: unknown): {
     attachmentId,
     authorId,
     photoData: photo.data,
+    captureOnly: body.captureOnly === true,
   };
 }
 
@@ -92,9 +96,14 @@ export async function POST(request: Request) {
     }
     // The bot retries transient failures, but a Discord author must not be
     // able to keep the OCR queue busy with unbounded screenshots.
-    if (!checkRateLimit(config.guildId, { bucket: "axis-discord-guild", max: 30 }).allowed
-      || !checkRateLimit(`discord:${body.authorId}`, { bucket: "axis-discord-submission", max: 6 }).allowed) {
+    if (!checkRateLimit(config.guildId, { bucket: body.captureOnly ? "axis-discord-capture-guild" : "axis-discord-guild", max: 30 }).allowed
+      || !checkRateLimit(`discord:${body.authorId}`, { bucket: body.captureOnly ? "axis-discord-capture" : "axis-discord-submission", max: 6 }).allowed) {
       return Response.json({ error: "rate_limited" }, { status: 429, headers: ADMIN_NO_STORE_HEADERS });
+    }
+    if (body.captureOnly) {
+      const result = await captureAxisScreenshot({ matchNumber: body.matchNumber, photoData: body.photoData,
+        actor: { sub: `discord_${body.authorId}`, name: null, source: "discord" } });
+      return Response.json({ ok: true, captured: true, ...result }, { headers: ADMIN_NO_STORE_HEADERS });
     }
     const result = await submitAxisScreenshot({
       matchNumber: body.matchNumber,

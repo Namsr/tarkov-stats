@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import sharp from "sharp";
-import { recognizeAxisPhoto, recognizeAxisPhotoUpload } from "../lib/server-axis-ocr.ts";
+import { captureAxisPhotoUpload, recognizeAxisPhoto, recognizeAxisPhotoUpload } from "../lib/server-axis-ocr.ts";
 
 function syntheticScoreboard(width = 1200, height = 420) {
   const crop = { x: 0, y: 0, width, height: Math.ceil(513 * width / 1584) };
@@ -61,4 +61,24 @@ test("parallel submissions are serialized by the server OCR queue", async () => 
   const [first, second] = await Promise.all([recognizeAxisPhoto(photo), recognizeAxisPhoto(photo)]);
   assert.equal(first.rows.length, 10);
   assert.equal(second.rows.length, 10);
+});
+
+
+test("capture normalizes a valid image without requiring a recognizable scoreboard", async () => {
+  const data = await sharp({ create: { width: 2, height: 2, channels: 3, background: "black" } }).png().toBuffer();
+  const photo = await captureAxisPhotoUpload(data.toString("base64"));
+  assert.equal(photo.width, 2);
+  assert.equal(photo.height, 2);
+  assert.match(photo.revision, /^[a-f0-9]{64}$/);
+  assert.equal((await sharp(photo.data).metadata()).format, "png");
+});
+
+test("capture decoding has an independent bounded queue and recovers after rejection", async () => {
+  const data = await sharp({ create: { width: 2, height: 2, channels: 3, background: "black" } }).png().toBuffer();
+  const requests = Array.from({ length: 5 }, () => captureAxisPhotoUpload(data.toString("base64")));
+  const results = await Promise.allSettled(requests);
+  assert.equal(results.filter(result => result.status === "fulfilled").length, 4);
+  assert.equal(results[4].status, "rejected");
+  await assert.rejects(() => captureAxisPhotoUpload("invalid"));
+  assert.equal((await captureAxisPhotoUpload(data.toString("base64"))).width, 2);
 });

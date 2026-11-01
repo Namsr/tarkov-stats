@@ -20,6 +20,17 @@ let sessionPromise: Promise<ort.InferenceSession> | null = null;
 const queue: (() => Promise<void>)[] = [];
 let running = false;
 let pendingJobs = 0;
+let pendingCaptures = 0;
+let captureTail: Promise<void> = Promise.resolve();
+
+/** Bound image decoding separately so captures never wait for model inference. */
+export function captureAxisPhotoUpload(value: unknown): Promise<AxisStoredPhoto> {
+  if (pendingCaptures >= 4) return Promise.reject(new AxisOcrBusyError());
+  pendingCaptures++;
+  const task = captureTail.then(() => normalizeAxisPhoto(value));
+  captureTail = task.then(() => {}, () => {});
+  return task.finally(() => { pendingCaptures--; });
+}
 
 function assetPath(name: string): string {
   const publicPath = resolve(process.cwd(), "public", "ocr", "paddle-v1", name);

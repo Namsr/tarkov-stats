@@ -10,7 +10,7 @@ const mock = source => ({ shortCircuit: true, url: "data:text/javascript," + enc
 registerHooks({ resolve(specifier, context, nextResolve) {
   if (specifier === "@/lib/admin/mutation") return mock("export const ADMIN_NO_STORE_HEADERS = { 'Cache-Control': 'no-store' };");
   if (specifier === "@/lib/admin/axis-league-db") return mock("export async function getAxisLeagueStore() { return globalThis.axisStore; }");
-  if (specifier === "@/lib/server-axis-ocr") return mock("export async function recognizeAxisPhotoUpload() { if (globalThis.axisOcrGate) await globalThis.axisOcrGate; return { photo: { revision: globalThis.axisPhotoRevision.repeat(64), width: 1, height: 1, data: new Uint8Array([1]) }, result: globalThis.axisOcrResult }; } export class AxisOcrBusyError extends Error {}");
+  if (specifier === "@/lib/server-axis-ocr") return mock("export async function captureAxisPhotoUpload() { globalThis.axisCaptureCalls++; return { revision: globalThis.axisPhotoRevision.repeat(64), width: 1, height: 1, data: new Uint8Array([1]) }; } export async function recognizeAxisPhotoUpload() { globalThis.axisOcrCalls++; if (globalThis.axisOcrFailure) throw new Error('ocr unavailable'); if (globalThis.axisOcrGate) await globalThis.axisOcrGate; return { photo: { revision: globalThis.axisPhotoRevision.repeat(64), width: 1, height: 1, data: new Uint8Array([1]) }, result: globalThis.axisOcrResult }; } export class AxisOcrBusyError extends Error {}");
   if (specifier === "@/lib/arena/service") return mock("export async function getArenaProfile(aid) { return globalThis.axisProfiles.get(aid) ?? null; }");
   if (specifier.startsWith("@/")) return { shortCircuit: true, url: pathToFileURL(resolve(specifier.slice(2) + ".ts")).href };
   return nextResolve(specifier, context);
@@ -85,6 +85,9 @@ function setup(t) {
   globalThis.axisStore = createAxisLeagueStore(db);
   globalThis.axisStore.publishArchive({ page: 1, pages: 1, total: 1, matches: [match()] });
   globalThis.axisOcrGate = null;
+  globalThis.axisOcrFailure = false;
+  globalThis.axisOcrCalls = 0;
+  globalThis.axisCaptureCalls = 0;
   globalThis.axisProfiles = new Map();
   globalThis.axisPhotoRevision = "a";
   globalThis.axisOcrResult = {
@@ -257,4 +260,64 @@ test("aggregate Discord admission stays bounded across different authors", async
   }
   const response = await POST(request(payload({ guildId, authorId: "500000000000000199" })));
   assert.equal(response.status, 429);
+});
+
+
+test("Discord capture stores the preview before OCR and later processing still credits KDA", async t => {
+  const db = setup(t);
+  globalThis.axisOcrGate = new Promise(() => {});
+  const captured = await POST(request(payload({ captureOnly: true, authorId: "500000000000000030" })));
+  assert.equal(captured.status, 200);
+  assert.deepEqual(await captured.json(), { ok: true, captured: true, matchNumber: 77, photo: { revision: "a".repeat(64), width: 1, height: 1 } });
+  assert.equal(globalThis.axisOcrCalls, 0, "capture must not enter the OCR queue");
+  assert.equal(globalThis.axisCaptureCalls, 1);
+  assert.equal(globalThis.axisStore.readMatchPhotoMetadata(77).revision, "a".repeat(64));
+  assert.equal(globalThis.axisStore.readAxisMatchSubmissionPhoto(77, "a".repeat(64)).data.length, 1);
+  assert.equal(globalThis.axisStore.readMatchKda(77).size, 0);
+  assert.equal(db.prepare("SELECT processing_status FROM axis_match_submissions WHERE match_number=77").get().processing_status, "captured");
+  globalThis.axisOcrGate = null;
+  const processed = await POST(request(payload({ authorId: "500000000000000030" })));
+  assert.equal(processed.status, 200);
+  assert.equal((await processed.json()).recognizedPlayers, 10);
+  assert.equal(globalThis.axisStore.readMatchKda(77).size, 10);
+  assert.equal(db.prepare("SELECT processing_status FROM axis_match_submissions WHERE match_number=77").get().processing_status, "processed");
+  assert.equal(globalThis.axisStore.readAxisMatchReview(77).submissions.length, 1);
+});
+
+test("failed OCR and mismatched teams leave a captured screenshot available without crediting KDA", async t => {
+  setup(t);
+  assert.equal((await POST(request(payload({ captureOnly: true, authorId: "500000000000000031" })))).status, 200);
+  globalThis.axisOcrFailure = true;
+  assert.equal((await POST(request(payload({ authorId: "500000000000000031" })))).status, 503);
+  assert.equal(globalThis.axisStore.readMatchPhotoMetadata(77).revision, "a".repeat(64));
+  assert.equal(globalThis.axisStore.readMatchKda(77).size, 0);
+  globalThis.axisOcrFailure = false;
+  globalThis.axisOcrResult = { ...globalThis.axisOcrResult, rows: rowsFor(Array.from({ length: 10 }, (_, i) => `Unrelated ${i}`)) };
+  assert.equal((await POST(request(payload({ authorId: "500000000000000031" })))).status, 422);
+  assert.equal(globalThis.axisStore.readAxisMatchSubmissionPhoto(77, "a".repeat(64)).data.length, 1);
+  assert.equal(globalThis.axisStore.readMatchKda(77).size, 0);
+  globalThis.axisOcrResult = { ...globalThis.axisOcrResult, rows: rowsFor(Array.from({ length: 10 }, (_, i) => i < 8 ? `Player ${i + 1}` : `Unknown ${i}`)) };
+  const partial = await POST(request(payload({ authorId: "500000000000000031" })));
+  assert.equal(partial.status, 200);
+  const result = await partial.json();
+  assert.equal(result.needsReview, true);
+  assert.equal(result.recognizedPlayers, 8);
+  assert.equal(globalThis.axisStore.readMatchPhotoMetadata(77).revision, "a".repeat(64));
+});
+
+test("capture preserves auth, source validation and strict input types", async t => {
+  setup(t);
+  assert.equal((await POST(request(payload({ captureOnly: true }), { secret: "W".repeat(40) }))).status, 401);
+  assert.equal((await POST(request(payload({ captureOnly: true, parentChannelId: null, channelId: "200000000000000099" })))).status, 403);
+  assert.equal((await POST(request(payload({ captureOnly: "true" })))).status, 400);
+  assert.equal((await POST(request(payload({ captureOnly: true, matchNumber: 999 })))).status, 404);
+  assert.equal(globalThis.axisCaptureCalls, 0, "auth and match validation must run before image decoding");
+});
+
+test("capture and OCR have separate bounded per-author admission", async t => {
+  setup(t);
+  const authorId = "500000000000000032";
+  for (let i = 0; i < 6; i++) assert.equal((await POST(request(payload({ captureOnly: true, authorId })))).status, 200);
+  assert.equal((await POST(request(payload({ captureOnly: true, authorId })))).status, 429);
+  assert.equal((await POST(request(payload({ authorId })))).status, 200, "capture must not consume the recognition admission budget");
 });

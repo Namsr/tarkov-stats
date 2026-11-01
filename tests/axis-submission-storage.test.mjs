@@ -184,6 +184,55 @@ if (!isMainThread && workerData?.mode === "submit") {
     assert.ok(["a", "b"].includes(store.readMatchPhotoMetadata(match.number).revision[0]));
   });
 
+  test("captured photos are visible immediately, do not credit stats, and process without reverting newer captures", t => {
+    const { db, store, match } = openStore();
+    t.after(() => db.close());
+    const actor = { sub: "discord_500000000000000001", name: null, source: "discord" };
+    const players = allPlayers(match);
+    store.captureAxisMatchPhoto(match.number, photo("a"), actor);
+    assert.equal(store.readMatchPhotoMetadata(match.number).revision, photo("a").revision);
+    assert.equal(store.readMatchKda(match.number).size, 0);
+    store.captureAxisMatchPhoto(match.number, photo("b", 4), actor);
+    store.captureAxisMatchPhoto(match.number, photo("a"), actor);
+    assert.equal(store.readMatchPhotoMetadata(match.number).revision, photo("b").revision);
+    assert.equal(store.readAxisMatchSubmissionPhoto(match.number, photo("a").revision).data.length, 3);
+    submitInStore(store, match, "a", changesFor(players.slice(0, 5)), players.slice(5).map(p => p.id));
+    assert.equal(store.readMatchKda(match.number).size, 5);
+    assert.equal(store.readMatchPhotoMetadata(match.number).revision, photo("b").revision);
+    submitInStore(store, match, "b", changesFor(players.slice(5), 6));
+    assert.equal(store.readMatchKda(match.number).size, 10);
+    assert.equal(store.readMatchPhotoMetadata(match.number).revision, photo("b").revision);
+    store.captureAxisMatchPhoto(match.number, photo("a"), actor);
+    assert.equal(store.readMatchPhotoMetadata(match.number).revision, photo("b").revision);
+    assert.equal(db.prepare("SELECT COUNT(*) AS n FROM axis_match_submissions WHERE processing_status='processed'").get().n, 2);
+  });
+
+  test("capture archives a legacy preview and its transaction rolls back together", t => {
+    const { db, store, match } = openStore();
+    t.after(() => db.close());
+    store.setMatchPhoto(match.number, null, photo("a"));
+    db.exec("CREATE TRIGGER fail_axis_capture BEFORE INSERT ON axis_match_photos BEGIN SELECT RAISE(ABORT, 'capture rollback'); END");
+    assert.throws(() => store.captureAxisMatchPhoto(match.number, photo("b"), { sub: "discord_1", name: null }), /capture rollback/);
+    assert.equal(store.readMatchPhotoMetadata(match.number).revision, photo("a").revision);
+    assert.equal(db.prepare("SELECT COUNT(*) AS n FROM axis_match_submissions").get().n, 0);
+    db.exec("DROP TRIGGER fail_axis_capture");
+    store.captureAxisMatchPhoto(match.number, photo("b"), { sub: "discord_1", name: null });
+    assert.equal(store.readAxisMatchSubmissionPhoto(match.number, photo("a").revision).revision, photo("a").revision);
+  });
+
+  test("capture migration preserves the existing processed-photo deduplication", t => {
+    const { db, store, match } = openStore();
+    t.after(() => db.close());
+    const player = allPlayers(match)[0];
+    submitInStore(store, match, "a", changesFor([player]));
+    db.exec("ALTER TABLE axis_match_submissions DROP COLUMN processing_status");
+    const reopened = createAxisLeagueStore(db);
+    reopened.submitAxisMatch(match.number, photo("a"), [{ discordId: player.id, kda: kda(99), expected: null }], undefined,
+      evidenceFor(match), { sub: "retry", name: "Retry" });
+    assert.deepEqual(reopened.readMatchKda(match.number).get(player.id), kda(1));
+    assert.equal(db.prepare("SELECT processing_status FROM axis_match_submissions").get().processing_status, "processed");
+  });
+
   test("retrying a photo after moderator deletion does not restore its KDA", t => {
     const { db, store, match } = openStore();
     t.after(() => db.close());
