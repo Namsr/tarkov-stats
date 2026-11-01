@@ -18,7 +18,7 @@ export function axisKdaRatio(stats: AxisKda): number {
   return (stats.kills + stats.assists) / Math.max(1, stats.deaths);
 }
 export function axisMatchHref(number: number): string {
-  return `/axis-league?view=history&match=${number}#axis-match-${number}`;
+  return `/axis-league/history?match=${number}#axis-match-${number}`;
 }
 export interface AxisProfile { aid: number; mode: GameMode }
 export interface AxisPlayer {
