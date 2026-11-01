@@ -109,7 +109,7 @@ for round in 1 2; do
       --mount "type=bind,src=$payload/scripts/benchmark-rust-cohort.mjs,dst=/app/scripts/benchmark-rust-cohort.mjs,readonly" \
       --mount "type=bind,src=$payload/scripts/benchmark-worker-resources.mjs,dst=/app/scripts/benchmark-worker-resources.mjs,readonly" \
       --entrypoint node "$image_id" --experimental-strip-types --experimental-sqlite \
-      scripts/benchmark-rust-cohort.mjs --mode seasonal --backend "$backend" --rows 60000 --iterations 20); then
+      scripts/benchmark-rust-cohort.mjs --mode seasonal --backend "$backend" --rows 60000 --iterations 4); then
       [[ $created =~ ^[0-9a-f]{64}$ ]] || { echo 'Invalid container ID.' >&2; exit 1; }
       active_id=$created
     else

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -45,8 +45,8 @@ function fakeRuns() {
     for (const period of ['all','90d']) for (const dimension of ['hours','pmc_raids'])
     for (const scenario of ['matched','population']) for (const statistic of ['median','trimmed_mean'])
     for (const [cache,concurrency] of [['miss',1],['miss',4],['hit',4]]) {
-      const miss=cache==='miss', dist=count=>({samples:count,p50Ms:count?1:null,p95Ms:count?2:null,maxMs:count?3:null});
-      const raw=Array.from({length:20},(_,i)=>i<10?1:i<19?2:3);
+      const miss=cache==='miss', dist=count=>({samples:count,p50Ms:count?1:null,p95Ms:count?3:null,maxMs:count?3:null});
+      const raw=[1,1,2,3];
       const rawSamples=raw.map((totalMs,i)=>{const aid=(scenario==='matched'?60001:60005)+(i%concurrency); return {
         query:new URLSearchParams({mode:'seasonal',aid:String(aid),statistic,period,dimension,cycle:'native-s1'}).toString(),
         status:200,totalMs,phases:{}, body:{aid,mode:'seasonal',cycleId:'native-s1',strategy:scenario,statistic,period,dimension,
@@ -55,12 +55,12 @@ function fakeRuns() {
           averages:Object.fromEntries(Object.entries(counts[period][scenario]).map(([key,count])=>[key,{value:2.5,count}])),
           percentiles:null,reason:null}
       };});
-      results.push({backend,scenario,statistic,period,dimension,cache,concurrency,errors:[],http:dist(20),server:dist(20),queue:dist(miss?20:0),
-        worker:dist(miss?20:0),rawSamples,rawServerMs:raw,rawQueueMs:miss?raw:[],rawWorkerMs:miss?raw:[],
-        workerJobs:miss?20:0,workerBackends:miss?[backend]:[],cacheHits:miss?0:20,responseBytes:500});
+      results.push({backend,scenario,statistic,period,dimension,cache,concurrency,errors:[],http:dist(4),server:dist(4),queue:dist(miss?4:0),
+        worker:dist(miss?4:0),rawSamples,rawServerMs:raw,rawQueueMs:miss?raw:[],rawWorkerMs:miss?raw:[],
+        workerJobs:miss?4:0,workerBackends:miss?[backend]:[],cacheHits:miss?0:4,responseBytes:500});
     }
     return {report:{formatVersion:1,environment:{os:'linux',node:'v22.0.0'},fixture:{mode:'seasonal',players:60000,peerAccounts:60000,normalizedPeerRows:60000,owners:8,synthetic:true},
-      methodology:{iterations:20,backendSelection:backend,backendOrder:[backend],warmupRequestsPerScenario:1},results,
+      methodology:{iterations:4,backendSelection:backend,backendOrder:[backend],warmupRequestsPerScenario:1},results,
       resourceResults:[{backend,available:true,workerCpuMs:1,workers:[{peakWorkingSetBytes:100}]}],
       containerResources:{available:true,version:2,memory:{maxBytes:memory,swapMaxBytes:0,peakBytes:1000},cpu:{quotaUs:50000,periodUs:100000,usageUs:10,userUs:8,systemUs:2},memoryEvents:{oomKill:0}}},
       inspect:{owner:provenance.ownershipToken,id:String(index+1).repeat(64),imageId:image,sourceRevision:revision,exitCode:0,oomKilled:false,user:'nextjs',network:'none',ipcMode:'private',readOnly:true,memory,memorySwap:memory,nanoCpus:500000000,pidsLimit:64,privileged:false,capAdd:null,capDrop:['ALL'],securityOpt:['no-new-privileges'],portBindings:null,tmpfs:{'/tmp':'rw,noexec,nosuid,nodev,size=128m,mode=1777'},mounts:['/app/app','/app/tests','/app/scripts/benchmark-rust-cohort.mjs','/app/scripts/benchmark-worker-resources.mjs'].map(Destination=>({Type:'bind',Destination,RW:false}))},
@@ -78,8 +78,10 @@ test('full Seasonal matrix validates count and finite-value oracles independentl
   for(const mutate of [
     runs=>{runs[1].inspect.id=runs[0].inspect.id;},
     runs=>{runs[1].report.results.pop();},
-    runs=>{runs[1].report.results[1].workerJobs=19;},
+    runs=>{runs[1].report.results[1].workerJobs=3;},
     runs=>{runs[1].report.results[1].rawServerMs[0]=NaN;},
+    runs=>{runs[1].report.results[1].rawSamples.pop();},
+    runs=>{runs[1].report.methodology.iterations=20;},
     runs=>{runs[1].report.results[1].http.p95Ms=99;},
     runs=>{runs[1].report.results[1].rawSamples[0].body.averages.kd_ratio.value=3;},
     runs=>{runs[1].report.results[1].rawSamples[0].body.dimension='hours-wrong';},
@@ -125,7 +127,7 @@ test('manual workflow and runner use current pinned source and bounded isolated 
   assert.match(workflow,/contents: read/); assert.doesNotMatch(workflow,/docker\s+build|release upload|npm ci|cargo build/);
   assert.match(workflow,/git diff --exit-code "\$SOURCE_REVISION" -- app\/api\/average\/cohort\/route\.ts app\/api\/seasonal\/cohort\/route\.ts/);
   for (const file of ['rust-cohort-data.mjs','rust-arena-seasonal-data.mjs','next-cache-shim.mjs','next-server-entry.mjs','benchmark-rust-cohort.mjs','benchmark-worker-resources.mjs']) assert.ok(workflow.includes(file));
-  assert.match(runner,/--rows 60000 --iterations 20/); assert.match(runner,/--pids-limit 64/);
+  assert.match(runner,/--rows 60000 --iterations 4/); assert.match(runner,/--pids-limit 64/);
   assert.match(runner,/--memory 512m --memory-swap 512m/); assert.match(runner,/--kill-after=15s 480s/);
   assert.match(runner,/--network none --ipc private/); assert.match(runner,/backends=\(rust typescript\)/);
   assert.match(runner,/benchmark-seasonal-resource-driver\.mjs/); assert.match(runner,/driver-source\.sha256/);
@@ -252,5 +254,17 @@ test('unexpected Docker image ID is retained as JSON before the release guard re
       assert.equal(result.status,status,result.stderr);
       assert.deepEqual(JSON.parse(readFileSync(join(directory,'image-observation.json'),'utf8')),{observedImageId:observed,expectedConfigDigest:image});
     }
+  } finally {rmSync(directory,{recursive:true,force:true});}
+});
+
+
+test('empty timed-out run reports the missing JSON instead of a parsing error',()=>{
+  const directory=mkdtempSync(join(tmpdir(),'seasonal-empty-report-'));
+  try {
+    writeFileSync(join(directory,'seasonal-round1-typescript.json'),'');
+    const result=spawnSync(process.execPath,[resolve('scripts/summarize-seasonal-resource-proof.mjs'),directory],{encoding:'utf8'});
+    assert.notEqual(result.status,0);
+    assert.match(result.stderr,/seasonal-round1-typescript\.json: no JSON report \(run failed or timed out\)/);
+    assert.doesNotMatch(result.stderr,/SyntaxError/);
   } finally {rmSync(directory,{recursive:true,force:true});}
 });

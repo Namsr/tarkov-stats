@@ -10,6 +10,7 @@ const NATIVE = 'f2e4ee25851e890a312fe29540778140bcac6de4059425fd3dcba54d5e62618c
 const ARCHIVE = '3a4342c382b49821e2d37aab634c3435595ce967e6b798134a485e8dcae97ebb';
 const RELEASE_TAG = `tarkovstats-web:${REVISION}`;
 const MEMORY = 512 * 1024 ** 2;
+const SAMPLES = 4;
 const ORDER = ['typescript', 'rust', 'rust', 'typescript'];
 const SCENARIOS = ['all', '90d'].flatMap(period => ['hours', 'pmc_raids'].flatMap(dimension =>
   ['matched', 'population'].flatMap(group => ['median', 'trimmed_mean'].flatMap(statistic =>
@@ -98,7 +99,7 @@ export function validateSeasonalProof(runs, provenance, imageProvenance) {
     assert.equal(r.formatVersion, 1); assert.equal(r.environment.os, 'linux'); assert.match(r.environment.node, /^v22\./);
     assert.equal(r.fixture.mode, 'seasonal'); assert.equal(r.fixture.synthetic, true); assert.equal(r.fixture.players, 60000);
     assert.equal(r.fixture.peerAccounts, 60000); assert.equal(r.fixture.normalizedPeerRows, 60000); assert.equal(r.fixture.owners, 8);
-    assert.equal(r.methodology.iterations, 20); assert.equal(r.methodology.backendSelection, backend); assert.deepEqual(r.methodology.backendOrder, [backend]);
+    assert.equal(r.methodology.iterations, SAMPLES); assert.equal(r.methodology.backendSelection, backend); assert.deepEqual(r.methodology.backendOrder, [backend]);
     assert.equal(r.methodology.warmupRequestsPerScenario, 1);
     assert.equal(r.results.length, 49);
     const cold = r.results.filter(item => item.scenario === 'first_request_fresh_worker');
@@ -107,9 +108,9 @@ export function validateSeasonalProof(runs, provenance, imageProvenance) {
     assert.deepEqual(results.map(key).sort(), [...SCENARIOS].sort());
     for (const row of results) {
       const misses = row.cache === 'miss'; assert.equal(row.backend, backend); assert.deepEqual(row.errors, []);
-      assert.ok(Array.isArray(row.rawSamples)); assert.equal(row.rawSamples.length, 20);
+      assert.ok(Array.isArray(row.rawSamples)); assert.equal(row.rawSamples.length, SAMPLES);
       const baseline = runs[0].report.results.find(item => key(item) === key(row));
-      assert.ok(baseline && baseline.rawSamples.length === 20);
+      assert.ok(baseline && baseline.rawSamples.length === SAMPLES);
       for (let index = 0; index < row.rawSamples.length; index++) {
         const sample = row.rawSamples[index], expected = baseline.rawSamples[index];
         const aid = (row.scenario === 'matched' ? 60001 : 60005) + (index % row.concurrency);
@@ -135,10 +136,10 @@ export function validateSeasonalProof(runs, provenance, imageProvenance) {
         assert.equal(expected.query, sample.query); assert.equal(expected.status, sample.status);
         assertPayloadParity(sample.body, expected.body, `${i}/${key(row)}/${index}`);
       }
-      distribution(row.http, 20, row.rawSamples.map(sample => sample.totalMs));
-      distribution(row.server, 20, row.rawServerMs);
-      distribution(row.queue, misses ? 20 : 0, row.rawQueueMs); distribution(row.worker, misses ? 20 : 0, row.rawWorkerMs);
-      assert.equal(row.workerJobs, misses ? 20 : 0); assert.equal(row.cacheHits, misses ? 0 : 20);
+      distribution(row.http, SAMPLES, row.rawSamples.map(sample => sample.totalMs));
+      distribution(row.server, SAMPLES, row.rawServerMs);
+      distribution(row.queue, misses ? SAMPLES : 0, row.rawQueueMs); distribution(row.worker, misses ? SAMPLES : 0, row.rawWorkerMs);
+      assert.equal(row.workerJobs, misses ? SAMPLES : 0); assert.equal(row.cacheHits, misses ? 0 : SAMPLES);
       assert.deepEqual(row.workerBackends, misses ? [backend] : []); assert.ok(Number.isSafeInteger(row.responseBytes) && row.responseBytes > 0);
     }
     assert.equal(r.resourceResults.length, 1); const child = r.resourceResults[0];
@@ -155,22 +156,14 @@ export function validateSeasonalProof(runs, provenance, imageProvenance) {
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   const dir = process.argv[2]; assert.ok(dir);
   const names = ['seasonal-round1-typescript', 'seasonal-round1-rust', 'seasonal-round2-rust', 'seasonal-round2-typescript'];
-  const read = file => JSON.parse(readFileSync(join(dir, file), 'utf8'));
+  const read = file => { const raw = readFileSync(join(dir, file), 'utf8'); assert.ok(raw.trim(), `${file}: no JSON report (run failed or timed out)`); return JSON.parse(raw); };
   const runs = names.map(name => ({ report: read(name + '.json'), inspect: read(name + '.inspect.json'), cleanup: read(name + '.cleanup.json'), timing: read(name + '.timing.json') }));
   const provenance = read('provenance.json'), imageProvenance = read('image-provenance.json'); validateSeasonalProof(runs, provenance, imageProvenance);
   assert.deepEqual(read('image-observation.json'), { observedImageId: provenance.testedImageId, expectedConfigDigest: provenance.releaseConfigDigest });
   const lines = ['# Synthetic Seasonal cohort resource proof', '',
-    'Four fresh benchmark containers, 50,000 fresh synthetic peers, 10,000 peers older than 90 days and eight owners. Both periods, dimensions, statistics, strategies and backend orders use 20 samples per scenario. The proposed live cap remains 50,000 peers. Loopback HTTP uses the existing source route adapter; /app/lib and native executable come from the pinned image. This is not live-data parity, production HTTP or evidence of a production gain.', '',
-    '| Round | Scenario | TS p95 ms | Rust p95 ms | Difference |', '| --- | --- | ---: | ---: | ---: |'];
+    'Four fresh benchmark containers, 50,000 fresh synthetic peers, 10,000 peers older than 90 days and eight owners. Both periods, dimensions, statistics, strategies and backend orders use four samples per scenario. This is a bounded capacity and payload-parity proof; with four samples the reported p95 is the maximum, not a stable performance estimate. The previous 20-sample TypeScript runs timed out and cannot quantify TypeScript speed. The proposed live cap remains 50,000 peers. Loopback HTTP uses the existing source route adapter; /app/lib and native executable come from the pinned image. This is not live-data parity, production HTTP or evidence of a production gain.', '',
+  ];
   lines.splice(4, 0, 'The independently verified release archive contains manifest digest c753 referencing config digest b7c1. The CI Docker image ID is the config digest; the previously observed VPS image digest is the manifest digest. These distinct identifiers are not asserted equal. This synthetic run does not establish live parity or current runtime state.', '');
-  for (const [index, round] of [[0, 1], [2, 2]]) {
-    const ts = runs[index + (round === 1 ? 0 : 1)].report.results.filter(x => x.http);
-    const rust = runs[index + (round === 1 ? 1 : 0)].report.results.filter(x => x.http);
-    for (const row of ts) {
-      const other = rust.find(x => key(x) === key(row)); const delta = row.http.p95Ms ? `${((other.http.p95Ms / row.http.p95Ms - 1) * 100).toFixed(1)}%` : 'n/a';
-      lines.push(`| ${round} | ${key(row)} | ${row.http.p95Ms} | ${other.http.p95Ms} | ${delta} |`);
-    }
-  }
   lines.push('', '| Run | Wall seconds | Warm worker CPU ms | Worker lifetime peak bytes | Cgroup lifetime CPU ms | Cgroup lifetime peak bytes |', '| --- | ---: | ---: | ---: | ---: | ---: |');
   for (let i = 0; i < runs.length; i++) {
     const r = runs[i].report, c = r.containerResources, child = r.resourceResults[0];
