@@ -61,15 +61,32 @@ function pendingFilteredRequest(requests,before) {
   });
 }
 
-// CDP can leave a prior document's successful RSC prefetch without a terminal
-// event after navigation. Keep it in evidence, but do not let it block the new
-// document's completion; every other old or new request remains required.
-function functionalNetworkSettled(state, previousRequests, now, origin) {
-  return now-state.lastNetwork>500&&[...state.requests.values()].every(request=>{
-    if(request.finished)return true;
-    if(!previousRequests.has(request)||request.method!=="GET"||request.type!=="Fetch"||request.status!==200||request.mime!=="text/x-component"||request.error)return false;
-    const url=new URL(request.url);return url.origin===origin&&url.searchParams.has("_rsc");
-  });
+// Prior main-frame loaders may lose terminal CDP events during navigation.
+// Keep those requests and their observed status/errors in the evidence; only
+// known earlier loaders are outside the current document's completion barrier.
+function functionalNetworkSettled(state, navigation, previousLoaders, now) {
+  return now-state.lastNetwork>500&&[...state.requests.values()].every(request=>request.finished||
+    (request.frameId===navigation.frameId&&request.loaderId&&request.loaderId!==navigation.loaderId&&previousLoaders.has(request.loaderId)));
+}
+
+async function captureFunctionalNavigation(tab, navigate, until, ready) {
+  const previousFrame=(await tab.send("Page.getFrameTree")).frameTree.frame;
+  assert.ok(previousFrame.id&&previousFrame.loaderId,"previous main document identity required");
+  const previousLoaders=new Set(tab.state.mainFrameLoaders.get(previousFrame.id)||[]);previousLoaders.add(previousFrame.loaderId);
+  const navigation=await navigate("/population/pve");
+  assert.equal(navigation.frameId,previousFrame.id);assert.ok(navigation.loaderId&&!previousLoaders.has(navigation.loaderId),"new PvE document loader required");
+  await until(async()=>{const frame=(await tab.send("Page.getFrameTree")).frameTree.frame;return frame.id===navigation.frameId&&frame.loaderId===navigation.loaderId&&tab.state.mainFrameLoaders.get(frame.id)?.has(frame.loaderId);},15000,"PvE document committed");
+  await ready();
+  return {navigation,previousLoaders};
+}
+
+function validateFunctionalRequests(requests, backend) {
+  for (const request of requests) {
+    const url=new URL(request.url);const expectedSqlFailure=request.status===500&&["/api/average","/api/average/metrics"].includes(url.pathname)&&url.searchParams.get("mode")==="pve"&&url.searchParams.get("period")==="90d"&&url.searchParams.get("statistic")==="trimmed_mean";
+    if(expectedSqlFailure)request.expectedFailure="private database schema failure/repaired";
+    assert.ok(!(request.status >= 400)||expectedSqlFailure, `${backend}: functional HTTP ${request.status} ${request.url}`);
+    assert.ok(!request.error || request.canceled || request.url === blockedImage, `${backend}: functional resource ${request.url}: ${request.error}`);
+  }
 }
 
 async function validate({ snapshot, requests, tab, backend }) {
@@ -131,7 +148,10 @@ async function functional(tab, backend, context) {
     return wait(String.raw`(()=>{const s=document.querySelector('.average-sampleline')?.textContent;const ranges=[...document.querySelectorAll('main input[type=range]')];return /\d/.test(s||'')&&ranges.length===2&&ranges.every(e=>!e.disabled)&&document.querySelectorAll('#ach-breakdown tbody tr').length===8&&document.querySelectorAll('main .seasonal-chart__hit').length===8;})()`, "all real panels and ranges");
   }
   async function navigate(path) {
-    await tab.send("Page.navigate", { url: new URL(path, tab.url).href }); await ready();
+    const response=await tab.send("Page.navigate", { url: new URL(path, tab.url).href });
+    assert.ok(!response.errorText,response.errorText);assert.ok(response.frameId&&response.loaderId,"cross-document navigation identity required");
+    await until(async()=>{const frame=(await tab.send("Page.getFrameTree")).frameTree.frame;return frame.id===response.frameId&&frame.loaderId===response.loaderId&&tab.state.mainFrameLoaders.get(frame.id)?.has(frame.loaderId);},15000,`${backend}: document navigation ${path}`);
+    await ready(); return response;
   }
 
   await ready();
@@ -223,8 +243,8 @@ async function functional(tab, backend, context) {
   }
 
   await tab.send("Emulation.setDeviceMetricsOverride", { width: 1280, height: 900, deviceScaleFactor: 1, mobile: false });
-  const previousRequests = new Set(tab.state.requests.values()), origin = new URL(tab.url).origin;
-  await navigate("/population/pve");
+  const {navigation,previousLoaders}=await captureFunctionalNavigation(tab,navigate,until,ready);
+  evidence.navigation={frameId:navigation.frameId,loaderId:navigation.loaderId,previousLoaderIds:[...previousLoaders]};
   const lowSelector = 'main input[type=range]';
   const remote = await tab.send("Runtime.evaluate", { expression: "document.querySelector('main input[type=range]')", objectGroup: "persistent-focus" });
   const objectId = remote.result.objectId; assert.ok(objectId);
@@ -256,7 +276,7 @@ async function functional(tab, backend, context) {
   await ready();
   await tab.send("Runtime.releaseObjectGroup", { objectGroup: "persistent-focus" });
   evidence.checks.push("pointer held at least 700ms across 250ms debounce and a real paused successful API response keeps same focused enabled slider");
-  await until(()=>functionalNetworkSettled(tab.state,previousRequests,Date.now(),origin),15000,"delayed slider API completes");
+  await until(()=>functionalNetworkSettled(tab.state,navigation,previousLoaders,Date.now()),15000,"delayed slider API completes");
 
   // A bucket activation must retain the same focused DOM node across the debounce.
   // Use the last bucket so its lower bound is positive, as required by the gate.
@@ -275,13 +295,13 @@ async function functional(tab, backend, context) {
     evidence.bucketPending={...paused,interactionDelayMs:Date.now()-bucketActivatedAt};
   } finally { await bucketGate.close(); }
   evidence.bucketPending.releasedUnchanged=true;
-  await until(()=>functionalNetworkSettled(tab.state,previousRequests,Date.now(),origin),15000,"bucket API completes");
+  await until(()=>functionalNetworkSettled(tab.state,navigation,previousLoaders,Date.now()),15000,"bucket API completes");
   await tab.send("Runtime.releaseObjectGroup",{objectGroup:"persistent-bucket"});
   await evaluate("document.querySelector('main input[type=range]').focus()");
   const before=await evaluate("Number(document.querySelector('main input[type=range]').getAttribute('aria-valuenow'))");await key("ArrowRight");
   const after=await wait(`(()=>{const e=document.querySelector('main input[type=range]');const value=Number(e.getAttribute('aria-valuenow'));return value>${before}&&document.activeElement===e?value:false})()`,"keyboard range update");
   evidence.rangeKeyboard={before,after};evidence.checks.push("focused bucket survives at least 700ms/debounce/real paused API response; keyboard range remains usable");
-  await until(()=>functionalNetworkSettled(tab.state,previousRequests,Date.now(),origin),15000,"keyboard API completes");
+  await until(()=>functionalNetworkSettled(tab.state,navigation,previousLoaders,Date.now()),15000,"keyboard API completes");
 
   // Real SQLite query failure, not a response override. Clear the range by switching period.
   const control=async(action)=>{const response=await fetch(fixture.control,{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({action}),signal:AbortSignal.timeout(10000)});assert.equal(response.status,200);await response.body?.cancel();};
@@ -291,7 +311,7 @@ async function functional(tab, backend, context) {
     await wait(`(()=>{const show=${visible};return [...document.querySelectorAll('main p')].some(e=>show(e)&&e.textContent.trim()===${JSON.stringify(messages.ru["common.loadFailed"])});})()`,"actual database error is visible");
   } finally {await control("repair-primary");}
   await click(radio("all"));await ready();evidence.checks.push("real storage error and user-controlled recovery");
-  await until(()=>functionalNetworkSettled(tab.state,previousRequests,Date.now(),origin),15000,"functional network completion");
+  await until(()=>functionalNetworkSettled(tab.state,navigation,previousLoaders,Date.now()),15000,"functional network completion");
   if(backend==="rust") {
     const url=new URL("/population/pve?unknown=first&unknown=second",tab.url);
     const nojs=await context.page(context.browser,url.href);
@@ -313,12 +333,7 @@ async function functional(tab, backend, context) {
   assert.deepEqual(tab.state.exceptions, [], `${backend}: functional uncaught exceptions`);
   assert.deepEqual(tab.state.console, [], `${backend}: functional console errors`);
   evidence.requests = [...tab.state.requests.values()];
-  for (const request of evidence.requests) {
-    const url=new URL(request.url);const expectedSqlFailure=request.status===500&&["/api/average","/api/average/metrics"].includes(url.pathname)&&url.searchParams.get("mode")==="pve"&&url.searchParams.get("period")==="90d"&&url.searchParams.get("statistic")==="trimmed_mean";
-    if(expectedSqlFailure)request.expectedFailure="private database schema failure/repaired";
-    assert.ok(!(request.status >= 400)||expectedSqlFailure, `${backend}: functional HTTP ${request.status} ${request.url}`);
-    assert.ok(!request.error || request.canceled || request.url === blockedImage, `${backend}: functional resource ${request.url}: ${request.error}`);
-  }
+  validateFunctionalRequests(evidence.requests,backend);
   } finally {
     evidence.requests=[...tab.state.requests.values()];evidence.exceptions=[...tab.state.exceptions];evidence.consoleErrors=[...tab.state.console];
     evidence.lastSnapshot=await tab.evaluate("window.__rustArenaBenchmark?.snapshot()").catch(()=>null);

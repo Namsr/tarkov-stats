@@ -109,14 +109,17 @@ async function page(browser, url) {
   const { targetId } = await browser.cdp.send("Target.createTarget", { url: "about:blank", browserContextId });
   const { sessionId } = await browser.cdp.send("Target.attachToTarget", { targetId, flatten: true });
   const send = (method, params) => browser.cdp.send(method, params, sessionId);
-  const state = { requests: new Map(), exceptions: [], console: [], loaded: false, lastNetwork: Date.now() };
-  browser.cdp.on(sessionId, "Network.requestWillBeSent", value => { state.lastNetwork = Date.now(); state.requests.set(value.requestId, { id:value.requestId,url:value.request.url,type:value.type,method:value.request.method,status:null,bytes:0,finished:false }); });
+  const state = { requests: new Map(), mainFrameLoaders: new Map(), exceptions: [], console: [], loaded: false, lastNetwork: Date.now() };
+  browser.cdp.on(sessionId, "Network.requestWillBeSent", value => { state.lastNetwork = Date.now(); state.requests.set(value.requestId, { id:value.requestId,url:value.request.url,type:value.type,method:value.request.method,loaderId:value.loaderId || null,frameId:value.frameId || null,documentURL:value.documentURL || null,status:null,bytes:0,finished:false }); });
   browser.cdp.on(sessionId, "Network.responseReceived", value => { const request=state.requests.get(value.requestId);if(request)Object.assign(request,{status:value.response.status,mime:value.response.mimeType,fromDiskCache:!!value.response.fromDiskCache,fromServiceWorker:!!value.response.fromServiceWorker,encoding:value.response.headers["content-encoding"]||null}); });
   browser.cdp.on(sessionId, "Network.loadingFinished", value => { state.lastNetwork=Date.now();const request=state.requests.get(value.requestId);if(request)Object.assign(request,{bytes:value.encodedDataLength,finished:true}); });
   browser.cdp.on(sessionId, "Network.loadingFailed", value => { state.lastNetwork=Date.now();const request=state.requests.get(value.requestId);if(request)Object.assign(request,{finished:true,error:value.errorText,canceled:value.canceled}); });
   browser.cdp.on(sessionId, "Runtime.exceptionThrown", value => state.exceptions.push(value.exceptionDetails.text + ": " + (value.exceptionDetails.exception?.description || "")));
   browser.cdp.on(sessionId, "Runtime.consoleAPICalled", value => { if(value.type==="error")state.console.push(value.args.map(arg=>arg.value||arg.description||"").join(" ")); });
-  browser.cdp.on(sessionId, "Page.frameNavigated", value => { if (!value.frame.parentId) state.loaded=false; });
+  browser.cdp.on(sessionId, "Page.frameNavigated", value => { if (!value.frame.parentId) {
+    state.loaded=false; const { id, loaderId } = value.frame;
+    if (id && loaderId) { if (!state.mainFrameLoaders.has(id)) state.mainFrameLoaders.set(id,new Set()); state.mainFrameLoaders.get(id).add(loaderId); }
+  } });
   browser.cdp.on(sessionId, "Page.loadEventFired", () => { state.loaded=true; });
   for (const method of ["Page.enable", "Runtime.enable", "Network.enable"]) await send(method);
   await send("Network.setBypassServiceWorker", { bypass:true });

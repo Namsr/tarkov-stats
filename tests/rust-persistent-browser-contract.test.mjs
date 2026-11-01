@@ -114,26 +114,61 @@ test("focus delay proof requires a NEW real pending filtered PvE average, not an
 });
 
 
-test("functional completion excludes only successful RSC prefetches from before navigation", () => {
+test("functional completion waits for current and unknown requests, including reused IDs", () => {
   const declaration=tree.statements.find(node=>ts.isFunctionDeclaration(node)&&node.name?.text==="functionalNetworkSettled");assert.ok(declaration);
   const functional=tree.statements.find(node=>ts.isFunctionDeclaration(node)&&node.name?.text==="functional");assert.ok(functional);
   const waits=[];function visit(node){if(ts.isCallExpression(node)&&node.expression.getText(tree)==="functionalNetworkSettled")waits.push(node);ts.forEachChild(node,visit);}visit(functional);
-  assert.equal(waits.length,4,"all functional network barriers use the same boundary");
+  assert.equal(waits.length,4,"all functional network barriers use the same document boundary");
   const settled=runInNewContext(declaration.getText(tree)+"\nfunctionalNetworkSettled",{URL});
-  const priorRsc={ id:"old",url:"http://localhost/population/arena?_rsc=old",type:"Fetch",method:"GET",status:200,mime:"text/x-component",finished:false };
-  const state={ lastNetwork:1000,requests:new Map([[priorRsc.id,priorRsc]]) }, previous=new Set([priorRsc]);
-  assert.equal(settled(state,previous,1500,"http://localhost"),false,"unchanged quiet-period requirement");
-  assert.equal(settled(state,previous,1501,"http://localhost"),true);
-  assert.equal(priorRsc.finished,false,"historical evidence must not be rewritten");
-  const fresh={...priorRsc,id:"new"};state.requests.set(fresh.id,fresh);
-  assert.equal(settled(state,previous,1501,"http://localhost"),false,"new prefetch must finish");fresh.finished=true;assert.equal(settled(state,previous,1501,"http://localhost"),true);
-  const reused={...priorRsc};state.requests.set(priorRsc.id,reused);
-  assert.equal(settled(state,previous,1501,"http://localhost"),false,"a reused CDP id must not inherit old request identity");state.requests.set(priorRsc.id,priorRsc);
-  for(const override of [{status:null},{status:500},{mime:"application/json"},{method:"POST"},{type:"Document"},{url:"http://localhost/api/average?mode=pve"},{url:"http://elsewhere/population/arena?_rsc=old"},{error:"network failure"}]) {
-    const old={...priorRsc,...override};state.requests.set("old",old);assert.equal(settled(state,new Set([old]),1501,"http://localhost"),false,JSON.stringify(override));
+  const nav={frameId:"main",loaderId:"pve"}, previous=new Set(["old", "older"]);
+  const old={id:"late-old",url:"http://localhost/api/average?mode=pve",frameId:"main",loaderId:"old",status:null,finished:false};
+  const state={lastNetwork:1000,requests:new Map([[old.id,old]])};
+  assert.equal(settled(state,nav,previous,1500),false,"unchanged quiet period");
+  assert.equal(settled(state,nav,previous,1501),true,"known previous loader does not block the new document");
+  assert.equal(old.finished,false);assert.equal(old.status,null,"historical evidence remains unknown");
+  for(const override of [{loaderId:"pve"},{loaderId:"unknown"},{loaderId:null},{frameId:"other"},{frameId:null}]) {
+    const request={...old,...override};state.requests.set(old.id,request);
+    assert.equal(settled(state,nav,previous,1501),false,JSON.stringify(override));
   }
-  state.requests.set("old",priorRsc);
-  const average={id:"api",url:"http://localhost/api/average?mode=pve&min=1094",type:"Fetch",method:"GET",status:200,finished:false};state.requests.set(average.id,average);
-  assert.equal(settled(state,previous,1501,"http://localhost"),false,"real delayed average cannot be omitted");average.finished=true;
-  assert.equal(settled(state,previous,1501,"http://localhost"),true);
+  const reused={...old,loaderId:"pve"};state.requests.set(old.id,reused);
+  assert.equal(settled(state,nav,previous,1501),false,"a new request with reused ID belongs to its new loader");
+  reused.finished=true;assert.equal(settled(state,nav,previous,1501),true);
+  const held={id:"held",url:"http://localhost/api/average?mode=pve&min=1094",frameId:"main",loaderId:"pve",status:200,finished:false};state.requests.set(held.id,held);
+  assert.equal(settled(state,nav,previous,1501),false,"the real held response must finish");held.finished=true;assert.equal(settled(state,nav,previous,1501),true);
+});
+
+test("new functional document requires both navigate identity and committed main-frame event", async () => {
+  const declaration=tree.statements.find(node=>ts.isFunctionDeclaration(node)&&node.name?.text==="captureFunctionalNavigation");assert.ok(declaration);
+  const capture=runInNewContext(declaration.getText(tree)+"\ncaptureFunctionalNavigation",{assert,Set});
+  let frame={id:"main",loaderId:"old"}, readyCalls=0;
+  const tab={state:{mainFrameLoaders:new Map([["main",new Set(["older","old"])]])},async send(method){assert.equal(method,"Page.getFrameTree");return{frameTree:{frame}};}};
+  const until=async check=>{assert.equal(await check(),false,"frame not committed yet");frame={id:"main",loaderId:"pve"};assert.equal(!!(await check()),false,"matching frame tree alone is insufficient");tab.state.mainFrameLoaders.get("main").add("pve");assert.equal(await check(),true);};
+  const value=await capture(tab,async path=>{assert.equal(path,"/population/pve");return{frameId:"main",loaderId:"pve"};},until,async()=>{readyCalls++;});
+  assert.equal(value.navigation.loaderId,"pve");assert.deepEqual([...value.previousLoaders].sort(),["old","older"]);assert.equal(readyCalls,1);
+  for(const invalid of [{frameId:"main"},{frameId:"main",loaderId:"old"},{frameId:"wrong",loaderId:"pve"}]) {
+    frame={id:"main",loaderId:"old"};await assert.rejects(capture(tab,async()=>invalid,until,async()=>{}));
+  }
+});
+
+test("each explicit functional navigation waits for its committed frame before readiness", async () => {
+  let declaration;function visit(node){if(ts.isFunctionDeclaration(node)&&node.name?.text==="navigate")declaration=node;ts.forEachChild(node,visit);}visit(tree);assert.ok(declaration);
+  let frame={id:"main",loaderId:"old"}, readyCalls=0, destination;
+  const tab={url:"http://localhost/population/pve",state:{mainFrameLoaders:new Map([["main",new Set(["old"])]])},async send(method,params){
+    if(method==="Page.navigate"){destination=params.url;return{frameId:"main",loaderId:"regular"};}
+    assert.equal(method,"Page.getFrameTree");return{frameTree:{frame}};
+  }};
+  const until=async check=>{assert.equal(await check(),false);frame={id:"main",loaderId:"regular"};assert.equal(!!(await check()),false);tab.state.mainFrameLoaders.get("main").add("regular");assert.equal(await check(),true);};
+  const navigate=runInNewContext(declaration.getText(tree)+"\nnavigate",{tab,until,ready:async()=>{readyCalls++;},assert,URL,backend:"next"});
+  const result=await navigate("/population/regular");assert.equal(destination,"http://localhost/population/regular");assert.equal(result.loaderId,"regular");assert.equal(readyCalls,1);
+});
+
+test("historic request errors still use strict functional HTTP and network checks", () => {
+  const declaration=tree.statements.find(node=>ts.isFunctionDeclaration(node)&&node.name?.text==="validateFunctionalRequests");assert.ok(declaration);
+  const validate=runInNewContext(declaration.getText(tree)+"\nvalidateFunctionalRequests",{assert,URL,blockedImage:"https://assets.tarkov.dev/fixture-missing.webp"});
+  const old={id:"historic",url:"http://localhost/api/average?mode=pve",status:500,finished:true};
+  assert.throws(()=>validate([old],"next"),/functional HTTP 500/);
+  assert.throws(()=>validate([{...old,status:null,error:"net::ERR_FAILED"}],"next"),/functional resource/);
+  const allowed={...old,url:"http://localhost/api/average?mode=pve&period=90d&statistic=trimmed_mean"};
+  validate([allowed],"next");assert.equal(allowed.expectedFailure,"private database schema failure/repaired");
+  assert.throws(()=>validate([{...allowed,url:"http://localhost/api/average?mode=regular&period=90d&statistic=trimmed_mean"}],"next"),/functional HTTP 500/);
 });
