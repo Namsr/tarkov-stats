@@ -1,4 +1,4 @@
-name: Operator Arena synthetic resource proof
+name: Operator Seasonal synthetic resource proof
 
 on:
   workflow_dispatch:
@@ -12,7 +12,7 @@ jobs:
     timeout-minutes: 40
     env:
       GH_REPO: ${{ github.repository }}
-      SOURCE_REVISION: 0a705c50ae9764d72d714c00e7027ebebadadf22
+      SOURCE_REVISION: 14490e2039a135e312a5d1b5f3d73f474887c3bc
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
@@ -21,10 +21,10 @@ jobs:
       - name: Verify source and evidence validator
         run: |
           set -euo pipefail
-          git diff --exit-code "$SOURCE_REVISION" -- app lib rust tests/fixtures scripts/benchmark-rust-cohort.mjs scripts/benchmark-worker-resources.mjs
+          git diff --exit-code "$SOURCE_REVISION" -- app/api/average/cohort/route.ts app/api/seasonal/cohort/route.ts tests/fixtures/rust-cohort-data.mjs tests/fixtures/rust-arena-seasonal-data.mjs tests/fixtures/next-cache-shim.mjs tests/fixtures/next-server-entry.mjs scripts/benchmark-rust-cohort.mjs scripts/benchmark-worker-resources.mjs
           test -z "$(git status --porcelain --untracked-files=all)"
-          node --test scripts/test-arena-resource-proof.mjs
-          bash -n scripts/benchmark-arena-resource-proof.sh
+          node --test scripts/test-seasonal-resource-proof.mjs
+          bash -n scripts/benchmark-seasonal-resource-proof.sh
       - name: Download and verify the pinned release archive
         timeout-minutes: 4
         env:
@@ -33,27 +33,27 @@ jobs:
           set -euo pipefail
           endpoint=$(timeout --signal=TERM --kill-after=5s 15s docker --context default context inspect default --format '{{(index .Endpoints "docker").Host}}')
           [[ $endpoint == unix://* ]] || { echo 'Remote Docker endpoint refused.' >&2; exit 2; }
-          mkdir -p "$RUNNER_TEMP/arena-image"
-          cd "$RUNNER_TEMP/arena-image"
+          mkdir -p "$RUNNER_TEMP/seasonal-image"
+          cd "$RUNNER_TEMP/seasonal-image"
           timeout --signal=TERM --kill-after=10s 120s gh release download "container-$SOURCE_REVISION" --pattern web.tar.gz --pattern web.tar.gz.sha256
           expected=$(awk '$2 == "web.tar.gz" { print $1 }' web.tar.gz.sha256)
-          [[ $expected == fd6848ec3753e626c8c9e6e5c5c569562e8f72a802a513a67be6dc069e7ce60a ]]
+          [[ $expected == 3a4342c382b49821e2d37aab634c3435595ce967e6b798134a485e8dcae97ebb ]]
           printf '%s  web.tar.gz\n' "$expected" | sha256sum --check
           timeout --signal=TERM --kill-after=10s 100s docker --context default load --input web.tar.gz
           echo "PROOF_ARCHIVE_SHA256=$expected" >> "$GITHUB_ENV"
-      - name: Compare Arena cohort workloads in four isolated containers
+      - name: Compare Seasonal cohort workloads in four isolated containers
         timeout-minutes: 35
-        run: bash scripts/benchmark-arena-resource-proof.sh "$RUNNER_TEMP/arena-resource-proof"
+        run: bash scripts/benchmark-seasonal-resource-proof.sh "$RUNNER_TEMP/seasonal-resource-proof"
       - name: Save observations and cleanup evidence
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: arena-resource-proof-${{ github.sha }}
+          name: seasonal-resource-proof-${{ github.sha }}
           path: |
-            ${{ runner.temp }}/arena-resource-proof/*.json
-            ${{ runner.temp }}/arena-resource-proof/*.log
-            ${{ runner.temp }}/arena-resource-proof/*.sha256
-            ${{ runner.temp }}/arena-resource-proof/*.patch
-            ${{ runner.temp }}/arena-resource-proof/summary.md
+            ${{ runner.temp }}/seasonal-resource-proof/*.json
+            ${{ runner.temp }}/seasonal-resource-proof/*.log
+            ${{ runner.temp }}/seasonal-resource-proof/*.sha256
+            ${{ runner.temp }}/seasonal-resource-proof/*.patch
+            ${{ runner.temp }}/seasonal-resource-proof/summary.md
           if-no-files-found: warn
           retention-days: 14
