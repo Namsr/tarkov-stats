@@ -49,10 +49,20 @@ fn hash(value: &str) -> bool {
             .all(|v| v.is_ascii_digit() || (b'a'..=b'f').contains(&v))
 }
 impl Ui {
+    pub(crate) fn package(&self, prefix: &str) -> String {
+        format!("{prefix}/{}", self.hash)
+    }
     pub fn start(service: ArenaService, config: &Config) -> Result<Self, String> {
         let root = PathBuf::from(
             std::env::var("RUST_UI_ASSETS").unwrap_or_else(|_| "public/_rust/arena".into()),
         );
+        Self::start_at(service, config, root)
+    }
+    pub(crate) fn start_at(
+        service: ArenaService,
+        config: &Config,
+        root: PathBuf,
+    ) -> Result<Self, String> {
         let manifest_file = std::fs::File::open(root.join("manifest.json"))
             .map_err(|e| format!("Rust UI asset manifest unavailable: {e}"))?;
         let mut encoded = Vec::new();
@@ -266,7 +276,7 @@ pub async fn page(State(ui): State<Ui>, request: Request<Body>) -> Response {
     );
     response
 }
-fn generated(headers: &HeaderMap) -> f64 {
+pub(crate) fn generated(headers: &HeaderMap) -> f64 {
     headers
         .get("x-statistics-generated-at")
         .or_else(|| headers.get("x-average-generated-at"))
@@ -275,7 +285,7 @@ fn generated(headers: &HeaderMap) -> f64 {
         .filter(|v| v.is_finite() && *v >= 0.0)
         .unwrap_or(0.0)
 }
-fn retry(headers: &HeaderMap) -> u64 {
+pub(crate) fn retry(headers: &HeaderMap) -> u64 {
     headers
         .get("retry-after")
         .and_then(|v| v.to_str().ok())
@@ -312,17 +322,7 @@ pub async fn alias(method: Method, uri: Uri) -> Response {
         "/population/arena{}",
         uri.query().map(|q| format!("?{q}")).unwrap_or_default()
     );
-    let body = if method == Method::HEAD {
-        Body::empty()
-    } else {
-        Body::from(location.clone())
-    };
-    let mut response = Response::new(body);
-    *response.status_mut() = StatusCode::PERMANENT_REDIRECT;
-    if let Ok(value) = HeaderValue::from_str(&location) {
-        response.headers_mut().insert("location", value);
-    }
-    response
+    crate::http::redirect(method, location)
 }
 #[cfg(test)]
 mod tests {

@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { registerHooks } from "node:module";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { extname, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { DatabaseSync } from "node:sqlite";
 import test from "node:test";
@@ -10,11 +10,12 @@ import test from "node:test";
 registerHooks({
   resolve(specifier, context, nextResolve) {
     if (specifier.startsWith("@/")) {
-      return { shortCircuit: true, url: pathToFileURL(resolve(`${specifier.slice(2)}.ts`)).href };
+      return { shortCircuit: true, url: pathToFileURL(resolve(`${specifier.slice(2)}${extname(specifier) ? "" : ".ts"}`)).href };
     }
     // The seasonal openers import their siblings without an extension, which the
-    // bundler resolves but the ESM resolver does not.
-    if (/^\.{1,2}\//.test(specifier) && !/\.[cm]?[jt]sx?$/.test(specifier)) {
+    // bundler resolves but the ESM resolver does not. Explicit extensions,
+    // including the shared JSON XP snapshot, retain the native resolver.
+    if (/^\.{1,2}\//.test(specifier) && !extname(specifier)) {
       return { shortCircuit: true, url: new URL(`${specifier}.ts`, context.parentURL).href };
     }
     return nextResolve(specifier, context);

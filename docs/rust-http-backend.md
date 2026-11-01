@@ -97,9 +97,10 @@ Representative data, mixed workload and user-facing latency remain rollout gates
 
 ## Coordinated activation and rollback
 
-These are future operator steps after the maintenance chat explicitly frees the
-VPS. No server action is part of this source change; the deployment timer remains
-disabled during and after maintenance unless the user changes that instruction.
+These operator steps honor the existing deployment/data locks and any running
+maintenance jobs. The user has ended coordination with the former maintenance
+chat and explicitly enabled autodeployment: keep the deployment timer enabled.
+A source change does not itself opt public traffic into native routing.
 
 1. Install/verify the new image with routing still at web:3000. Keep a known-good
    image with capability label `org.tarkovstats.rust-http=seasonal-v1` as rollback.

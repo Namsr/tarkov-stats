@@ -13,6 +13,9 @@ default = []
 ssr = ["dep:leptos", "leptos/ssr"]
 hydrate = ["dep:leptos", "leptos/hydrate", "dep:wasm-bindgen", "dep:wasm-bindgen-futures", "dep:web-sys", "dep:js-sys"]
 
+# Separate hydrate roots keep an unrelated page out of each shipped WASM.
+hydrate-persistent = ["hydrate"]
+
 [dependencies]
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["float_roundtrip"] }

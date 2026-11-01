@@ -9,12 +9,16 @@ import ts from "typescript";
 
 const source = await readFile(new URL("../scripts/benchmark-rust-arena-browser.mjs", import.meta.url), "utf8");
 const tree = ts.createSourceFile("benchmark.mjs", source, ts.ScriptTarget.Latest, true, ts.ScriptKind.JS);
-const names = ["requireRunning", "start", "stop", "cancel", "until", "browser", "page"];
-const functions = tree.statements.filter(statement => ts.isFunctionDeclaration(statement) && names.includes(statement.name?.text)).map(statement => statement.getText(tree)).join("\n");
-assert.equal(tree.statements.filter(statement => ts.isFunctionDeclaration(statement) && names.includes(statement.name?.text)).length, names.length);
+const engineSource=await readFile(new URL("../scripts/lib/benchmark-rust-ui-browser.mjs",import.meta.url),"utf8");
+const engineTree=ts.createSourceFile("engine.mjs",engineSource,ts.ScriptTarget.Latest,true,ts.ScriptKind.JS);
+const names=["requireRunning","start","stop","cancel","until","browser","page"];
+const declarations=[];
+function visit(node){if(ts.isFunctionDeclaration(node)&&names.includes(node.name?.text))declarations.push(node);ts.forEachChild(node,visit)}
+visit(engineTree);assert.equal(declarations.length,names.length);
+const functions=declarations.map(node=>node.getText(engineTree)).join("\n");
 function lifecycle(extra = {}) {
   const context = { assert, spawn, basename, setTimeout, clearTimeout, delay, cancelled: false, results: {},
-    owned: new Set(), profiles: new Set(), processLogs: [], process: { exitCode: 0 }, ...extra };
+    owned: new Set(), profiles: new Set(), processLogs: [], process: { exitCode: 0 }, options: {profilePrefix:"tarkov-arena-cdp-"}, ...extra };
   const api = runInNewContext(functions + "\n({start,stop,cancel,until,browser,page})", context);
   return { api, context };
 }
@@ -148,4 +152,39 @@ test("CDP evaluation keeps exception description and stack with a text-only fall
   await assert.rejects(tab.evaluate("expression"), /Execution failed/);
   exceptionDetails = null;
   assert.equal(await tab.evaluate("expression"), 42);
+});
+
+
+test("actual CDP collector preserves loader ownership for late and reused network IDs", async () => {
+  const listeners=new Map();
+  const cdp={on(_session,event,callback){listeners.set(event,callback);},async send(method){
+    if(method==="Target.createBrowserContext")return{browserContextId:"context"};
+    if(method==="Target.createTarget")return{targetId:"target"};
+    if(method==="Target.attachToTarget")return{sessionId:"session"};
+    if(method==="Network.setCookie")return{success:true};return{};
+  }};
+  const {api}=lifecycle({conditions:{viewport:{},cpuSlowdown:4,locale:"ru-RU",network:{}},instrumentation:""});
+  const tab=await api.page({cdp},"http://127.0.0.1/");
+  const emit=(event,value)=>listeners.get(event)(value);
+  emit("Page.frameNavigated",{frame:{id:"main",loaderId:"old"}});
+  emit("Page.frameNavigated",{frame:{id:"child",parentId:"main",loaderId:"child"}});
+  emit("Page.frameNavigated",{frame:{id:"main",loaderId:"pve"}});
+  assert.deepEqual([...tab.state.mainFrameLoaders.get("main")],["old","pve"]);assert.equal(tab.state.mainFrameLoaders.has("child"),false);
+  const request=(requestId,loaderId,frameId,documentURL)=>({requestId,loaderId,frameId,documentURL,type:"Fetch",request:{url:"http://127.0.0.1/api/average?mode=pve",method:"GET"}});
+  emit("Network.requestWillBeSent",request("late","old","main","http://127.0.0.1/population/regular"));
+  const late=tab.state.requests.get("late");assert.equal(late.loaderId,"old");assert.equal(late.frameId,"main");assert.equal(late.documentURL,"http://127.0.0.1/population/regular");assert.equal(late.finished,false);
+  const persistentSource=await readFile(new URL("../scripts/check-rust-persistent-browser.mjs",import.meta.url),"utf8");
+  const persistentTree=ts.createSourceFile("persistent.mjs",persistentSource,ts.ScriptTarget.Latest,true,ts.ScriptKind.JS);
+  const boundary=persistentTree.statements.find(node=>ts.isFunctionDeclaration(node)&&node.name?.text==="functionalNetworkSettled");assert.ok(boundary);
+  const settled=runInNewContext(boundary.getText(persistentTree)+"\nfunctionalNetworkSettled");
+  const navigation={frameId:"main",loaderId:"pve"}, previous=new Set(["old"]);
+  assert.equal(settled(tab.state,navigation,previous,tab.state.lastNetwork+501),true,"late event belongs to the old document");
+  emit("Network.requestWillBeSent",request("late","pve","main","http://127.0.0.1/population/pve"));
+  const current=tab.state.requests.get("late");assert.notEqual(current,late);assert.equal(current.loaderId,"pve");assert.equal(current.finished,false);
+  assert.equal(settled(tab.state,navigation,previous,tab.state.lastNetwork+501),false,"reused ID is a current pending request");
+  emit("Network.responseReceived",{requestId:"late",response:{status:500,mimeType:"application/json",headers:{}}});
+  emit("Network.loadingFinished",{requestId:"late",encodedDataLength:123});assert.equal(current.status,500);assert.equal(current.finished,true);
+  emit("Network.requestWillBeSent",request("worker","",undefined,""));
+  assert.equal(tab.state.requests.get("worker").loaderId,null);assert.equal(tab.state.requests.get("worker").frameId,null);
+  assert.equal(settled(tab.state,navigation,previous,tab.state.lastNetwork+501),false,"unknown worker identity remains blocking");
 });

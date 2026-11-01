@@ -85,8 +85,9 @@ is `rust/cohort-worker/target/release/tarkov-cohort-worker` relative to the
 current directory (`.exe` on Windows). Optional `RUST_COHORT_ARGS` is a JSON
 array of executable arguments for a compatible worker. Jobs have one active
 slot and at most eight admitted jobs including that active job. FIFO wait is
-included in the default 15-second deadline. `RUST_API_COMPUTE_TIMEOUT_MS` can
-shorten that budget; values above 15000 are clamped. The existing optional
+included in the default 15-second deadline; persistent population-average jobs
+retain their existing 30-second compute budget. `RUST_API_COMPUTE_TIMEOUT_MS`
+can shorten either budget, and cannot extend a job beyond its default. The existing optional
 `DYNAMIC_COMPUTE_TIMEOUT_MS` still bounds the cold cache wait separately.
 
 The worker is long-lived and runs at the existing low priority. Crashes,
@@ -100,3 +101,7 @@ Enable the proxy route only after mixed-load latency, errors and the existing
 web-container resource budget have been checked. The frontend URLs stay the
 same. Structured request/worker events include the selected backend, phases
 and allowlisted identity fields, never cookies or arbitrary query strings.
+
+
+Regular/PvE population API, progression, achievements and SSR/WASM configuration
+are documented in [the persistent UI migration](../../docs/rust-persistent-ui.md).

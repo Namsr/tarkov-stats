@@ -2,6 +2,9 @@ use crate::state::{FIELDS, Params, number};
 use serde_json::Value;
 
 pub fn matches(url: &str, body: &Value) -> bool {
+    if let Some(valid) = crate::persistent::data::matches(url, body) {
+        return valid;
+    }
     if body["mode"] != "arena"
         || body["schemaVersion"] != 5
         || !body["metrics"].is_object()
@@ -55,12 +58,15 @@ mod browser {
     use web_sys::{AbortController, RequestCache, RequestInit, Response};
 
     #[derive(Clone)]
-    struct Reply {
-        body: Value,
-        status: u16,
-        retry: u64,
-        stale: bool,
-        generated: f64,
+    pub(crate) struct Reply {
+        pub body: Value,
+        pub status: u16,
+        pub retry: u64,
+        pub stale: bool,
+        pub generated: f64,
+        // Arena has no scheduled publication age; Persistent consumes this independently of retry staleness.
+        #[cfg_attr(not(feature = "hydrate-persistent"), allow(dead_code))]
+        pub publication_stale: bool,
     }
     type Answer = Result<Reply, String>;
     type Listener = Box<dyn Fn(Answer)>;
@@ -80,13 +86,13 @@ mod browser {
         idle: Option<Timer>,
     }
     thread_local! { static CLIENT: RefCell<Client> = RefCell::new(Client::default()); }
-    struct Timer {
+    pub(crate) struct Timer {
         handle: i32,
         idle: bool,
         _callback: Closure<dyn FnMut()>,
     }
     impl Timer {
-        fn new(ms: u64, work: impl FnMut() + 'static) -> Option<Self> {
+        pub(crate) fn new(ms: u64, work: impl FnMut() + 'static) -> Option<Self> {
             let callback = Closure::wrap(Box::new(work) as Box<dyn FnMut()>);
             let handle = web_sys::window()?
                 .set_timeout_with_callback_and_timeout_and_arguments_0(
@@ -136,7 +142,7 @@ mod browser {
             }
         }
     }
-    fn remember(url: &str, reply: Reply) -> Reply {
+    pub(crate) fn remember(url: &str, reply: Reply) -> Reply {
         CLIENT.with(|client| {
             let mut client = client.borrow_mut();
             if let Some(index) = client.cache.iter().position(|(key, _)| key == url) {
@@ -202,6 +208,8 @@ mod browser {
             retry: raw.clamp(1.0, 15.0).ceil() as u64,
             stale: headers.get("x-statistics-stale").ok().flatten().as_deref() == Some("1"),
             generated,
+            publication_stale: headers.get("x-average-stale").ok().flatten().as_deref()
+                == Some("1"),
         })
     }
     fn launch(url: String, prefetch: bool, refresh: bool) {
@@ -325,13 +333,13 @@ mod browser {
     }
     struct WatchInner {
         url: String,
-        sink: Rc<dyn Fn(Result<Value, String>)>,
+        sink: Rc<dyn Fn(Result<Reply, String>)>,
         good: Cell<bool>,
         closed: Cell<bool>,
         timer: RefCell<Option<Timer>>,
         pending: RefCell<Option<Subscription>>,
     }
-    struct Watch(Rc<WatchInner>);
+    pub(crate) struct Watch(Rc<WatchInner>);
     impl WatchInner {
         fn schedule(this: &Rc<Self>, ms: u64) {
             let weak = Rc::downgrade(this);
@@ -360,7 +368,7 @@ mod browser {
                     if (200..300).contains(&reply.status) && matches(&this.url, &reply.body) =>
                 {
                     this.good.set(true);
-                    (this.sink)(Ok(reply.body));
+                    (this.sink)(Ok(reply.clone()));
                     Self::schedule(
                         this,
                         if reply.stale {
@@ -393,10 +401,19 @@ mod browser {
         }
     }
     impl Watch {
-        fn new(
+        pub(crate) fn new(
             url: String,
             initial: Option<Reply>,
             sink: impl Fn(Result<Value, String>) + 'static,
+        ) -> Self {
+            Self::with_reply(url, initial, move |answer| {
+                sink(answer.map(|reply| reply.body))
+            })
+        }
+        pub(crate) fn with_reply(
+            url: String,
+            initial: Option<Reply>,
+            sink: impl Fn(Result<Reply, String>) + 'static,
         ) -> Self {
             let inner = Rc::new(WatchInner {
                 url,
@@ -476,7 +493,7 @@ mod browser {
             }
         }
     }
-    fn cancel_prefetch() {
+    pub(crate) fn cancel_prefetch() {
         let aborted = CLIENT.with(|client| {
             let mut client = client.borrow_mut();
             client.queued.clear();
@@ -498,7 +515,7 @@ mod browser {
             controller.abort();
         }
     }
-    fn prefetch(urls: Vec<String>) {
+    pub(crate) fn prefetch(urls: Vec<String>) {
         if !permitted() {
             return;
         }
@@ -571,6 +588,7 @@ mod browser {
                         stale: initial.meta.context_stale,
                         retry: initial.meta.context_retry_after.clamp(1, 15),
                         generated: initial.meta.context_generated_at,
+                        publication_stale: false,
                     })
                 } else {
                     None
@@ -617,6 +635,7 @@ mod browser {
                             stale: initial.meta.selected_stale,
                             retry: initial.meta.selected_retry_after.clamp(1, 15),
                             generated: initial.meta.selected_generated_at,
+                            publication_stale: false,
                         })
                     } else {
                         None

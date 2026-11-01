@@ -1768,7 +1768,7 @@ test("report actions follow the current game mode while keeping a global mark", 
 });
 
 
-test("the runtime Arena rollout changes only population ingress to document navigation", async () => {
+test("runtime native UI rollouts independently change population ingress to document navigation", async () => {
   const require = createRequire(import.meta.url);
   const ts = require("typescript");
   const React = require("react");
@@ -1826,7 +1826,8 @@ test("the runtime Arena rollout changes only population ingress to document navi
     "@/lib/i18n/server": { resolveLang: async () => "en" },
     "@/lib/i18n/dictionary": { dict: {} },
   });
-  const previousEnv = process.env.ARENA_UI_UPSTREAM;
+  const flags = ["ARENA_UI_UPSTREAM", "PVE_UI_UPSTREAM", "REGULAR_UI_UPSTREAM"];
+  const previousEnv = Object.fromEntries(flags.map(flag => [flag, process.env[flag]]));
   const previousWindow = Object.getOwnPropertyDescriptor(globalThis, "window");
   const previousFetch = globalThis.fetch;
   Object.defineProperty(globalThis, "window", { configurable: true, value: {
@@ -1835,7 +1836,9 @@ test("the runtime Arena rollout changes only population ingress to document navi
   globalThis.fetch = async () => ({ ok: true });
   const click = (extra = {}) => ({ button: 0, metaKey: false, ctrlKey: false, shiftKey: false,
     altKey: false, defaultPrevented: false, preventDefault() { this.defaultPrevented = true; }, ...extra });
-  async function render(upstream, props = { current: "regular", page: "average" }, layout = true) {
+  async function render(upstream, props = { current: "regular", page: "average" }, layout = true, additional = {}) {
+    for (const flag of flags) delete process.env[flag];
+    Object.assign(process.env, additional);
     if (upstream === undefined) delete process.env.ARENA_UI_UPSTREAM;
     else process.env.ARENA_UI_UPSTREAM = upstream;
     native.length = 0; nextLinks.length = 0; before.length = 0; events.length = 0; warms.length = 0;
@@ -1888,8 +1891,33 @@ test("the runtime Arena rollout changes only population ingress to document navi
     assert.equal(history.at(-1), "back");
     assert.deepEqual(before, []);
     assert.deepEqual(events, []);
+    for (let mask = 0; mask < 8; mask++) {
+      const modes = ["arena", "pve", "regular"];
+      const selected = modes.filter((_, index) => mask & (1 << index));
+      const extra = Object.fromEntries(flags.slice(1).map((flag, index) => [flag, selected.includes(modes[index + 1]) ? "web:3001" : "web:3000"]));
+      await render(selected.includes("arena") ? "web:3001" : "web:3000", { current: "seasonal", page: "average" }, true, extra);
+      assert.deepEqual(native.map(link => link.href).sort(), selected.map(mode => `/population/${mode}`).sort());
+      assert.equal(nextLinks.length, 4 - selected.length);
+      assert.ok(nextLinks.some(link => link.href === "/population/pvp-season"), "Seasonal stays on Next");
+      for (const link of native) {
+        before.length = 0; events.length = 0; active.resetActiveLinkStateForTests();
+        const event = click(); link.onClick(event);
+        assert.equal(event.defaultPrevented, false);
+        assert.deepEqual(before, [link.href.split("/").at(-1)]);
+        assert.deepEqual(events, ["profile-mode-navigate"]);
+        assert.equal(link.prefetch, undefined);
+      }
+    }
+    for (const mode of ["pve", "regular"]) {
+      pathname = `/population/${mode}`;
+      await render("web:3000", { current: mode, page: "average" }, true, { [`${mode.toUpperCase()}_UI_UPSTREAM`]: "web:3001" });
+      assert.equal(native[0]["aria-current"], "page");
+      const event = click(); native[0].onClick(event);
+      assert.equal(event.defaultPrevented, true);
+      assert.deepEqual(before, []);
+    }
     pathname = "/player/pvp-season/42"; query = "radarDemo=1&cycle=old";
-    await render("web:3001", { current: "seasonal", page: "player", aid: 42, seasonalCycleId: "s1" });
+    await render("web:3001", { current: "seasonal", page: "player", aid: 42, seasonalCycleId: "s1" }, true, { PVE_UI_UPSTREAM: "web:3001", REGULAR_UI_UPSTREAM: "web:3001" });
     assert.equal(native.length, 0, "Arena profiles remain Next pages");
     assert.equal(nextLinks.find((link) => link.href.startsWith("/player/arena/")).href, "/player/arena/42");
     assert.equal(nextLinks.find((link) => link.href.startsWith("/player/regular/")).href, "/player/regular/42?radarDemo=1");
@@ -1900,7 +1928,7 @@ test("the runtime Arena rollout changes only population ingress to document navi
     const clientSources = await Promise.all(["lib/native-routes-context.tsx", "components/ProfileModeSwitch.tsx"].map((file) => readFile(file, "utf8")));
     assert.ok(clientSources.every((source) => !source.includes("process.env")));
   } finally {
-    if (previousEnv === undefined) delete process.env.ARENA_UI_UPSTREAM; else process.env.ARENA_UI_UPSTREAM = previousEnv;
+    for (const [flag, value] of Object.entries(previousEnv)) { if (value === undefined) delete process.env[flag]; else process.env[flag] = value; }
     if (previousWindow) Object.defineProperty(globalThis, "window", previousWindow); else delete globalThis.window;
     globalThis.fetch = previousFetch;
   }

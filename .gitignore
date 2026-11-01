@@ -144,3 +144,5 @@ next-env.d.ts
 /public/_rust/
 
 !/docs/rust-arena-ui.md
+
+!/docs/rust-persistent-ui.md

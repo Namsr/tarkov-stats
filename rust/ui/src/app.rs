@@ -1,6 +1,9 @@
-use crate::{data::ArenaInitial, i18n::Lang, shell::SiteShell, view::ArenaDashboard};
+#[cfg(any(feature = "ssr", not(feature = "hydrate-persistent")))]
+use crate::{data::ArenaInitial, view::ArenaDashboard};
+use crate::{i18n::Lang, shell::SiteShell};
 use leptos::prelude::*;
 
+#[cfg(any(feature = "ssr", not(feature = "hydrate-persistent")))]
 #[island]
 pub fn ArenaApp(initial: ArenaInitial, lang: Lang) -> impl IntoView {
     let language = RwSignal::new(lang);
@@ -9,6 +12,28 @@ pub fn ArenaApp(initial: ArenaInitial, lang: Lang) -> impl IntoView {
 
 #[cfg(feature = "ssr")]
 pub fn document(initial: ArenaInitial, lang: Lang, package: String) -> impl IntoView {
+    full_document(view! {<ArenaApp initial lang/>}, lang, package)
+}
+
+#[cfg(any(feature = "ssr", feature = "hydrate-persistent"))]
+#[island]
+pub fn PersistentApp(
+    initial: crate::persistent::data::PersistentInitial,
+    lang: Lang,
+) -> impl IntoView {
+    let language = RwSignal::new(lang);
+    view! {<SiteShell lang=language><crate::persistent::view::PersistentDashboard initial lang=language/></SiteShell>}
+}
+#[cfg(feature = "ssr")]
+pub fn persistent_document(
+    initial: crate::persistent::data::PersistentInitial,
+    lang: Lang,
+    package: String,
+) -> impl IntoView {
+    full_document(view! {<PersistentApp initial lang/>}, lang, package)
+}
+#[cfg(feature = "ssr")]
+fn full_document(child: impl IntoView, lang: Lang, package: String) -> impl IntoView {
     let options = LeptosOptions::builder()
         .output_name("tarkov_ui")
         .site_pkg_dir(package.clone())
@@ -26,7 +51,7 @@ pub fn document(initial: ArenaInitial, lang: Lang, package: String) -> impl Into
                 <HydrationScripts options islands=true/>
             </head>
             <body class="min-h-full flex flex-col bg-[var(--background)] text-[var(--foreground)]">
-                <ArenaApp initial lang/>
+                {child}
             </body>
         </html>
     }
