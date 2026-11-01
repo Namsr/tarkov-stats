@@ -423,6 +423,27 @@ if (!isMainThread && workerData?.mode === "submit") {
     assert.equal(db.prepare("SELECT COUNT(*) AS n FROM axis_match_submissions WHERE match_number=?").get(match.number).n, 0);
   });
 
+  test("capture and OCR retries do not reread image BLOBs already retained as evidence", t => {
+    const db = new DatabaseSync(":memory:");
+    t.after(() => db.close());
+    const queries = [];
+    const store = createAxisLeagueStore({ exec: sql => db.exec(sql), prepare: sql => { queries.push(String(sql)); return db.prepare(sql); } });
+    const match = makeMatch();
+    store.publishArchive({ page: 1, pages: 1, total: 1, matches: [match] });
+    const actor = { sub: "discord_1", name: null, source: "discord" };
+    store.captureAxisMatchPhoto(match.number, photo("a"), actor);
+    queries.length = 0;
+    store.captureAxisMatchPhoto(match.number, photo("b"), actor);
+    store.captureAxisMatchPhoto(match.number, photo("a"), actor);
+    submitInStore(store, match, "a", changesFor(allPlayers(match).slice(0, 5)));
+    submitInStore(store, match, "a", changesFor(allPlayers(match).slice(0, 5)));
+    const imageReads = queries.filter(sql => /^SELECT[\s\S]*\bdata\b[\s\S]*FROM axis_match_(?:photos|submissions)/i.test(sql));
+    assert.deepEqual(imageReads, [], "metadata and deduplication must not materialize archived image bytes");
+    assert.equal(store.readMatchPhotoMetadata(match.number).revision, photo("b").revision);
+    assert.equal(store.readMatchKda(match.number).size, 5);
+    assert.equal(store.readAxisMatchSubmissionPhoto(match.number, photo("a").revision).data.length, 3);
+  });
+
   test("review metadata selects do not pull private image BLOBs", () => {
     const db = new DatabaseSync(":memory:");
     db.exec("PRAGMA busy_timeout=5000");

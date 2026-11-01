@@ -59,6 +59,7 @@ export function createAxisLeagueStore(db: SqliteDatabase) {
       round_conflict TEXT,
       google_sub TEXT NOT NULL,
       uploaded_at INTEGER NOT NULL,
+      processing_status TEXT NOT NULL DEFAULT 'processed' CHECK(processing_status IN ('captured','processed')),
       PRIMARY KEY(match_number, photo_revision)
     );
     CREATE INDEX IF NOT EXISTS axis_match_submissions_time ON axis_match_submissions(uploaded_at DESC,match_number);
@@ -123,7 +124,9 @@ export function createAxisLeagueStore(db: SqliteDatabase) {
   if (!db.prepare("PRAGMA table_info(axis_match_submissions)").all().some((column: { name: string }) => column.name === "processing_status")) {
     withImmediateTransaction(() => {
       if (!db.prepare("PRAGMA table_info(axis_match_submissions)").all().some((column: { name: string }) => column.name === "processing_status")) {
-        db.exec("ALTER TABLE axis_match_submissions ADD COLUMN processing_status TEXT NOT NULL DEFAULT 'processed' CHECK(processing_status IN ('captured','processed'))");
+        // A CHECK on ADD COLUMN scans existing image rows. This internal state
+        // has only literal writes; use a metadata-only migration for old stores.
+        db.exec("ALTER TABLE axis_match_submissions ADD COLUMN processing_status TEXT NOT NULL DEFAULT 'processed'");
       }
     });
   }
@@ -705,8 +708,11 @@ export function createAxisLeagueStore(db: SqliteDatabase) {
         if (rosterFingerprint !== undefined && axisMatchRosterFingerprintForMatch(match) !== rosterFingerprint) throw new AxisKdaConflict("Match roster changed while the screenshot was being captured");
         const prior = db.prepare("SELECT 1 FROM axis_match_submissions WHERE match_number=? AND photo_revision=?").get(matchNumber, photo.revision);
         if (!prior) {
-          const previous = db.prepare("SELECT revision,width,height,data FROM axis_match_photos WHERE match_number=?").get(matchNumber);
-          if (previous && previous.revision !== photo.revision) {
+          const previousRevision = db.prepare("SELECT revision FROM axis_match_photos WHERE match_number=?").get(matchNumber)?.revision;
+          const needsArchive = previousRevision && previousRevision !== photo.revision
+            && !db.prepare("SELECT 1 FROM axis_match_submissions WHERE match_number=? AND photo_revision=?").get(matchNumber, previousRevision);
+          const previous = needsArchive ? db.prepare("SELECT revision,width,height,data FROM axis_match_photos WHERE match_number=?").get(matchNumber) : null;
+          if (previous) {
             db.prepare(`INSERT OR IGNORE INTO axis_match_submissions(match_number,photo_revision,width,height,data,recognized_names,unmatched_names,missing_discord_ids,conflicts,round_conflict,google_sub,uploaded_at)
               VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`).run(matchNumber, previous.revision, previous.width, previous.height, previous.data,
               JSON.stringify([]), JSON.stringify([]), JSON.stringify([]), JSON.stringify([]), null, "legacy", 0);
@@ -786,11 +792,13 @@ export function createAxisLeagueStore(db: SqliteDatabase) {
             statsChanged = true;
           } else if (!sameAxisRoundScore(existing, rounds.score)) roundConflict = { existing, incoming: rounds.score };
         }
-        const primaryPhoto = db.prepare("SELECT revision,width,height,data FROM axis_match_photos WHERE match_number=?").get(matchNumber);
+        const primaryRevision = db.prepare("SELECT revision FROM axis_match_photos WHERE match_number=?").get(matchNumber)?.revision;
         // Processing an older captured image must not replace a newer upload or
         // undo a moderator removing its preview while recognition was pending.
-        const replacePrimary = !duplicate && (prior?.processing_status !== "captured" || primaryPhoto?.revision === photo.revision);
-        const previousPhoto = replacePrimary && primaryPhoto;
+        const replacePrimary = !duplicate && (prior?.processing_status !== "captured" || primaryRevision === photo.revision);
+        const needsArchive = replacePrimary && primaryRevision && primaryRevision !== photo.revision
+          && !db.prepare("SELECT 1 FROM axis_match_submissions WHERE match_number=? AND photo_revision=?").get(matchNumber, primaryRevision);
+        const previousPhoto = needsArchive ? db.prepare("SELECT revision,width,height,data FROM axis_match_photos WHERE match_number=?").get(matchNumber) : null;
         // Older photos predate axis_match_submissions. Keep their bytes as
         // reviewable evidence before replacing the primary photo.
         if (previousPhoto && previousPhoto.revision !== photo.revision) {
