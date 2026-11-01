@@ -10,12 +10,13 @@ const mock = source => ({ shortCircuit: true, url: "data:text/javascript," + enc
 registerHooks({ resolve(specifier, context, nextResolve) {
   if (specifier === "@/lib/admin/mutation") return mock("export const ADMIN_NO_STORE_HEADERS = { 'Cache-Control': 'no-store' };");
   if (specifier === "@/lib/admin/axis-league-db") return mock("export async function getAxisLeagueStore() { return globalThis.axisStore; }");
-  if (specifier === "@/lib/server-axis-ocr") return mock("export async function captureAxisPhotoUpload() { globalThis.axisCaptureCalls++; return { revision: globalThis.axisPhotoRevision.repeat(64), width: 1, height: 1, data: new Uint8Array([1]) }; } export async function recognizeAxisPhotoUpload() { globalThis.axisOcrCalls++; if (globalThis.axisOcrFailure) throw new Error('ocr unavailable'); if (globalThis.axisOcrGate) await globalThis.axisOcrGate; return { photo: { revision: globalThis.axisPhotoRevision.repeat(64), width: 1, height: 1, data: new Uint8Array([1]) }, result: globalThis.axisOcrResult }; } export class AxisOcrBusyError extends Error {}");
+  if (specifier === "@/lib/server-axis-ocr") return mock("export async function captureAxisPhotoUpload() { globalThis.axisCaptureCalls++; if (globalThis.axisCaptureFailure) throw globalThis.axisCaptureFailure; return { revision: globalThis.axisPhotoRevision.repeat(64), width: 1, height: 1, data: new Uint8Array([1]) }; } export async function recognizeAxisPhotoUpload() { globalThis.axisOcrCalls++; if (globalThis.axisOcrFailure) throw new Error('ocr unavailable'); if (globalThis.axisOcrGate) await globalThis.axisOcrGate; return { photo: { revision: globalThis.axisPhotoRevision.repeat(64), width: 1, height: 1, data: new Uint8Array([1]) }, result: globalThis.axisOcrResult }; } export class AxisOcrBusyError extends Error {}");
   if (specifier === "@/lib/arena/service") return mock("export async function getArenaProfile(aid) { return globalThis.axisProfiles.get(aid) ?? null; }");
   if (specifier.startsWith("@/")) return { shortCircuit: true, url: pathToFileURL(resolve(specifier.slice(2) + ".ts")).href };
   return nextResolve(specifier, context);
 } });
 
+const { AxisNotScoreboardError } = await import("../lib/axis-match-photo.ts");
 const { POST } = await import("../app/api/integrations/discord/axis-submission/route.ts");
 
 const SECRET = "S".repeat(40);
@@ -88,6 +89,7 @@ function setup(t) {
   globalThis.axisOcrFailure = false;
   globalThis.axisOcrCalls = 0;
   globalThis.axisCaptureCalls = 0;
+  globalThis.axisCaptureFailure = null;
   globalThis.axisProfiles = new Map();
   globalThis.axisPhotoRevision = "a";
   globalThis.axisOcrResult = {
@@ -320,4 +322,26 @@ test("capture and OCR have separate bounded per-author admission", async t => {
   for (let i = 0; i < 6; i++) assert.equal((await POST(request(payload({ captureOnly: true, authorId })))).status, 200);
   assert.equal((await POST(request(payload({ captureOnly: true, authorId })))).status, 429);
   assert.equal((await POST(request(payload({ authorId })))).status, 200, "capture must not consume the recognition admission budget");
+});
+
+
+test("non-scoreboard capture returns a distinct rejection without changing the saved match photo", async t => {
+  const db = setup(t);
+  const authorId = "500000000000000033";
+  globalThis.axisCaptureFailure = new AxisNotScoreboardError();
+  const rejected = await POST(request(payload({ captureOnly: true, authorId })));
+  assert.equal(rejected.status, 422);
+  assert.deepEqual(await rejected.json(), { error: "not_scoreboard" });
+  assert.equal(globalThis.axisStore.readMatchPhotoMetadata(77), null);
+  assert.equal(db.prepare("SELECT COUNT(*) AS n FROM axis_match_submissions").get().n, 0);
+  assert.equal(globalThis.axisOcrCalls, 0);
+  assert.equal(globalThis.axisStore.readMatchKda(77).size, 0);
+
+  globalThis.axisCaptureFailure = null;
+  assert.equal((await POST(request(payload({ captureOnly: true, authorId })))).status, 200);
+  globalThis.axisPhotoRevision = "b";
+  globalThis.axisCaptureFailure = new AxisNotScoreboardError();
+  assert.equal((await POST(request(payload({ captureOnly: true, authorId })))).status, 422);
+  assert.equal(globalThis.axisStore.readMatchPhotoMetadata(77).revision, "a".repeat(64));
+  assert.equal(db.prepare("SELECT COUNT(*) AS n FROM axis_match_submissions").get().n, 1);
 });

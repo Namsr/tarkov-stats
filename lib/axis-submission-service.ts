@@ -3,7 +3,7 @@ import { AxisKdaConflict } from "@/lib/axis-kda";
 import { axisOcrConfidencePercent, parseAxisOcrCounter } from "@/lib/axis-ocr";
 import { axisOcrContextForMatch, axisOcrRosterFingerprint, axisOcrStatsPlayerIds, validateAxisOcrNames, AxisOcrMatchMismatchError } from "@/lib/axis-server-match-validation";
 import { AxisOcrBusyError, captureAxisPhotoUpload, recognizeAxisPhotoUpload } from "@/lib/server-axis-ocr";
-import { AxisPhotoInputError } from "@/lib/axis-match-photo";
+import { AxisNotScoreboardError, AxisPhotoInputError } from "@/lib/axis-match-photo";
 import { parseAxisOcrNameRows, recheckAxisMatchReviewNames } from "@/lib/axis-match-submission";
 
 export interface AxisSubmissionActor {
@@ -189,6 +189,7 @@ export async function submitAxisScreenshot(request: AxisSubmissionRequest): Prom
 export function axisSubmissionStatus(error: unknown): number {
   if (error instanceof AxisSubmissionAuthorizationError) return error.status;
   if (error instanceof AxisPhotoInputError) return error.status;
+  if (error instanceof AxisNotScoreboardError) return 422;
   if (error instanceof AxisKdaConflict) return 409;
   if (error instanceof AxisSubmissionMatchNotFoundError) return 404;
   if (error instanceof AxisOcrMatchMismatchError || isAxisSubmissionError(error, /scoreboard|names do not match/i)) return 422;

@@ -8,6 +8,10 @@ export interface AxisPhotoUpload { expected: string | null; data: string | null 
 export interface AxisPhotoChange { expected: string | null; photo: AxisStoredPhoto | null }
 export interface AxisStoredPhoto extends AxisMatchPhoto { data: Uint8Array }
 
+export class AxisNotScoreboardError extends Error {
+  constructor() { super("Image does not contain a results scoreboard"); }
+}
+
 export class AxisPhotoInputError extends Error {
   readonly status: 400 | 413;
   constructor(status: 400 | 413 = 400) { super("Invalid match photo"); this.status = status; }

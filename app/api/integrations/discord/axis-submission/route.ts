@@ -1,3 +1,4 @@
+import { AxisNotScoreboardError } from "@/lib/axis-match-photo";
 import { ADMIN_NO_STORE_HEADERS } from "@/lib/admin/mutation";
 import { readAxisPhotoBody } from "@/lib/axis-photo-upload";
 import { axisSubmissionStatus, captureAxisScreenshot, submitAxisScreenshot } from "@/lib/axis-submission-service";
@@ -124,6 +125,6 @@ export async function POST(request: Request) {
     }, { headers: ADMIN_NO_STORE_HEADERS });
   } catch (error) {
     const status = axisSubmissionStatus(error);
-    return Response.json({ error: errorName(status) }, { status, headers: ADMIN_NO_STORE_HEADERS });
+    return Response.json({ error: error instanceof AxisNotScoreboardError ? "not_scoreboard" : errorName(status) }, { status, headers: ADMIN_NO_STORE_HEADERS });
   }
 }
