@@ -53,7 +53,7 @@ function alive(pid) { try { process.kill(pid, 0); return true; } catch (error) {
 const averageKey = (extra = {}) => { const v = { ...BASE, period: "all", min: null, max: null, ...extra }; return JSON.stringify([v.mode, v.dimension, v.metric, Number(v.maxBins), v.statistic, v.period, v.min, v.max, true]); };
 const metricsKey = (mode = "pve", statistic = "median", period = "all") => JSON.stringify(["metric-series-v1", mode, "persistent", statistic, period]);
 
-test("native persistent HTTP preserves actual TS average/metric routes, publications, caches, admission and failures", { timeout: 240000 }, async t => {
+test("native persistent HTTP preserves actual TS average/metric routes, publications, caches, admission and failures", { timeout: 300000 }, async t => {
   assert.ok(existsSync(rustBackendBinary())); assert.ok(existsSync(rustCohortBinary()));
   const fixture = await createPopulationFixture("rust-persistent-http-");
   for (const mode of ["regular", "pve", "arena"]) fixture.seed(syntheticPopulationRows(121, { mode }), mode);
@@ -258,55 +258,54 @@ test("native persistent HTTP preserves actual TS average/metric routes, publicat
       assert.ok(head.headers.get("content-security-policy")); assert.equal(head.headers.get("x-content-type-options"), "nosniff");
     }
   });
-});
 
-test("PvE browser schema fault leaves Regular HTTP and unrelated data intact", { timeout:60000 }, async t => {
-  const fixture = await createPopulationFixture("rust-persistent-isolation-");
-  for (const mode of ["regular", "pve", "arena"]) fixture.seed(syntheticPopulationRows(121, { mode }), mode);
-  const env = { NODE_ENV:"test", LOCAL_FAKE_AVERAGE:"0", AVERAGE_PUBLICATIONS_ENABLED:"false",
-    ADMIN_ANALYTICS_SQLITE_PATH:fixture.directory, TRUSTED_IP_HEADER:TRUSTED, OBSERVABILITY_SAMPLE_RATE:"0",
-    DYNAMIC_COMPUTE_TIMEOUT_MS:"25000", RUST_COHORT_BIN:rustCohortBinary(),
-    REGULAR_COHORT_BACKEND:"typescript", PVE_COHORT_BACKEND:"typescript", ARENA_COHORT_BACKEND:"typescript" };
-  const instances = [];
-  t.after(async () => { for (const instance of instances) await instance.stop(); await fixture.close(); });
-  const actual = await startRustBackend({ ...env, AVERAGE_PUBLICATION_SQLITE_PATH:join(fixture.directory, "rust-statistics.db") }); instances.push(actual);
-  const expected = await reference({ ...env, AVERAGE_PUBLICATION_SQLITE_PATH:join(fixture.directory, "ts-statistics.db") }); instances.push(expected);
-  const read = async (server, q, path) => {
-    const response = await fetch(server.base + path + "?" + q, { headers:{ [TRUSTED]:"fixture-" + ++requests }, signal:AbortSignal.timeout(35000) });
-    const text = await response.text();
-    let body;
-    try { body = JSON.parse(text); } catch { throw new Error(path + "?" + q + ": HTTP " + response.status + " invalid JSON " + JSON.stringify(text) + "; logs: " + server.logs()); }
-    return { status:response.status, headers:response.headers, body };
-  };
-  const compare = async (q, path = "/api/average") => {
-    const wanted = await read(expected, q, path), got = await read(actual, q, path);
-    parity(got, wanted, path + "?" + q); return got;
-  };
-  const browserQuery = (mode, period) => new URLSearchParams({ mode, dimension:"hours", metric:"players", statistic:"trimmed_mean", period }).toString();
-  const pve = browserQuery("pve", "90d");
-  const regular = browserQuery("regular", "90d");
-  const data = () => ({
-    regular: fixture.db.prepare("SELECT * FROM players ORDER BY aid").all(),
-    modes: fixture.db.prepare("SELECT * FROM mode_players ORDER BY mode,aid").all().map(row => {
-      const { fixture_missing_kd, ...fields } = row;
-      return fixture_missing_kd === undefined ? fields : { ...fields, kd_ratio:fixture_missing_kd };
-    }),
-  });
-  // The browser fixture warms the real stores before injecting the fault.
-  // Use distinct periods so the 90d failure requests remain uncached.
-  assert.equal((await compare(browserQuery("pve", "all"))).status, 200);
-  assert.equal((await compare("mode=pve&statistic=trimmed_mean&period=all", "/api/average/metrics")).status, 200);
-  const before = data();
-  persistentFixtureControl(fixture, { action:"break-primary" });
-  try {
+  // Reuse the live fixture: lib/db.ts owns one memoized SQLite handle per process.
+  await t.test("PvE browser schema fault leaves Regular HTTP and unrelated data intact", { timeout:60000 }, async t => {
+    const env = { NODE_ENV:"test", LOCAL_FAKE_AVERAGE:"0", AVERAGE_PUBLICATIONS_ENABLED:"false",
+      ADMIN_ANALYTICS_SQLITE_PATH:fixture.directory, TRUSTED_IP_HEADER:TRUSTED, OBSERVABILITY_SAMPLE_RATE:"0",
+      DYNAMIC_COMPUTE_TIMEOUT_MS:"25000", RUST_COHORT_BIN:rustCohortBinary(),
+      REGULAR_COHORT_BACKEND:"typescript", PVE_COHORT_BACKEND:"typescript", ARENA_COHORT_BACKEND:"typescript" };
+    const instances = [];
+    t.after(async () => { for (const instance of instances) await instance.stop(); });
+    const actual = await startRustBackend({ ...env, AVERAGE_PUBLICATION_SQLITE_PATH:join(fixture.directory, "rust-statistics.db") }); instances.push(actual);
+    const expected = await reference({ ...env, AVERAGE_PUBLICATION_SQLITE_PATH:join(fixture.directory, "ts-statistics.db") }); instances.push(expected);
+    const read = async (server, q, path) => {
+      const response = await fetch(server.base + path + "?" + q, { headers:{ [TRUSTED]:"fixture-" + ++requests }, signal:AbortSignal.timeout(35000) });
+      const text = await response.text();
+      let body;
+      try { body = JSON.parse(text); } catch { throw new Error(path + "?" + q + ": HTTP " + response.status + " invalid JSON " + JSON.stringify(text) + "; logs: " + server.logs()); }
+      return { status:response.status, headers:response.headers, body };
+    };
+    const compare = async (q, path = "/api/average") => {
+      const wanted = await read(expected, q, path), got = await read(actual, q, path);
+      parity(got, wanted, path + "?" + q); return got;
+    };
+    const browserQuery = (mode, period) => new URLSearchParams({ mode, dimension:"hours", metric:"players", statistic:"trimmed_mean", period }).toString();
+    const pve = browserQuery("pve", "90d");
+    const regular = browserQuery("regular", "90d");
+    const data = () => ({
+      regular: fixture.db.prepare("SELECT * FROM players ORDER BY aid").all(),
+      modes: fixture.db.prepare("SELECT * FROM mode_players ORDER BY mode,aid").all().map(row => {
+        const { fixture_missing_kd, ...fields } = row;
+        return fixture_missing_kd === undefined ? fields : { ...fields, kd_ratio:fixture_missing_kd };
+      }),
+    });
+    // The browser fixture warms the real stores before injecting the fault.
+    // Use distinct periods so the 90d failure requests remain uncached.
+    assert.equal((await compare(browserQuery("pve", "all"))).status, 200);
+    assert.equal((await compare("mode=pve&statistic=trimmed_mean&period=all", "/api/average/metrics")).status, 200);
+    const before = data();
+    persistentFixtureControl(fixture, { action:"break-primary" });
+    try {
+      assert.deepEqual(data(), before);
+      const failed = await compare(pve);
+      assert.equal(failed.status, 500, JSON.stringify({ body:failed.body, ts:expected.logs(), rust:actual.logs() }));
+      assert.equal((await compare("mode=pve&statistic=trimmed_mean&period=90d", "/api/average/metrics")).status, 500);
+      const regularResponse = await compare(regular);
+      assert.equal(regularResponse.status, 200); assert.ok(regularResponse.body.averages.n > 0);
+    } finally { persistentFixtureControl(fixture, { action:"repair-primary" }); }
     assert.deepEqual(data(), before);
-    const failed = await compare(pve);
-    assert.equal(failed.status, 500, JSON.stringify({ body:failed.body, ts:expected.logs(), rust:actual.logs() }));
-    assert.equal((await compare("mode=pve&statistic=trimmed_mean&period=90d", "/api/average/metrics")).status, 500);
-    const regularResponse = await compare(regular);
-    assert.equal(regularResponse.status, 200); assert.ok(regularResponse.body.averages.n > 0);
-  } finally { persistentFixtureControl(fixture, { action:"repair-primary" }); }
-  assert.deepEqual(data(), before);
-  const recovered = await compare(pve);
-  assert.equal(recovered.status, 200); assert.ok(recovered.body.averages.n > 0);
+    const recovered = await compare(pve);
+    assert.equal(recovered.status, 200); assert.ok(recovered.body.averages.n > 0);
+  });
 });
