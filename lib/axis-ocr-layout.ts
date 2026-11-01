@@ -139,7 +139,7 @@ function cropHasImageContent(
  * 1584px scoreboard layout. Divider continuity separates the table header
  * from other horizontal rules even when the screenshot has arbitrary margins.
  */
-export function detectAxisScoreboard(image: AxisOcrRgbaImage): AxisOcrCrop | null {
+function findAxisScoreboard(image: AxisOcrRgbaImage, minimumDivider: number, requireRows = false): AxisOcrCrop | null {
   const { width, height, data } = image;
   if (!validDimensions(width, height) || data.length !== width * height * 4) return null;
 
@@ -151,7 +151,7 @@ export function detectAxisScoreboard(image: AxisOcrRgbaImage): AxisOcrCrop | nul
     if (y + 353 * scale > height + 2) continue;
     const dividerX = Math.round(rule.x + rule.width / 2);
     const divider = centerDividerCoverage(data, width, height, dividerX, y, scale);
-    if (divider < 0.5) continue;
+    if (divider < minimumDivider) continue;
 
     let pairedRuleWidth = 0;
     const expectedBottomRule = y + 32 * scale;
@@ -163,7 +163,9 @@ export function detectAxisScoreboard(image: AxisOcrRgbaImage): AxisOcrCrop | nul
       }
     }
     const score = divider + 0.16 * Math.min(1, pairedRuleWidth / rule.width) + 0.08 * rule.width / width;
-    if (!best || score > best.score + 0.0001) best = { ...rule, ruleY: y, score };
+    if (best && score <= best.score + 0.0001) continue;
+    if (requireRows && !hasScoreboardRows(image, rule.x, y, scale)) continue;
+    best = { ...rule, ruleY: y, score };
   }
   if (!best) return null;
 
@@ -174,6 +176,32 @@ export function detectAxisScoreboard(image: AxisOcrRgbaImage): AxisOcrCrop | nul
   return crop.height > 0 && cropHasImageContent(data, width, height, crop) ? crop : null;
 }
 
+/** Require repeated text-like contrast on both teams, without recognizing it. */
+function hasScoreboardRows(image: AxisOcrRgbaImage, left: number, ruleY: number, scale: number): boolean {
+  // Sample at a fixed layout-relative stride; full pixel scans for every
+  // candidate rule can block the event loop on large uniform gray panels.
+  const step = Math.max(1, Math.round(3 * scale));
+  for (const sideX of [104, 896]) {
+    let visibleRows = 0;
+    for (const centerY of [243, 303, 363, 423, 483]) {
+      let bright = 0, dark = 0, total = 0;
+      const bottom = Math.min(image.height, Math.ceil(ruleY + (centerY - 140) * scale));
+      const right = Math.min(image.width, Math.ceil(left + (sideX + 660) * scale));
+      for (let y = Math.max(0, Math.floor(ruleY + (centerY - 180) * scale)); y < bottom; y += step) {
+        for (let x = Math.max(0, Math.floor(left + sideX * scale)); x < right; x += step) {
+          const luma = pixelLuma(image.data, (y * image.width + x) * 4);
+          total++;
+          if (luma > 112) bright++;
+          if (luma < 38) dark++;
+        }
+      }
+      if (total && bright / total >= 0.005 && dark / total >= 0.2) visibleRows++;
+    }
+    if (visibleRows < 3) return false;
+  }
+  return true;
+}
+
 function scaledRegion(crop: AxisOcrCrop, scale: number, x: number, y: number, width: number, height: number): AxisOcrCrop {
   const cropLeft = Math.floor(crop.x), cropTop = Math.floor(crop.y);
   const cropRight = Math.ceil(crop.x + crop.width), cropBottom = Math.ceil(crop.y + crop.height);
@@ -182,6 +210,16 @@ function scaledRegion(crop: AxisOcrCrop, scale: number, x: number, y: number, wi
   const right = Math.min(cropRight, Math.ceil(crop.x + (x + width) * scale));
   const bottom = Math.min(cropBottom, Math.ceil(crop.y + (y + height) * scale));
   return { x: left, y: top, width: Math.max(1, right - left), height: Math.max(1, bottom - top) };
+}
+
+/** Strict crop detection for automatic OCR. */
+export function detectAxisScoreboard(image: AxisOcrRgbaImage): AxisOcrCrop | null {
+  return findAxisScoreboard(image, 0.5);
+}
+
+/** Keep faint/partly obscured table candidates for manual review as well. */
+export function isAxisScoreboardCandidate(image: AxisOcrRgbaImage): boolean {
+  return findAxisScoreboard(image, 0.2, true) !== null;
 }
 
 /** Returns absolute regions inside a detected scoreboard crop. */
