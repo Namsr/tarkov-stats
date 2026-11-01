@@ -8,20 +8,25 @@ export async function loadAxisHistory(page: number, defer?: (task: () => Promise
 
 const pendingArchives = new WeakMap<AxisLeagueStore, Promise<void>>();
 const ARCHIVE_TIMEOUT_MS = 12_000;
-// NeatQueue sometimes stalls or drops the connection mid-body from the VPS. A
-// stall surfaces as a TimeoutError once the signal fires; a reset surfaces as
-// `TypeError: terminated` with a socket error cause even though the headers
-// already arrived. Both are worth one retry on a fresh connection; HTTP errors
-// and malformed payloads are not.
-function archiveRequestRetryable(error: unknown) {
+// NeatQueue sometimes stalls or drops the connection mid-body from the VPS and
+// sometimes never finishes the TLS handshake at all. A stall surfaces as a
+// TimeoutError once the signal fires, a reset as `TypeError: terminated` with a
+// socket error cause, a blocked handshake as UND_ERR_CONNECT_TIMEOUT. All of
+// them are worth retrying on a fresh connection; HTTP errors and malformed
+// payloads are not.
+const RETRYABLE_NEATQUEUE_CODES = new Set([
+  "UND_ERR_SOCKET", "UND_ERR_CONNECT_TIMEOUT", "UND_ERR_HEADERS_TIMEOUT", "UND_ERR_BODY_TIMEOUT",
+  "ECONNRESET", "EPIPE", "ETIMEDOUT",
+]);
+export function isRetryableNeatQueueError(error: unknown) {
   if (typeof error !== "object" || error === null) return false;
   const { name, message, cause } = error as { name?: unknown; message?: unknown; cause?: unknown };
   if (name === "TimeoutError") return true;
   if (name === "TypeError" && message === "terminated") return true;
   const code = typeof cause === "object" && cause !== null ? (cause as { code?: unknown }).code : null;
-  return code === "UND_ERR_SOCKET" || code === "ECONNRESET" || code === "EPIPE";
+  return typeof code === "string" && RETRYABLE_NEATQUEUE_CODES.has(code);
 }
-export async function refreshAxisArchive(store: AxisLeagueStore, request: typeof fetch = fetch, now = Date.now(), headOnly = false, retries = 1) {
+export async function refreshAxisArchive(store: AxisLeagueStore, request: typeof fetch = fetch, now = Date.now(), headOnly = false, retries = 3) {
   const pending = pendingArchives.get(store);
   if (pending) return pending;
   if (!store.claimArchiveRefresh(now, headOnly)) return;
@@ -47,7 +52,7 @@ export async function refreshAxisArchive(store: AxisLeagueStore, request: typeof
             progress = advanceAxisArchiveState(progress, data, numbers.size);
             return data;
           } catch (error) {
-            if (attempt >= retries || !archiveRequestRetryable(error)) throw error;
+            if (attempt >= retries || !isRetryableNeatQueueError(error)) throw error;
           }
         }
       };

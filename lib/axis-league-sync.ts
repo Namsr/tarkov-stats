@@ -1,5 +1,6 @@
 import { AXIS_API_URL, parseAxisPage, type AxisPlayer } from "./axis-league.ts";
 import { getAxisLeagueStore, type AxisLeagueStore } from "./admin/axis-league-db.ts";
+import { isRetryableNeatQueueError } from "./axis-history-sync.ts";
 
 export async function fetchAxisPlayers(request: typeof fetch = fetch): Promise<AxisPlayer[]> {
   const players: AxisPlayer[] = [];
@@ -26,13 +27,21 @@ export async function fetchAxisPlayers(request: typeof fetch = fetch): Promise<A
   return players;
 }
 
+const LEAGUE_RETRIES = 3;
 const pendingRefreshes = new WeakMap<AxisLeagueStore, Promise<void>>();
 export async function refreshAxisLeague(store: AxisLeagueStore, request: typeof fetch = fetch, now = Date.now()): Promise<void> {
   const pending = pendingRefreshes.get(store);
   if (pending) return pending;
   if (!store.claimRefresh(now)) return;
   const refresh = (async () => {
-    try { store.publish(await fetchAxisPlayers(request)); }
+    try {
+      for (let attempt = 0; ; attempt++) {
+        try { store.publish(await fetchAxisPlayers(request)); return; }
+        catch (error) {
+          if (attempt >= LEAGUE_RETRIES || !isRetryableNeatQueueError(error)) throw error;
+        }
+      }
+    }
     catch (error) {
       store.failRefresh();
       console.warn("AXIS League refresh failed: " + (error instanceof Error ? error.message : String(error)));

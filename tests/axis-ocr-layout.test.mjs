@@ -8,6 +8,7 @@ import {
   axisOcrRegions,
   axisOcrTightGrayCrop,
   detectAxisScoreboard,
+  isAxisScoreboardCandidate,
   parseAxisOcrNumbers,
 } from "../lib/axis-ocr-layout.ts";
 
@@ -104,6 +105,8 @@ test("detects a dim single-pixel seam without accepting short bright fragments",
   assert.equal(detected.width, crop.width);
   assert.ok(Math.abs(detected.y - crop.y) <= 2);
   assert.equal(detectAxisScoreboard(thinSeam(0.2)), null);
+  assert.equal(isAxisScoreboardCandidate(thinSeam(0.2)), true, "a faint table remains eligible for manual review");
+  assert.equal(isAxisScoreboardCandidate({ width: 1200, height: 420, data: rgbaImage(1200, 420) }), false);
 });
 
 test("builds two score cells and exact KDA/name regions for each scoreboard row", () => {
@@ -235,4 +238,17 @@ test("accepts bounded base64 raster data URLs used by local paste input", () => 
   assert.equal(decodeAxisOcrDataUrl("data:image/png;base64,iVBORw0KGgo=").type, "image/png");
   assert.equal(decodeAxisOcrDataUrl("data:image/jpeg;base64,/9j/").size, 3);
   assert.throws(() => decodeAxisOcrDataUrl("data:image/png;base64,AA=="), /does not match/);
+});
+
+
+test("capture requires row content on both teams rather than just a gray panel and divider", () => {
+  const crop = { x: 0, y: 0, width: 1200, height: Math.ceil(513 * 1200 / 1584) };
+  const image = drawSyntheticScoreboard(1200, 420, crop);
+  assert.equal(isAxisScoreboardCandidate(image), true);
+  const ruleY = Math.round(160 * crop.width / 1584);
+  for (let y = ruleY + 30; y < image.height; y++) {
+    for (let x = 650; x < image.width; x++) setPixel(image.data, image.width, x, y, [16, 18, 22]);
+  }
+  assert.ok(detectAxisScoreboard(image), "a panel and center line alone can pass crop detection");
+  assert.equal(isAxisScoreboardCandidate(image), false, "a panel with no right-side result rows must not be stored");
 });

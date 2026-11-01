@@ -3,10 +3,10 @@ import { resolve, sep } from "node:path";
 import { pathToFileURL } from "node:url";
 import sharp from "sharp";
 import * as ort from "onnxruntime-web/wasm";
-import { axisOcrDecodeCtc, axisOcrPrepareTensor, axisOcrReadCounter, axisOcrRegions, detectAxisScoreboard } from "./axis-ocr-layout.ts";
+import { axisOcrDecodeCtc, axisOcrPrepareTensor, axisOcrReadCounter, axisOcrRegions, detectAxisScoreboard, isAxisScoreboardCandidate } from "./axis-ocr-layout.ts";
 import { normalizeAxisPhoto } from "./axis-photo-upload.ts";
 import type { AxisOcrResult, AxisOcrRow } from "./axis-ocr.ts";
-import type { AxisStoredPhoto } from "./axis-match-photo.ts";
+import { AxisNotScoreboardError, type AxisStoredPhoto } from "./axis-match-photo.ts";
 
 const MAX_QUEUE = 8;
 const MAX_PIXELS = 24_000_000;
@@ -20,6 +20,26 @@ let sessionPromise: Promise<ort.InferenceSession> | null = null;
 const queue: (() => Promise<void>)[] = [];
 let running = false;
 let pendingJobs = 0;
+let pendingCaptures = 0;
+let captureTail: Promise<void> = Promise.resolve();
+
+/** Bound image decoding separately so captures never wait for model inference. */
+export function captureAxisPhotoUpload(value: unknown): Promise<AxisStoredPhoto> {
+  if (pendingCaptures >= 4) return Promise.reject(new AxisOcrBusyError());
+  pendingCaptures++;
+  const task = captureTail.then(async () => {
+    const photo = await normalizeAxisPhoto(value);
+    // Bound the JS pixel scan independently of the original image dimensions.
+    // This is a conservative layout check, not a name/KDA/model confidence gate.
+    const { data, info } = await sharp(photo.data, { limitInputPixels: MAX_PIXELS, failOn: "error" })
+      .resize({ width: 1600, height: 1000, fit: "inside", withoutEnlargement: true })
+      .ensureAlpha().raw().toBuffer({ resolveWithObject: true });
+    if (!isAxisScoreboardCandidate({ width: info.width, height: info.height, data })) throw new AxisNotScoreboardError();
+    return photo;
+  });
+  captureTail = task.then(() => {}, () => {});
+  return task.finally(() => { pendingCaptures--; });
+}
 
 function assetPath(name: string): string {
   const publicPath = resolve(process.cwd(), "public", "ocr", "paddle-v1", name);

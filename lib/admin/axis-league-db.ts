@@ -60,6 +60,7 @@ export function createAxisLeagueStore(db: SqliteDatabase) {
       round_conflict TEXT,
       google_sub TEXT NOT NULL,
       uploaded_at INTEGER NOT NULL,
+      processing_status TEXT NOT NULL DEFAULT 'processed' CHECK(processing_status IN ('captured','processed')),
       PRIMARY KEY(match_number, photo_revision)
     );
     CREATE INDEX IF NOT EXISTS axis_match_submissions_time ON axis_match_submissions(uploaded_at DESC,match_number);
@@ -119,6 +120,16 @@ export function createAxisLeagueStore(db: SqliteDatabase) {
       try { db.exec("ROLLBACK"); } catch { /* Preserve the original failure. */ }
       throw error;
     }
+  }
+  // Existing evidence predates capture-only uploads and is already processed.
+  if (!db.prepare("PRAGMA table_info(axis_match_submissions)").all().some((column: { name: string }) => column.name === "processing_status")) {
+    withImmediateTransaction(() => {
+      if (!db.prepare("PRAGMA table_info(axis_match_submissions)").all().some((column: { name: string }) => column.name === "processing_status")) {
+        // A CHECK on ADD COLUMN scans existing image rows. This internal state
+        // has only literal writes; use a metadata-only migration for old stores.
+        db.exec("ALTER TABLE axis_match_submissions ADD COLUMN processing_status TEXT NOT NULL DEFAULT 'processed'");
+      }
+    });
   }
   // Invalidate only for match/KDA changes, including writes by another worker or an older process.
   db.exec("CREATE TABLE IF NOT EXISTS axis_preview_state (id INTEGER PRIMARY KEY CHECK(id=1), revision INTEGER NOT NULL DEFAULT 0); INSERT OR IGNORE INTO axis_preview_state(id) VALUES(1)");
@@ -685,6 +696,39 @@ export function createAxisLeagueStore(db: SqliteDatabase) {
       } catch (error) { db.exec("ROLLBACK"); throw error; }
       return { edited, players: changes.map(({ discordId, kda }) => ({ discordId, kda })), rounds: rounds?.score, photo: photoInput === undefined ? undefined : photoInput.photo ? { revision: photoInput.photo.revision, width: photoInput.photo.width, height: photoInput.photo.height } : null };
     },
+    /** Retain a trusted Discord upload before OCR, without crediting any statistics. */
+    captureAxisMatchPhoto(matchNumber: number, photo: AxisStoredPhoto,
+      actor: { sub: string; name: string | null; source?: "google" | "discord" }, rosterFingerprint?: string): AxisMatchPhoto {
+      if (!Number.isSafeInteger(matchNumber) || matchNumber <= 0) throw new TypeError("Invalid match number");
+      if (!photo || !/^[a-f0-9]{64}$/.test(photo.revision) || !Number.isSafeInteger(photo.width) || !Number.isSafeInteger(photo.height)
+        || photo.width <= 0 || photo.height <= 0 || photo.width * photo.height > AXIS_PHOTO_MAX_PIXELS
+        || !(photo.data instanceof Uint8Array) || !photo.data.length || photo.data.length > AXIS_PHOTO_MAX_BYTES) throw new TypeError("Invalid photo data");
+      if (!/^[A-Za-z0-9_-]{1,128}$/.test(actor.sub) || actor.name !== null && (typeof actor.name !== "string" || !actor.name.trim() || actor.name.length > 200)) throw new TypeError("Invalid uploader");
+      return withImmediateTransaction(() => {
+        const archived = db.prepare("SELECT payload FROM axis_archive_matches WHERE number=?").get(matchNumber);
+        const match = archived ? JSON.parse(archived.payload) as AxisHistoryPage["matches"][number] : undefined;
+        if (!match) throw new RangeError("Unknown match");
+        if (rosterFingerprint !== undefined && axisMatchRosterFingerprintForMatch(match) !== rosterFingerprint) throw new AxisKdaConflict("Match roster changed while the screenshot was being captured");
+        const prior = db.prepare("SELECT 1 FROM axis_match_submissions WHERE match_number=? AND photo_revision=?").get(matchNumber, photo.revision);
+        if (!prior) {
+          const previousRevision = db.prepare("SELECT revision FROM axis_match_photos WHERE match_number=?").get(matchNumber)?.revision;
+          const needsArchive = previousRevision && previousRevision !== photo.revision
+            && !db.prepare("SELECT 1 FROM axis_match_submissions WHERE match_number=? AND photo_revision=?").get(matchNumber, previousRevision);
+          const previous = needsArchive ? db.prepare("SELECT revision,width,height,data FROM axis_match_photos WHERE match_number=?").get(matchNumber) : null;
+          if (previous) {
+            db.prepare(`INSERT OR IGNORE INTO axis_match_submissions(match_number,photo_revision,width,height,data,recognized_names,unmatched_names,missing_discord_ids,conflicts,round_conflict,google_sub,uploaded_at)
+              VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`).run(matchNumber, previous.revision, previous.width, previous.height, previous.data,
+              JSON.stringify([]), JSON.stringify([]), JSON.stringify([]), JSON.stringify([]), null, "legacy", 0);
+          }
+          db.prepare(`INSERT INTO axis_match_submissions(match_number,photo_revision,width,height,data,recognized_names,unmatched_names,missing_discord_ids,conflicts,round_conflict,google_sub,uploaded_at,processing_status)
+            VALUES(?,?,?,?,?,?,?,?,?,?,?,?, 'captured')`).run(matchNumber, photo.revision, photo.width, photo.height, photo.data,
+            JSON.stringify([]), JSON.stringify([]), JSON.stringify(match.teams.flatMap(team => team.players.map(player => player.id))), JSON.stringify([]), null, actor.sub, Date.now());
+          db.prepare("INSERT INTO axis_match_photos(match_number,revision,width,height,data) VALUES(?,?,?,?,?) ON CONFLICT(match_number) DO UPDATE SET revision=excluded.revision,width=excluded.width,height=excluded.height,data=excluded.data")
+            .run(matchNumber, photo.revision, photo.width, photo.height, photo.data);
+        }
+        return { revision: photo.revision, width: photo.width, height: photo.height };
+      });
+    },
     /** Merge OCR output from a screenshot without replacing an already recorded value. */
     submitAxisMatch(matchNumber: number, photo: AxisStoredPhoto, input: AxisKdaChange[], roundInput: AxisRoundChange | undefined,
       evidence: Pick<AxisMatchReview, "recognizedNames" | "unmatchedNames"> & Partial<Pick<AxisMatchReview, "missingDiscordIds" | "nameRows">>,
@@ -731,9 +775,9 @@ export function createAxisLeagueStore(db: SqliteDatabase) {
         participants = new Map(match.teams.flatMap((team) => team.players.map((player) => [player.id, player.name] as const)));
         if (changes.some((change) => !participants.has(change.discordId))) throw new RangeError("Player is not in this match");
         if (missingDiscordIds.some((discordId) => !participants.has(discordId))) throw new TypeError("Invalid OCR evidence");
-        const prior = db.prepare("SELECT conflicts,round_conflict FROM axis_match_submissions WHERE match_number=? AND photo_revision=?")
+        const prior = db.prepare("SELECT conflicts,round_conflict,processing_status FROM axis_match_submissions WHERE match_number=? AND photo_revision=?")
           .get(matchNumber, photo.revision);
-        duplicate = Boolean(prior);
+        duplicate = Boolean(prior && prior.processing_status !== "captured");
         if (!duplicate) for (const change of changes) {
           if (!change.kda) continue;
           const existing = read.get(matchNumber, change.discordId) as AxisKda | null;
@@ -751,7 +795,13 @@ export function createAxisLeagueStore(db: SqliteDatabase) {
             statsChanged = true;
           } else if (!sameAxisRoundScore(existing, rounds.score)) roundConflict = { existing, incoming: rounds.score };
         }
-        const previousPhoto = !duplicate && db.prepare("SELECT revision,width,height,data FROM axis_match_photos WHERE match_number=?").get(matchNumber);
+        const primaryRevision = db.prepare("SELECT revision FROM axis_match_photos WHERE match_number=?").get(matchNumber)?.revision;
+        // Processing an older captured image must not replace a newer upload or
+        // undo a moderator removing its preview while recognition was pending.
+        const replacePrimary = !duplicate && (prior?.processing_status !== "captured" || primaryRevision === photo.revision);
+        const needsArchive = replacePrimary && primaryRevision && primaryRevision !== photo.revision
+          && !db.prepare("SELECT 1 FROM axis_match_submissions WHERE match_number=? AND photo_revision=?").get(matchNumber, primaryRevision);
+        const previousPhoto = needsArchive ? db.prepare("SELECT revision,width,height,data FROM axis_match_photos WHERE match_number=?").get(matchNumber) : null;
         // Older photos predate axis_match_submissions. Keep their bytes as
         // reviewable evidence before replacing the primary photo.
         if (previousPhoto && previousPhoto.revision !== photo.revision) {
@@ -759,12 +809,15 @@ export function createAxisLeagueStore(db: SqliteDatabase) {
             VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`).run(matchNumber, previousPhoto.revision, previousPhoto.width, previousPhoto.height, previousPhoto.data,
             JSON.stringify([]), JSON.stringify([]), JSON.stringify([]), JSON.stringify([]), null, "legacy", 0);
         }
-        if (!duplicate) db.prepare(`INSERT OR IGNORE INTO axis_match_submissions(match_number,photo_revision,width,height,data,recognized_names,unmatched_names,missing_discord_ids,conflicts,round_conflict,google_sub,uploaded_at)
-          VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`).run(matchNumber, photo.revision, photo.width, photo.height, photo.data,
+        if (!duplicate) db.prepare(`INSERT INTO axis_match_submissions(match_number,photo_revision,width,height,data,recognized_names,unmatched_names,missing_discord_ids,conflicts,round_conflict,google_sub,uploaded_at)
+          VALUES(?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(match_number,photo_revision) DO UPDATE SET
+            recognized_names=excluded.recognized_names,unmatched_names=excluded.unmatched_names,missing_discord_ids=excluded.missing_discord_ids,
+            conflicts=excluded.conflicts,round_conflict=excluded.round_conflict,processing_status='processed'
+          WHERE axis_match_submissions.processing_status='captured'`).run(matchNumber, photo.revision, photo.width, photo.height, photo.data,
           JSON.stringify(evidence.recognizedNames), JSON.stringify(evidence.unmatchedNames), JSON.stringify([...new Set(missingDiscordIds)]), JSON.stringify(conflicts), roundConflict ? JSON.stringify(roundConflict) : null, actor.sub, uploadedAt);
         if (nameRows !== undefined && nameRows !== null) db.prepare(`INSERT INTO axis_match_submission_name_rows(match_number,photo_revision,name_rows)
           VALUES(?,?,?) ON CONFLICT(match_number,photo_revision) DO NOTHING`).run(matchNumber, photo.revision, JSON.stringify(duplicate ? nameRows.map(({ id, side, nickname }) => ({ id, side, nickname })) : nameRows));
-        if (!duplicate) db.prepare("INSERT INTO axis_match_photos(match_number,revision,width,height,data) VALUES(?,?,?,?,?) ON CONFLICT(match_number) DO UPDATE SET revision=excluded.revision,width=excluded.width,height=excluded.height,data=excluded.data")
+        if (replacePrimary) db.prepare("INSERT INTO axis_match_photos(match_number,revision,width,height,data) VALUES(?,?,?,?,?) ON CONFLICT(match_number) DO UPDATE SET revision=excluded.revision,width=excluded.width,height=excluded.height,data=excluded.data")
           .run(matchNumber, photo.revision, photo.width, photo.height, photo.data);
         // Discord authors are provenance for a submission, not Google
         // identities. Keep them in the submission row without polluting the

@@ -100,6 +100,25 @@ test("native materialization matches the actual TS store and rolls back all writ
   try { both(submission); } finally { Date.now = now; }
   assert.deepEqual(rows(native), rows(ts));
 
+  // Discord captures evidence before OCR. A failed rebuild must retain the
+  // captured photo, while rolling back the attempted processing and statistics.
+  const capturedPhoto = { revision: "b".repeat(64), width: 1, height: 1, data: new Uint8Array([4, 5, 6]) };
+  const actor = { sub: "discord_test", name: "Tester", source: "discord" };
+  select("rust", join(dir, "missing"));
+  right.captureAxisMatchPhoto(3, capturedPhoto, actor);
+  select("typescript"); left.captureAxisMatchPhoto(3, capturedPhoto, actor);
+  assert.deepEqual(rows(native), rows(ts));
+  const processCapture = store => store.submitAxisMatch(3, capturedPhoto,
+    [{ discordId: "1", kda: { kills: 8, deaths: 2, assists: 1 }, expected: null }], undefined,
+    { recognizedNames: [], unmatchedNames: [] }, actor);
+  before = rows(native);
+  select("rust", join(dir, "missing"));
+  assert.throws(() => processCapture(right), /worker failed/);
+  assert.deepEqual(rows(native), before);
+  assert.equal(native.prepare("SELECT processing_status FROM axis_match_submissions WHERE match_number=3").get().processing_status, "captured");
+  both(processCapture);
+  assert.deepEqual(rows(native), rows(ts));
+  assert.equal(native.prepare("SELECT processing_status FROM axis_match_submissions WHERE match_number=3").get().processing_status, "processed");
   before = rows(native);
   select("rust", join(dir, "missing"));
   assert.throws(() => right.publishArchiveBatch([archive([...renamed, match(136)])]), /worker failed/);

@@ -2,8 +2,8 @@ import { getAxisLeagueStore } from "@/lib/admin/axis-league-db";
 import { AxisKdaConflict } from "@/lib/axis-kda";
 import { axisOcrConfidencePercent, parseAxisOcrCounter } from "@/lib/axis-ocr";
 import { axisOcrContextForMatch, axisOcrRosterFingerprint, axisOcrStatsPlayerIds, validateAxisOcrNames, AxisOcrMatchMismatchError } from "@/lib/axis-server-match-validation";
-import { AxisOcrBusyError, recognizeAxisPhotoUpload } from "@/lib/server-axis-ocr";
-import { AxisPhotoInputError } from "@/lib/axis-match-photo";
+import { AxisOcrBusyError, captureAxisPhotoUpload, recognizeAxisPhotoUpload } from "@/lib/server-axis-ocr";
+import { AxisNotScoreboardError, AxisPhotoInputError } from "@/lib/axis-match-photo";
 import { parseAxisOcrNameRows, recheckAxisMatchReviewNames } from "@/lib/axis-match-submission";
 
 export interface AxisSubmissionActor {
@@ -71,19 +71,32 @@ function isAxisSubmissionError(error: unknown, pattern: RegExp): boolean {
   return error instanceof Error && pattern.test(error.message);
 }
 
+function validateAxisSubmissionRequest(request: AxisSubmissionRequest) {
+  if (!Number.isSafeInteger(request.matchNumber) || request.matchNumber <= 0
+    || typeof request.photoData !== "string" || !request.photoData.length
+    || !request.actor || typeof request.actor.sub !== "string" || !request.actor.sub.length
+    || request.actor.name !== null && typeof request.actor.name !== "string"
+    || request.actor.source !== undefined && request.actor.source !== "google" && request.actor.source !== "discord") throw new TypeError("Invalid AXIS submission");
+}
+
+/** Save the image for manual review without waiting for OCR or crediting K/D/A. */
+export async function captureAxisScreenshot(request: AxisSubmissionRequest) {
+  validateAxisSubmissionRequest(request);
+  const store = await getAxisLeagueStore();
+  const match = store.readMatchHistory(request.matchNumber).matches[0];
+  if (!match || match.number !== request.matchNumber) throw new AxisSubmissionMatchNotFoundError();
+  const photo = await captureAxisPhotoUpload(request.photoData);
+  return { matchNumber: request.matchNumber,
+    photo: store.captureAxisMatchPhoto(request.matchNumber, photo, request.actor, axisOcrRosterFingerprint(match)) };
+}
+
 /**
  * The single trusted AXIS screenshot pipeline used by browser and Discord
  * uploads.  It never accepts client-supplied statistics: all values come from
  * the server-side OCR result and the archived roster.
  */
 export async function submitAxisScreenshot(request: AxisSubmissionRequest): Promise<AxisSubmissionResult> {
-  if (!Number.isSafeInteger(request.matchNumber) || request.matchNumber <= 0
-    || typeof request.photoData !== "string" || !request.photoData.length
-    || !request.actor || typeof request.actor.sub !== "string" || !request.actor.sub.length
-    || request.actor.name !== null && typeof request.actor.name !== "string"
-    || request.actor.source !== undefined && request.actor.source !== "google" && request.actor.source !== "discord") {
-    throw new TypeError("Invalid AXIS submission");
-  }
+  validateAxisSubmissionRequest(request);
 
   const store = await getAxisLeagueStore();
   const match = store.readMatchHistory(request.matchNumber).matches[0];
@@ -176,6 +189,7 @@ export async function submitAxisScreenshot(request: AxisSubmissionRequest): Prom
 export function axisSubmissionStatus(error: unknown): number {
   if (error instanceof AxisSubmissionAuthorizationError) return error.status;
   if (error instanceof AxisPhotoInputError) return error.status;
+  if (error instanceof AxisNotScoreboardError) return 422;
   if (error instanceof AxisKdaConflict) return 409;
   if (error instanceof AxisSubmissionMatchNotFoundError) return 404;
   if (error instanceof AxisOcrMatchMismatchError || isAxisSubmissionError(error, /scoreboard|names do not match/i)) return 422;

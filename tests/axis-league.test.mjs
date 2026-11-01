@@ -50,7 +50,7 @@ test("AXIS previews keep league statistics separate and request Arena regardless
   assert.match(header, /#1/); assert.match(header, /1\s025/); assert.match(header, /1\s240/);
   assert.match(header, /id="preview-name"/);
   const details = renderToStaticMarkup(filled.props.children.props.details);
-  assert.match(details, /href="\/axis-league\?view=history&amp;match=123#axis-match-123"/);
+  assert.match(details, /href="\/axis-league\/history\?match=123#axis-match-123"/);
   assert.match(details, /data-result="loss"/); assert.match(details, /data-result="win"/);
   assert.match(details, /50,00/); // Zero deaths uses a denominator of one.
   assert.doesNotMatch(details, /HS%|arena.metric.kd_ratio|NaN|undefined|axis.kda.coverage/);
@@ -1079,4 +1079,36 @@ test("editing loads all ten Arena nicknames in one local roster request and igno
   await new Promise(resolve => setImmediate(resolve));
   assert.match(render().html, /BushMasterTTV/, "opening editing again recovers after a failed request");
   retryCleanup();
+});
+
+
+test("AXIS tab routes accept direct links, reject unknown paths and preserve legacy match links", async () => {
+  const require = createRequire(import.meta.url);
+  const ts = require("typescript");
+  const source = await readFile("app/axis-league/[[...view]]/page.tsx", "utf8");
+  const compiled = ts.transpileModule(source, { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS, jsx: ts.JsxEmit.ReactJSX, esModuleInterop: true } }).outputText;
+  const routeModule = { exports: {} };
+  const Page = () => null;
+  const navigation = {
+    redirect(href) { throw new Error(`redirect:${href}`); },
+    notFound() { throw new Error("not-found"); },
+  };
+  new Function("require", "module", "exports", compiled)((name) =>
+    name === "next/navigation" ? navigation : name === "@/components/AxisLeaguePage" ? Page : require(name), routeModule, routeModule.exports);
+  const route = (view, query = {}) => routeModule.exports.default({ params: Promise.resolve({ view }), searchParams: Promise.resolve(query) });
+  for (const tab of ["leaderboard", "statistics", "history", "profiles"]) {
+    assert.equal((await route([tab])).type, Page);
+    await assert.rejects(route(undefined, { view: tab }), { message: `redirect:/axis-league/${tab}` });
+  }
+  for (const view of [["unknown"], ["history", "extra"], ["toString"]]) {
+    await assert.rejects(route(view), { message: "not-found" });
+  }
+  await assert.rejects(route(undefined), { message: "redirect:/axis-league/leaderboard" });
+  await assert.rejects(route(undefined, { view: "profiles", match: "123", tag: ["a", "b"] }), {
+    message: "redirect:/axis-league/history?match=123&tag=a&tag=b",
+  });
+  await assert.rejects(route(undefined, { view: ["history", "profiles"], match: "0" }), {
+    message: "redirect:/axis-league/leaderboard?match=0",
+  });
+  assert.equal(axisMatchHref(123), "/axis-league/history?match=123#axis-match-123");
 });
