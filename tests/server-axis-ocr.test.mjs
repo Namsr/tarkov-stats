@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import sharp from "sharp";
-import { recognizeAxisPhoto, recognizeAxisPhotoUpload } from "../lib/server-axis-ocr.ts";
+import { AxisNotScoreboardError } from "../lib/axis-match-photo.ts";
+import { captureAxisPhotoUpload, recognizeAxisPhoto, recognizeAxisPhotoUpload } from "../lib/server-axis-ocr.ts";
 
 function syntheticScoreboard(width = 1200, height = 420) {
   const crop = { x: 0, y: 0, width, height: Math.ceil(513 * width / 1584) };
@@ -22,8 +23,12 @@ function syntheticScoreboard(width = 1200, height = 420) {
   }
   const dividerX = Math.round(crop.x + crop.width / 2);
   for (let y = ruleY; y < crop.y + crop.height; y++) for (let dx = -1; dx <= 1; dx++) pixel(dividerX + dx, y, [92, 96, 101]);
-  for (let y = ruleY + Math.round(60 * scale); y < crop.y + crop.height - 8; y += Math.max(12, Math.floor(60 * scale))) {
-    for (const x of [110, 650, 980, 1484]) for (let dy = 0; dy < 6; dy++) for (let dx = 0; dx < 14; dx++) pixel(Math.round(x * scale), y + dy);
+  for (const centerY of [243, 303, 363, 423, 483]) {
+    for (const x of [110, 650, 980, 1484]) {
+      for (let dy = 0; dy < Math.max(2, Math.round(12 * scale)); dy++) {
+        for (let dx = 0; dx < Math.max(4, Math.round(24 * scale)); dx++) pixel(Math.round(x * scale) + dx, Math.round(centerY * scale) + dy);
+      }
+    }
   }
   return sharp(data, { raw: { width, height, channels: 4 } }).png().toBuffer();
 }
@@ -61,4 +66,40 @@ test("parallel submissions are serialized by the server OCR queue", async () => 
   const [first, second] = await Promise.all([recognizeAxisPhoto(photo), recognizeAxisPhoto(photo)]);
   assert.equal(first.rows.length, 10);
   assert.equal(second.rows.length, 10);
+});
+
+
+test("capture keeps a table layout before nickname and statistics recognition", async () => {
+  const data = await syntheticScoreboard();
+  const photo = await captureAxisPhotoUpload(data.toString("base64"));
+  assert.equal(photo.width, 1200);
+  assert.equal(photo.height, 420);
+  assert.match(photo.revision, /^[a-f0-9]{64}$/);
+  assert.equal((await sharp(photo.data).metadata()).format, "png");
+});
+
+test("capture decoding has an independent bounded queue and recovers after rejection", async () => {
+  const data = await syntheticScoreboard();
+  const requests = Array.from({ length: 5 }, () => captureAxisPhotoUpload(data.toString("base64")));
+  const results = await Promise.allSettled(requests);
+  assert.equal(results.filter(result => result.status === "fulfilled").length, 4);
+  assert.equal(results[4].status, "rejected");
+  await assert.rejects(() => captureAxisPhotoUpload("invalid"));
+  assert.equal((await captureAxisPhotoUpload(data.toString("base64"))).width, 1200);
+});
+
+
+test("capture explicitly rejects unrelated pictures without invoking OCR", async () => {
+  for (const background of ["black", "white", "#777777"]) {
+    const image = await sharp({ create: { width: 800, height: 350, channels: 3, background } }).png().toBuffer();
+    await assert.rejects(() => captureAxisPhotoUpload(image.toString("base64")), AxisNotScoreboardError);
+  }
+});
+
+
+test("capture checks a bounded preview while preserving a high resolution table", async () => {
+  const image = await syntheticScoreboard(3840, 1350);
+  const photo = await captureAxisPhotoUpload(image.toString("base64"));
+  assert.equal(photo.width, 3840);
+  assert.equal(photo.height, 1350);
 });

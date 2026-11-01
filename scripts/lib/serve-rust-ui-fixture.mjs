@@ -142,7 +142,7 @@ try {
   writeFileSync(guard, `const original=globalThis.fetch;globalThis.fetch=(input,...rest)=>{const url=new URL(typeof input==='string'||input instanceof URL?input:input.url);if(!['127.0.0.1','localhost','[::1]'].includes(url.hostname))return Promise.reject(new Error('Private offline fixture blocks upstream requests'));return original(input,...rest)};`);
   const next = child(process.execPath, ["--experimental-sqlite", "--import", pathToFileURL(guard).href, entry], {
     cwd: dirname(entry), env: { ...process.env, ...nextEnvironment, PORT: String(nextPort), HOSTNAME: "127.0.0.1",
-      ARENA_UI_UPSTREAM: "web:3001", SEASONAL_API_UPSTREAM: "web:3000", HOME_SHOWCASE_API_UPSTREAM: "web:3000",
+      ARENA_UI_UPSTREAM: "web:3001", SEASONAL_API_UPSTREAM: "web:3000", HOME_SHOWCASE_API_UPSTREAM: "web:3000", AXIS_STATISTICS_API_UPSTREAM: "web:3000",
       ARENA_COHORT_BACKEND: "typescript", ...options.nextFlags, WEB_BACKGROUND_WORKERS: "false", RUNTIME_HEALTH_ENABLED: "false", NEXT_TELEMETRY_DISABLED: "1", HTTP_PROXY: "", HTTPS_PROXY: "", ALL_PROXY: "", NO_PROXY: "127.0.0.1,localhost,::1" },
   });
   await startupStep(waitHealthy(`http://127.0.0.1:${nextPort}`, next, () => logs.get(next.pid)));
@@ -193,7 +193,7 @@ try {
     const configPath = join(fixture.directory, `Caddyfile-${label}`);
     writeFileSync(configPath, config);
     const instance = child(caddy, ["run", "--config", configPath, "--adapter", "caddyfile"], {
-      cwd: fixture.directory, env: { ...process.env, ARENA_UI_UPSTREAM: `127.0.0.1:${nextPort}`, PVE_UI_UPSTREAM: `127.0.0.1:${nextPort}`, REGULAR_UI_UPSTREAM: `127.0.0.1:${nextPort}`, SEASONAL_API_UPSTREAM: `127.0.0.1:${nextPort}`, HOME_SHOWCASE_API_UPSTREAM: `127.0.0.1:${nextPort}`,
+      cwd: fixture.directory, env: { ...process.env, AXIS_STATISTICS_API_UPSTREAM: `127.0.0.1:${nextPort}`, ARENA_UI_UPSTREAM: `127.0.0.1:${nextPort}`, PVE_UI_UPSTREAM: `127.0.0.1:${nextPort}`, REGULAR_UI_UPSTREAM: `127.0.0.1:${nextPort}`, SEASONAL_API_UPSTREAM: `127.0.0.1:${nextPort}`, HOME_SHOWCASE_API_UPSTREAM: `127.0.0.1:${nextPort}`,
         ...Object.fromEntries(options.selectors.map(key => [key,arenaUpstream])),
         APPDATA: fixture.directory, XDG_CONFIG_HOME: fixture.directory, XDG_DATA_HOME: fixture.directory, GOMEMLIMIT: "192MiB" },
     });

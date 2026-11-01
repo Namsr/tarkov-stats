@@ -98,6 +98,8 @@ jobs:
             assert.equal(services.caddy.environment.HOME_SHOWCASE_API_UPSTREAM, services.web.environment.HOME_SHOWCASE_API_UPSTREAM);
             assert.equal(services.web.environment.ARENA_UI_UPSTREAM, "web:3000");
             assert.equal(services.caddy.environment.ARENA_UI_UPSTREAM, services.web.environment.ARENA_UI_UPSTREAM);
+            assert.equal(services.web.environment.AXIS_STATISTICS_API_UPSTREAM, "web:3001");
+            assert.equal(services.caddy.environment.AXIS_STATISTICS_API_UPSTREAM, services.web.environment.AXIS_STATISTICS_API_UPSTREAM);
             for (const flag of ["PVE_UI_UPSTREAM", "REGULAR_UI_UPSTREAM"]) {
               assert.equal(services.web.environment[flag], "web:3000");
               assert.equal(services.caddy.environment[flag], services.web.environment[flag]);
@@ -175,7 +177,7 @@ jobs:
             --tmpfs /tmp:rw,noexec,nosuid,nodev,size=32m,mode=1777 \
             --tmpfs /app/.next/cache:rw,noexec,nosuid,nodev,size=32m,uid=1001,gid=1001,mode=0700 \
             --env WEB_BACKGROUND_WORKERS=false --env SEASONAL_API_UPSTREAM=web:3000 \
-            --env HOME_SHOWCASE_API_UPSTREAM=web:3000 --env ARENA_UI_UPSTREAM=web:3001 \
+            --env AXIS_STATISTICS_API_UPSTREAM=web:3000 --env HOME_SHOWCASE_API_UPSTREAM=web:3000 --env ARENA_UI_UPSTREAM=web:3001 \
             --env SEASONAL_ENABLED=false --env AVERAGE_PUBLICATIONS_ENABLED=false \
             --env RUST_UI_RUNTIME_FIXTURE=true --env SQLITE_PATH=/data/rust-arena-runtime-smoke.db \
             --env AVERAGE_PUBLICATION_SQLITE_PATH=/data/rust-arena-runtime-cache.db \
@@ -197,7 +199,7 @@ jobs:
               --tmpfs /tmp:rw,noexec,nosuid,nodev,size=32m,mode=1777 \
               --tmpfs /app/.next/cache:rw,noexec,nosuid,nodev,size=32m,uid=1001,gid=1001,mode=0700 \
               --env WEB_BACKGROUND_WORKERS=false --env SEASONAL_API_UPSTREAM=web:3000 \
-              --env HOME_SHOWCASE_API_UPSTREAM=web:3000 --env ARENA_UI_UPSTREAM=web:3000 \
+              --env AXIS_STATISTICS_API_UPSTREAM=web:3000 --env HOME_SHOWCASE_API_UPSTREAM=web:3000 --env ARENA_UI_UPSTREAM=web:3000 \
               --env "REGULAR_UI_UPSTREAM=$regular" --env "PVE_UI_UPSTREAM=$pve" \
               --env SEASONAL_ENABLED=false --env AVERAGE_PUBLICATIONS_ENABLED=false \
               --env RUST_UI_RUNTIME_FIXTURE=true --env "SQLITE_PATH=/data/rust-$mode-runtime-smoke.db" \

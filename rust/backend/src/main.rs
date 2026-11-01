@@ -1,5 +1,6 @@
 pub mod achievements;
 pub mod arena;
+mod axis_stats;
 mod cache;
 mod compute;
 mod config;
@@ -81,6 +82,13 @@ async fn serve() -> Result<(), Box<dyn std::error::Error>> {
         storage,
     });
     let app = Router::new()
+        .route(
+            "/api/axis-league/statistics",
+            get(axis_stats::get)
+                .options(http::options)
+                .fallback(http::method_not_allowed),
+        )
+        .route("/api/axis-league/statistics/", any(http::trailing))
         .route(
             "/api/seasonal/cohort",
             get(http::cohort)

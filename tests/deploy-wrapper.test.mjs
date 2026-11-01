@@ -43,6 +43,7 @@ test('deploy consumes verified CI images and preserves recovery and rollback', a
   const routingCases = [...scenarios.map((scenario) => ({ scenario, selector: 'SEASONAL_API_UPSTREAM' })),
     ...showcaseScenarios.map((scenario) => ({ scenario, selector: 'HOME_SHOWCASE_API_UPSTREAM' })),
     ...showcaseScenarios.map((scenario) => ({ scenario, selector: 'ARENA_UI_UPSTREAM' })),
+    ...['routing-to-rust', 'routing-invalid', 'native-upgrade', 'current-rust', 'current-rust-sick'].map(scenario => ({ scenario, selector: 'AXIS_STATISTICS_API_UPSTREAM' })),
     ...['PVE_UI_UPSTREAM', 'REGULAR_UI_UPSTREAM'].flatMap(selector => [...showcaseScenarios,
       'native-population-rollback-incompatible', 'native-ui-rollback-incompatible',
       'native-population-candidate-incompatible', 'native-ui-candidate-incompatible'].map(scenario => ({ scenario, selector })))];
@@ -62,7 +63,9 @@ test('deploy consumes verified CI images and preserves recovery and rollback', a
         case "$*" in
           *'ps -q web') echo web;;
           *'config --environment')
+            if [ "$SELECTOR" != AXIS_STATISTICS_API_UPSTREAM ]; then echo AXIS_STATISTICS_API_UPSTREAM=web:3000; fi
             case "$SCENARIO" in
+              current) echo "$SELECTOR=web:3000";;
               routing-invalid) echo "$SELECTOR=invalid";;
               routing-to-rust|unsupported-rollback|native-*|current-rust*) echo "$SELECTOR=web:3001";;
             esac;;

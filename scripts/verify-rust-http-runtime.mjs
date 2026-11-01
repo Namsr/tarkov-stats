@@ -87,6 +87,7 @@ async function seedArenaFixture() {
   assert.equal(process.env.RUST_UI_RUNTIME_FIXTURE, "true", "Arena runtime fixture requires explicit opt-in");
   assert.equal(process.env.ARENA_UI_UPSTREAM, "web:3001");
   for (const flag of ["SEASONAL_API_UPSTREAM", "HOME_SHOWCASE_API_UPSTREAM", "PVE_UI_UPSTREAM", "REGULAR_UI_UPSTREAM"]) assert.equal(process.env[flag] || "web:3000", "web:3000", `${flag}: verify independent Arena selection`);
+  assert.equal(process.env.AXIS_STATISTICS_API_UPSTREAM || "web:3001", "web:3000", "AXIS_STATISTICS_API_UPSTREAM: verify independent UI selection");
   assert.equal(process.env.AVERAGE_PUBLICATIONS_ENABLED, "false");
   assert.ok(process.env.SQLITE_PATH);
   assert.equal(basename(process.env.SQLITE_PATH), "rust-arena-runtime-smoke.db");
@@ -111,6 +112,7 @@ async function seedPersistentFixture(mode) {
   assert.equal(process.env.RUST_UI_RUNTIME_FIXTURE, "true", "Persistent runtime fixture requires explicit opt-in");
   assert.equal(process.env[`${mode.toUpperCase()}_UI_UPSTREAM`], "web:3001");
   for (const flag of ["SEASONAL_API_UPSTREAM", "HOME_SHOWCASE_API_UPSTREAM", "ARENA_UI_UPSTREAM", "PVE_UI_UPSTREAM", "REGULAR_UI_UPSTREAM"].filter(flag => flag !== `${mode.toUpperCase()}_UI_UPSTREAM`)) assert.equal(process.env[flag] || "web:3000", "web:3000", `${flag}: verify independent ${mode} selection`);
+  assert.equal(process.env.AXIS_STATISTICS_API_UPSTREAM || "web:3001", "web:3000", "AXIS_STATISTICS_API_UPSTREAM: verify independent UI selection");
   assert.equal(process.env.AVERAGE_PUBLICATIONS_ENABLED, "false");
   assert.ok(process.env.SQLITE_PATH);
   assert.equal(basename(process.env.SQLITE_PATH), `rust-${mode}-runtime-smoke.db`);

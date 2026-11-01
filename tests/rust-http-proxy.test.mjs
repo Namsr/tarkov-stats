@@ -49,7 +49,7 @@ test("production proxy selects the Rust endpoint, bounds each upstream and never
   const path = join(directory, "Caddyfile"); await writeFile(path, config);
   const child = spawn(caddy, ["run", "--config", path, "--adapter", "caddyfile"], {
     cwd: directory, windowsHide: true, stdio: ["ignore", "ignore", "pipe"],
-    env: { ...process.env, SEASONAL_API_UPSTREAM: `127.0.0.1:${rustPort}`, HOME_SHOWCASE_API_UPSTREAM: `127.0.0.1:${rustPort}`, ARENA_UI_UPSTREAM: `127.0.0.1:${rustPort}`, PVE_UI_UPSTREAM: `127.0.0.1:${nextPort}`, REGULAR_UI_UPSTREAM: `127.0.0.1:${nextPort}`, GOMEMLIMIT: "192MiB",
+    env: { ...process.env, SEASONAL_API_UPSTREAM: `127.0.0.1:${rustPort}`, AXIS_STATISTICS_API_UPSTREAM: `127.0.0.1:${rustPort}`, HOME_SHOWCASE_API_UPSTREAM: `127.0.0.1:${rustPort}`, ARENA_UI_UPSTREAM: `127.0.0.1:${rustPort}`, PVE_UI_UPSTREAM: `127.0.0.1:${nextPort}`, REGULAR_UI_UPSTREAM: `127.0.0.1:${nextPort}`, GOMEMLIMIT: "192MiB",
       APPDATA: directory, XDG_DATA_HOME: directory, XDG_CONFIG_HOME: directory },
   });
   let logs = ""; child.stderr.setEncoding("utf8"); child.stderr.on("data", (chunk) => { logs = `${logs}${chunk}`.slice(-16000); });
@@ -68,7 +68,7 @@ test("production proxy selects the Rust endpoint, bounds each upstream and never
     try { await request(port, "/proxy-ready"); break; } catch { assert.ok(Date.now() < deadline, logs); await delay(20); }
   }
   for (const host of ["tarkovstats.ru", "tarkovstats.online"]) {
-    for (const path of ["/api/seasonal/cohort?aid=1", "/api/seasonal/cohort/?aid=1", "/api/home/showcase", "/api/home/showcase/?x=1", "/population/arena", "/average/arena?x=1", "/_rust/arena/hash/tarkov_ui.js", "/api/average?mode=arena", "/api/average?mode=arena&mode=pve", "/api/average?m%6Fde=%61r%65%6Ea"]) {
+    for (const path of ["/api/axis-league/statistics", "/api/axis-league/statistics/?x=1", "/api/seasonal/cohort?aid=1", "/api/seasonal/cohort/?aid=1", "/api/home/showcase", "/api/home/showcase/?x=1", "/population/arena", "/average/arena?x=1", "/_rust/arena/hash/tarkov_ui.js", "/api/average?mode=arena", "/api/average?mode=arena&mode=pve", "/api/average?m%6Fde=%61r%65%6Ea"]) {
       const result = await request(port, path, host);
       assert.equal(result.status, 200); assert.equal(JSON.parse(result.body).backend, "rust");
       assert.equal(JSON.parse(result.body).path, path);
@@ -76,7 +76,7 @@ test("production proxy selects the Rust endpoint, bounds each upstream and never
       assert.equal(result.headers.server, undefined);
       assert.match(result.headers["strict-transport-security"], /max-age=31536000/);
     }
-    for (const path of ["/api/seasonal/profile", "/api/seasonal/cohort-extra", "/api/home/showcase-extra", "/api/home/coverage", "/healthz", "/population/pve", "/api/average?mode=pve&mode=arena", "/api/average?mode=&mode=arena", "/api/average?MODE=arena", "/api/average?mode=arenax", "/api/average?mode=arena%20", "/api/average?mode=pve"]) {
+    for (const path of ["/api/axis-league/statistics-extra", "/api/seasonal/profile", "/api/seasonal/cohort-extra", "/api/home/showcase-extra", "/api/home/coverage", "/healthz", "/population/pve", "/api/average?mode=pve&mode=arena", "/api/average?mode=&mode=arena", "/api/average?MODE=arena", "/api/average?mode=arenax", "/api/average?mode=arena%20", "/api/average?mode=pve"]) {
       assert.equal(JSON.parse((await request(port, path, host)).body).backend, "next");
     }
   }
@@ -232,5 +232,51 @@ test("persistent UI selectors independently route decoded modes, assets and ever
       for (const response of await Promise.all(pending)) assert.equal(response.status, 200);
     }
     child.kill(); await running.stopped; running = undefined;
+  }
+});
+
+
+test("AXIS and independent persistent routes coexist in Caddy", {
+  skip: !caddy && "Set CADDY_BIN for the real production-proxy integration test", timeout: 90000,
+}, async t => {
+  const directory = await mkdtemp(join(tmpdir(), "rust-merged-proxy-"));
+  const next = http.createServer((req, res) => res.end(JSON.stringify({ backend:"next", path:req.url })));
+  const native = http.createServer((req, res) => res.end(JSON.stringify({ backend:"rust", path:req.url })));
+  const nextPort = await listen(next), rustPort = await listen(native);
+  const probe = http.createServer(), port = await listen(probe); await close(probe);
+  const source = await readFile("ops/Caddyfile", "utf8");
+  const config = source.replace("{", "{\n admin off\n persist_config off\n auto_https off\n default_bind 127.0.0.1")
+    .replaceAll("web:3000", `127.0.0.1:${nextPort}`)
+    .replace(/^tarkovstats\.ru, www\.tarkovstats\.ru \{/m, `http://tarkovstats.ru:${port} {`)
+    .replace(/^tarkovstats\.online, www\.tarkovstats\.online \{/m, `http://tarkovstats.online:${port} {`);
+  const file = join(directory, "Caddyfile"); await writeFile(file, config);
+  const child = spawn(caddy, ["run", "--config", file, "--adapter", "caddyfile"], {
+    windowsHide:true, cwd:directory, stdio:["ignore", "ignore", "pipe"],
+    env:{ ...process.env, AXIS_STATISTICS_API_UPSTREAM:`127.0.0.1:${rustPort}`, PVE_UI_UPSTREAM:`127.0.0.1:${rustPort}`,
+      REGULAR_UI_UPSTREAM:`127.0.0.1:${nextPort}`, ARENA_UI_UPSTREAM:`127.0.0.1:${nextPort}`,
+      SEASONAL_API_UPSTREAM:`127.0.0.1:${nextPort}`, HOME_SHOWCASE_API_UPSTREAM:`127.0.0.1:${nextPort}`,
+      APPDATA:directory, XDG_CONFIG_HOME:directory, XDG_DATA_HOME:directory },
+  });
+  let logs = ""; child.stderr.on("data", value => { logs = (logs + value).slice(-16000); });
+  const stopped = once(child, "close");
+  t.after(async () => {
+    child.kill(); await stopped; await close(next); await close(native);
+    assert.equal(dirname(resolve(directory)), resolve(tmpdir()));
+    assert.ok(basename(directory).startsWith("rust-merged-proxy-"));
+    await rm(directory, { recursive:true, force:true });
+  });
+  const deadline = Date.now() + 60000;
+  while (true) {
+    assert.equal(child.exitCode, null, logs);
+    try { await request(port, "/proxy-ready"); break; } catch { assert.ok(Date.now() < deadline, logs); await delay(20); }
+  }
+  for (const host of ["tarkovstats.ru", "tarkovstats.online"]) {
+    for (const [path, backend] of [["/api/axis-league/statistics", "rust"], ["/api/axis-league/statistics/", "rust"],
+      ["/api/axis-league/statistics-extra", "next"], ["/api/average?mode=pve", "rust"],
+      ["/api/average?mode=regular", "next"], ["/population/pve", "rust"], ["/population/regular", "next"]]) {
+      const response = await request(port, path, host);
+      assert.equal(response.status, 200, `${host} ${path}: ${logs}`);
+      assert.equal(JSON.parse(response.body).backend, backend, `${host} ${path}`);
+    }
   }
 });

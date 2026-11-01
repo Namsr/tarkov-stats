@@ -213,7 +213,7 @@ export async function runBenchmark(options) {
     version.close();
     const native = options.backend === "rust";
     const env = { ...process.env, PORT: "3000", HOSTNAME: "127.0.0.1", RUST_API_BIND: "127.0.0.1:3001", WEB_BACKGROUND_WORKERS: "false", OBSERVABILITY_SAMPLE_RATE: "0", TRUSTED_IP_HEADER: "x-benchmark-client",
-      SEASONAL_API_UPSTREAM: "web:3000", HOME_SHOWCASE_API_UPSTREAM: "web:3000", ARENA_UI_UPSTREAM: "web:3000", PVE_UI_UPSTREAM: native ? "web:3001" : "web:3000", REGULAR_UI_UPSTREAM: native ? "web:3001" : "web:3000",
+      SEASONAL_API_UPSTREAM: "web:3000", HOME_SHOWCASE_API_UPSTREAM: "web:3000", ARENA_UI_UPSTREAM: "web:3000", AXIS_STATISTICS_API_UPSTREAM: "web:3000", PVE_UI_UPSTREAM: native ? "web:3001" : "web:3000", REGULAR_UI_UPSTREAM: native ? "web:3001" : "web:3000",
       REGULAR_COHORT_BACKEND: "typescript", PVE_COHORT_BACKEND: "typescript", ARENA_COHORT_BACKEND: "typescript", SEASONAL_COHORT_BACKEND: "typescript", LOCAL_FAKE_AVERAGE: "0" };
     record = launch(env);
     const base = `http://127.0.0.1:${native ? 3001 : 3000}`;

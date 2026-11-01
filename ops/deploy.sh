@@ -16,7 +16,7 @@ healthy() {
   [ "$health_status" = 200 ] || return 1
   # Inspect the actual container, including rollback images, rather than the
   # checkout's desired environment. Next alone cannot prove an opted-in API ready.
-  health_native=$(docker inspect --format '{{range .Config.Env}}{{if or (eq . "SEASONAL_API_UPSTREAM=web:3001") (eq . "HOME_SHOWCASE_API_UPSTREAM=web:3001") (eq . "ARENA_UI_UPSTREAM=web:3001") (eq . "PVE_UI_UPSTREAM=web:3001") (eq . "REGULAR_UI_UPSTREAM=web:3001")}}rust{{end}}{{end}}' "$health_cid") || return 1
+  health_native=$(docker inspect --format '{{range .Config.Env}}{{if or (eq . "SEASONAL_API_UPSTREAM=web:3001") (eq . "HOME_SHOWCASE_API_UPSTREAM=web:3001") (eq . "ARENA_UI_UPSTREAM=web:3001") (eq . "PVE_UI_UPSTREAM=web:3001") (eq . "REGULAR_UI_UPSTREAM=web:3001") (eq . "AXIS_STATISTICS_API_UPSTREAM=web:3001")}}rust{{end}}{{end}}' "$health_cid") || return 1
   if [ -n "$health_native" ]; then
     health_rust_status=$(curl --silent --show-error --noproxy '*' --connect-timeout 2 --max-time 5 \
       --header 'Host: tarkovstats.ru' --output /dev/null --write-out '%{http_code}' \
@@ -47,9 +47,13 @@ desired_native=false
 desired_showcase=false
 desired_ui=false
 desired_persistent=false
-for selector in SEASONAL_API_UPSTREAM HOME_SHOWCASE_API_UPSTREAM ARENA_UI_UPSTREAM PVE_UI_UPSTREAM REGULAR_UI_UPSTREAM; do
+for selector in SEASONAL_API_UPSTREAM HOME_SHOWCASE_API_UPSTREAM ARENA_UI_UPSTREAM PVE_UI_UPSTREAM REGULAR_UI_UPSTREAM AXIS_STATISTICS_API_UPSTREAM; do
   desired_api=$(printf '%s\n' "$interpolation" | sed -n "s/^$selector=//p")
-  desired_api=${desired_api:-web:3000}
+  if [ "$selector" = AXIS_STATISTICS_API_UPSTREAM ]; then
+    desired_api=${desired_api:-web:3001}
+  else
+    desired_api=${desired_api:-web:3000}
+  fi
   case "$desired_api" in
     web:3000|web:3001) ;;
     *) logger -t tarkovstats-deploy "deploy deferred: invalid $selector selector"; exit 75 ;;
@@ -229,6 +233,11 @@ while [ "$attempt" -lt 30 ]; do
   cid=$(container)
   actual=$(docker inspect --format '{{index .Config.Labels "org.opencontainers.image.revision"}}' "$cid" 2>/dev/null || true)
   if [ "$actual" = "$remote" ] && healthy; then
+    # Bind-mounted Caddyfile changes are not applied by recreating web alone.
+    # Reload only after the new Rust listener is healthy.
+    if ! git diff --quiet "$previous" "$remote" -- ops/Caddyfile; then
+      compose exec -T caddy caddy reload --config /etc/caddy/Caddyfile
+    fi
     success=1
     rm -f "$state/retry" || true
     logger -t tarkovstats-deploy "deployed $remote"

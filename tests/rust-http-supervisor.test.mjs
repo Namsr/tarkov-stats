@@ -23,7 +23,7 @@ async function fixture(t, env = {}) {
   `);
   const child = spawn(process.execPath, [entry], { cwd: directory, windowsHide: true,
     env: { ...process.env, WEB_BACKGROUND_WORKERS: "false", RUNTIME_HEALTH_ENABLED: "false",
-      SEASONAL_API_UPSTREAM: "web:3000", HOME_SHOWCASE_API_UPSTREAM: "web:3000", ARENA_UI_UPSTREAM: "web:3000", PVE_UI_UPSTREAM: "web:3000", REGULAR_UI_UPSTREAM: "web:3000", RUST_API_BIND: "127.0.0.1:0", RUST_API_BIN: binary, ...env },
+      SEASONAL_API_UPSTREAM: "web:3000", HOME_SHOWCASE_API_UPSTREAM: "web:3000", ARENA_UI_UPSTREAM: "web:3000", PVE_UI_UPSTREAM: "web:3000", REGULAR_UI_UPSTREAM: "web:3000", AXIS_STATISTICS_API_UPSTREAM: "web:3000", RUST_API_BIND: "127.0.0.1:0", RUST_API_BIN: binary, ...env },
     stdio: ["pipe", "pipe", "pipe"] });
   let stdout = "", stderr = "";
   const done = new Promise((resolve) => { child.once("close", (code, signal) => resolve({ code, signal })); });
@@ -66,6 +66,23 @@ test("web startup rejects unknown routing and does not require Rust for the defa
   assert.equal((await original.done).code, 0);
   assert.equal(original.events().filter((event) => event.name === "Rust API").length, 0);
   assert.ok(original.events().some((event) => event.event === "next_fixture_ready"));
+});
+
+test("AXIS statistics alone requires the Rust API", { timeout: 20000 }, async (t) => {
+  const missing = await fixture(t, { AXIS_STATISTICS_API_UPSTREAM: "web:3001", RUST_API_BIN: resolve("missing-rust-http-server") });
+  assert.equal((await missing.done).code, 1);
+  assert.match(missing.stderr(), /Rust API spawn failed/);
+  assert.equal(missing.events().some((event) => event.event === "next_fixture_ready"), false);
+});
+
+test("AXIS default starts Rust and invalid selection is rejected", { timeout: 20000 }, async t => {
+  const invalid = await fixture(t, { AXIS_STATISTICS_API_UPSTREAM: "external:3001" });
+  assert.equal((await invalid.done).code, 1);
+  assert.match(invalid.stderr(), /AXIS_STATISTICS_API_UPSTREAM must be/);
+  const missing = await fixture(t, { AXIS_STATISTICS_API_UPSTREAM: undefined, RUST_API_BIN: resolve("missing-rust-http-server") });
+  assert.equal((await missing.done).code, 1);
+  assert.match(missing.stderr(), /Rust API spawn failed/);
+  assert.equal(missing.events().some(event => event.event === "next_fixture_ready"), false);
 });
 
 test("opted-in Rust spawn failure prevents a falsely healthy Next server", { timeout: 20000 }, async (t) => {
@@ -203,7 +220,7 @@ test("persistent UI-only and combined selections use one ready Rust server witho
   const assets = process.env.RUST_PERSISTENT_UI_ASSETS || resolve("public/_rust/persistent");
   assert.ok(existsSync(join(assets, "manifest.json")), "build real persistent UI assets before supervisor checks");
   const combinations = [{ PVE_UI_UPSTREAM: "web:3001" }, { REGULAR_UI_UPSTREAM: "web:3001" }, { PVE_UI_UPSTREAM: "web:3001", REGULAR_UI_UPSTREAM: "web:3001" },
-    { PVE_UI_UPSTREAM: "web:3001", REGULAR_UI_UPSTREAM: "web:3001", ARENA_UI_UPSTREAM: "web:3001", HOME_SHOWCASE_API_UPSTREAM: "web:3001", SEASONAL_API_UPSTREAM: "web:3001" }];
+    { PVE_UI_UPSTREAM: "web:3001", REGULAR_UI_UPSTREAM: "web:3001", ARENA_UI_UPSTREAM: "web:3001", HOME_SHOWCASE_API_UPSTREAM: "web:3001", SEASONAL_API_UPSTREAM: "web:3001", AXIS_STATISTICS_API_UPSTREAM: "web:3001" }];
   for (const selection of combinations) {
     const run = await fixture(t, { ...selection, RUST_PERSISTENT_UI_ASSETS: assets, RUST_UI_ASSETS: resolve("public/_rust/arena") });
     const next = await run.waitEvent(event => event.event === "next_fixture_ready");
@@ -283,7 +300,7 @@ test("persistent image fixture guards reject accidental data writes before datab
     const path = join(tmpdir(), `blocked-${mode}-runtime-${process.pid}-${Date.now()}.db`);
     const child = spawn(process.execPath, [resolve("scripts/verify-rust-http-runtime.mjs"), `--${mode}-ui`], {
       windowsHide: true, env: { ...process.env, RUST_UI_RUNTIME_FIXTURE: String(optIn), SQLITE_PATH: path, AVERAGE_PUBLICATIONS_ENABLED: "false",
-        SEASONAL_API_UPSTREAM: "web:3000", HOME_SHOWCASE_API_UPSTREAM: "web:3000", ARENA_UI_UPSTREAM: "web:3000", PVE_UI_UPSTREAM: "web:3000", REGULAR_UI_UPSTREAM: "web:3000", [`${mode.toUpperCase()}_UI_UPSTREAM`]: "web:3001" },
+        SEASONAL_API_UPSTREAM: "web:3000", HOME_SHOWCASE_API_UPSTREAM: "web:3000", ARENA_UI_UPSTREAM: "web:3000", AXIS_STATISTICS_API_UPSTREAM: "web:3000", PVE_UI_UPSTREAM: "web:3000", REGULAR_UI_UPSTREAM: "web:3000", [`${mode.toUpperCase()}_UI_UPSTREAM`]: "web:3001" },
       stdio: ["ignore", "ignore", "pipe"],
     });
     let stderr = ""; child.stderr.on("data", chunk => { stderr += chunk; });

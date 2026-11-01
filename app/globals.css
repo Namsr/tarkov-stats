@@ -1670,9 +1670,9 @@ a.help-card:hover { border-color: var(--foreground); }
 .admin-back:hover { color: var(--foreground); }
 .admin-tabs { display: flex; gap: 5px; margin-top: 34px; overflow-x: auto; border-bottom: 1px solid var(--card-border); scrollbar-width: none; }
 .admin-tabs::-webkit-scrollbar { display: none; }
-.admin-tabs button { flex: 0 0 auto; min-height: 44px; display: inline-flex; align-items: center; gap: 7px; border-bottom: 2px solid transparent; padding: 10px 14px; color: var(--muted); font-size: .72rem; font-weight: 800; letter-spacing: .08em; text-transform: uppercase; }
-.admin-tabs button:hover { color: var(--foreground); }
-.admin-tabs button.is-active { border-color: var(--foreground); color: var(--foreground); }
+.admin-tabs button, .axis-view-switch a { flex: 0 0 auto; min-height: 44px; display: inline-flex; align-items: center; gap: 7px; border-bottom: 2px solid transparent; padding: 10px 14px; color: var(--muted); font-size: .72rem; font-weight: 800; letter-spacing: .08em; text-transform: uppercase; }
+.admin-tabs button:hover, .axis-view-switch a:hover { color: var(--foreground); }
+.admin-tabs button.is-active, .axis-view-switch a.is-active { border-color: var(--foreground); color: var(--foreground); }
 .admin-tab-alert { min-width: 19px; height: 19px; display: inline-grid; place-items: center; border-radius: 999px; background: var(--danger); color: var(--background); padding: 0 5px; font-size: .61rem; font-variant-numeric: tabular-nums; letter-spacing: 0; line-height: 1; }
 .admin-tab-alert--degraded { background: var(--foreground); }
 .admin-filters { display: flex; align-items: end; gap: 12px; margin: 20px 0 24px; }
