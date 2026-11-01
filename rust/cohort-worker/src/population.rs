@@ -6,6 +6,7 @@ use rusqlite::{
     types::{Value as SqlValue, ValueRef},
 };
 use serde_json::{Map, Value, json};
+use std::rc::Rc;
 
 pub const COLUMNS: [&str; 17] = [
     "hours",
@@ -262,11 +263,164 @@ fn fallback_bounds(dimension: &str) -> Value {
 pub fn unavailable_average(input: &AverageInput) -> Value {
     json!({"storage":"unavailable","body":{"mode":input.mode,"cycleId":"persistent","total":0,"averages":null,"metricCounts":{},"brackets":[],"buckets":[],"histogram":[],"bounds":fallback_bounds(&input.dimension),"dimension":input.dimension,"metric":input.metric,"statistic":input.statistic,"period":input.period}})
 }
+// Read and sort ordinary numeric metrics once, but let SQLite perform AVG on
+// their original storage classes. Exceptional values and metrics with mixed
+// INTEGER/REAL storage classes retain the original SQL path. The option is deliberately
+// opportunistic: allocation or virtual-table failure cannot reject a job that
+// the existing SQL path could handle.
+fn numeric_value(value: ValueRef<'_>) -> Option<(SqlValue, bool)> {
+    match value {
+        ValueRef::Integer(v) if (-SAFE_INTEGER..=SAFE_INTEGER).contains(&v) => {
+            Some((SqlValue::Integer(v), false))
+        }
+        ValueRef::Real(v) if v.is_finite() && !(v == 0.0 && v.is_sign_negative()) => {
+            Some((SqlValue::Real(v), true))
+        }
+        _ => None,
+    }
+}
+fn numeric_averages(
+    db: &Connection,
+    input: &AverageInput,
+    conditions: &str,
+    parameters: &[SqlValue],
+    counts: &[usize],
+    limit: usize,
+) -> Option<Vec<Option<Value>>> {
+    let mut vectors: Vec<Option<Vec<SqlValue>>> = counts
+        .iter()
+        .map(|&count| {
+            let sorted = input.statistic == "median" || count >= 20;
+            if sorted && count > 0 {
+                Some(Vec::new())
+            } else {
+                None
+            }
+        })
+        .collect();
+    if vectors.iter().all(Option::is_none) {
+        return Some(vec![None; COLUMNS.len()]);
+    }
+    // A schema object can shadow the eponymous module. Avoid calling any
+    // unrelated table-valued function that happens to use the same name.
+    let occupied: i64 = db.query_row(
+        "SELECT EXISTS(SELECT 1 FROM main.sqlite_schema WHERE name = 'rarray' COLLATE NOCASE UNION ALL SELECT 1 FROM temp.sqlite_schema WHERE name = 'rarray' COLLATE NOCASE)",
+        [],
+        |row| row.get(0),
+    ).ok()?;
+    if occupied != 0 {
+        return None;
+    }
+    let projection = COLUMNS
+        .iter()
+        .map(|column| {
+            if ["pmc_kd_ratio", "killed_pmc"].contains(column) {
+                format!("CASE WHEN pvp_stats_known = 1 THEN {column} END")
+            } else {
+                column.to_string()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(",");
+    let mut stmt = db
+        .prepare(&format!(
+            "SELECT {projection} FROM {} WHERE {conditions}",
+            table(&input.mode)
+        ))
+        .ok()?;
+    let mut rows = stmt.query(params_from_iter(parameters.iter())).ok()?;
+    let mut used = 0usize;
+    let mut kinds = [None; COLUMNS.len()];
+    while let Some(row) = rows.next().ok()? {
+        for (i, slot) in vectors.iter_mut().enumerate() {
+            let Some(vector) = slot.as_mut() else {
+                continue;
+            };
+            let value = row.get_ref(i).ok()?;
+            if value == ValueRef::Null {
+                continue;
+            }
+            let value = numeric_value(value);
+            let Some((value, kind)) =
+                value.filter(|(_, kind)| kinds[i].is_none_or(|previous| previous == *kind))
+            else {
+                used -= vector.capacity() * size_of::<SqlValue>();
+                *slot = None;
+                continue;
+            };
+            kinds[i] = Some(kind);
+            if vector.len() == vector.capacity() {
+                let remaining = limit.saturating_sub(used) / size_of::<SqlValue>();
+                if remaining == 0 {
+                    return None;
+                }
+                let previous = vector.capacity();
+                vector
+                    .try_reserve_exact(previous.max(4).min(remaining))
+                    .ok()?;
+                let bytes = (vector.capacity() - previous).checked_mul(size_of::<SqlValue>())?;
+                used = used.checked_add(bytes).filter(|used| *used <= limit)?;
+            }
+            vector.push(value);
+        }
+    }
+    drop(rows);
+    drop(stmt);
+    let mut average = db.prepare("SELECT AVG(value) FROM rarray(?)").ok()?;
+    let mut output = vec![None; COLUMNS.len()];
+    for (i, slot) in vectors.iter_mut().enumerate() {
+        let Some(mut vector) = slot.take() else {
+            continue;
+        };
+        if vector.len() != counts[i] {
+            continue;
+        }
+        let as_number = |v: &SqlValue| match v {
+            SqlValue::Integer(n) => *n as f64,
+            SqlValue::Real(n) => *n,
+            _ => unreachable!(),
+        };
+        vector.sort_unstable_by(|a, b| as_number(a).partial_cmp(&as_number(b)).unwrap());
+        let (offset, length) = if input.statistic == "median" {
+            (
+                (vector.len() - 1) / 2,
+                if vector.len().is_multiple_of(2) { 2 } else { 1 },
+            )
+        } else {
+            let trim = (vector.len() as f64 * 0.05).floor() as usize;
+            (trim, vector.len() - 2 * trim)
+        };
+        vector.truncate(offset + length);
+        vector.drain(..offset);
+        let array = Rc::new(vector);
+        let mut result = average.query([array]).ok()?;
+        output[i] = Some(
+            result
+                .next()
+                .ok()?
+                .map(|row| nullable_at(row, 0))
+                .transpose()
+                .ok()?
+                .unwrap_or(Value::Null),
+        );
+    }
+    Some(output)
+}
 fn averages(
     db: &Connection,
     input: &AverageInput,
     base: &str,
     base_parameters: &[SqlValue],
+) -> Result<(Value, Value), String> {
+    averages_impl(db, input, base, base_parameters, true, MAX_VECTOR_BYTES)
+}
+fn averages_impl(
+    db: &Connection,
+    input: &AverageInput,
+    base: &str,
+    base_parameters: &[SqlValue],
+    use_numeric: bool,
+    limit: usize,
 ) -> Result<(Value, Value), String> {
     let mut conditions = base.to_string();
     let mut parameters = base_parameters.to_vec();
@@ -310,14 +464,26 @@ fn averages(
         .map_err(|e| e.to_string())?
         .ok_or("Population count missing")?;
     let n = number_at(row, 0)?;
+    let counts = (0..COLUMNS.len())
+        .map(|i| number_at(row, i + 1).map(|n| n as usize))
+        .collect::<Result<Vec<_>, _>>()?;
+    drop(rows);
+    drop(counted);
+    let fast = use_numeric
+        .then(|| numeric_averages(db, input, &conditions, &parameters, &counts, limit))
+        .flatten();
     let mut values = Map::new();
     let mut metric_counts = Map::new();
     values.insert("n".into(), json!(n as u64));
     for (i, column) in COLUMNS.iter().enumerate() {
-        let count = number_at(row, i + 1)? as usize;
+        let count = counts[i];
         metric_counts.insert(column.to_string(), json!(count));
         if count == 0 {
             values.insert(column.to_string(), Value::Null);
+            continue;
+        }
+        if let Some(Some(value)) = fast.as_ref().map(|v| &v[i]) {
+            values.insert(column.to_string(), value.clone());
             continue;
         }
         let where_metric = metric_where(&conditions, column);
@@ -674,6 +840,7 @@ mod tests {
             .collect::<Vec<_>>()
             .join(",");
         db.execute_batch(&format!("CREATE TABLE players(aid INTEGER PRIMARY KEY,profile_updated_at INTEGER,pvp_stats_known INTEGER,{fields});CREATE TABLE mode_players(mode TEXT,aid INTEGER,profile_updated_at INTEGER,pvp_stats_known INTEGER,{fields});CREATE TABLE excluded_players(aid INTEGER PRIMARY KEY);")).unwrap();
+        rusqlite::vtab::array::load_module(&db).unwrap();
         db
     }
     fn input(extra: Value) -> AverageInput {
@@ -692,6 +859,208 @@ mod tests {
         }
         parse_average("pve", args.as_array().unwrap()).unwrap()
     }
+    #[test]
+    fn array_name_conflict_falls_back_to_original_sql() {
+        let db = database();
+        db.execute_batch(
+            "CREATE VIRTUAL TABLE rarray USING fts5(value); INSERT INTO rarray(value) VALUES('1');",
+        )
+        .unwrap();
+        for i in 1..=21 {
+            db.execute(
+                "INSERT INTO mode_players(mode,aid,hours,kd_ratio) VALUES('pve',?,100,?)",
+                rusqlite::params![i, i as f64 / 7.0],
+            )
+            .unwrap();
+        }
+        let q = input(json!({}));
+        let (base, params) = base_where("pve", "all", 0.0);
+        let mut counts = [0; COLUMNS.len()];
+        counts[0] = 21;
+        counts[5] = 21;
+        assert!(numeric_averages(&db, &q, &base, &params, &counts, MAX_VECTOR_BYTES).is_none());
+        assert_eq!(
+            averages(&db, &q, &base, &params).unwrap(),
+            averages_impl(&db, &q, &base, &params, false, MAX_VECTOR_BYTES).unwrap()
+        );
+        db.execute_batch("DROP TABLE rarray; CREATE TEMP TABLE RARRAY(value);")
+            .unwrap();
+        assert!(numeric_averages(&db, &q, &base, &params, &counts, MAX_VECTOR_BYTES).is_none());
+        assert_eq!(
+            averages(&db, &q, &base, &params).unwrap(),
+            averages_impl(&db, &q, &base, &params, false, MAX_VECTOR_BYTES).unwrap()
+        );
+    }
+
+    #[test]
+    fn numeric_guard_rejects_negative_zero_and_non_finite_or_unsafe_values() {
+        assert!(numeric_value(ValueRef::Real(-0.0)).is_none());
+        assert!(numeric_value(ValueRef::Real(0.0)).is_some());
+        assert!(numeric_value(ValueRef::Real(f64::INFINITY)).is_none());
+        assert!(numeric_value(ValueRef::Real(f64::NAN)).is_none());
+        assert!(numeric_value(ValueRef::Integer(SAFE_INTEGER + 1)).is_none());
+        assert!(numeric_value(ValueRef::Text(b"4")).is_none());
+        assert!(numeric_value(ValueRef::Blob(b"4")).is_none());
+    }
+
+    #[test]
+    fn numeric_path_matches_original_sql_and_falls_back_on_exceptional_values_and_budget() {
+        let db = Connection::open_in_memory().unwrap();
+        let fields = COLUMNS.join(",");
+        db.execute_batch(&format!("CREATE TABLE players(aid INTEGER PRIMARY KEY,profile_updated_at INTEGER,pvp_stats_known INTEGER,{fields});CREATE TABLE mode_players(mode TEXT,aid INTEGER,profile_updated_at INTEGER,pvp_stats_known INTEGER,{fields});CREATE TABLE excluded_players(aid INTEGER PRIMARY KEY);")).unwrap();
+        rusqlite::vtab::array::load_module(&db).unwrap();
+        for mode in ["regular", "pve"] {
+            let table = table(mode);
+            for i in 1..=41 {
+                let known = if i % 3 == 0 { 0 } else { 1 };
+                let mixed = if i % 2 == 0 {
+                    SqlValue::Integer(i)
+                } else {
+                    SqlValue::Real(i as f64 + 0.25)
+                };
+                let text_or_blob = if i % 2 == 0 {
+                    SqlValue::Text("bad".into())
+                } else {
+                    SqlValue::Blob(vec![50])
+                };
+                let stmt = format!(
+                    "INSERT INTO {table}(aid,profile_updated_at,pvp_stats_known,hours,pmc_raids,total_raids,kd_ratio,pmc_kd_ratio,scav_raids,run_through,killed_pmc) VALUES(?,?,?,?,?,?,?,?,?,?,?)"
+                );
+                // mode_players defaults to NULL mode; assign it immediately below.
+                db.execute(
+                    &stmt,
+                    rusqlite::params![
+                        i,
+                        if i % 5 == 0 { 0 } else { 100 },
+                        known,
+                        100.0f64,
+                        i,
+                        i,
+                        i as f64 / 7.0,
+                        mixed,
+                        text_or_blob,
+                        i64::MAX,
+                        f64::INFINITY
+                    ],
+                )
+                .unwrap();
+                if mode == "pve" {
+                    db.execute("UPDATE mode_players SET mode='pve' WHERE aid=?", [i])
+                        .unwrap();
+                }
+            }
+        }
+        db.execute("INSERT INTO excluded_players VALUES(3)", [])
+            .unwrap();
+        db.execute_batch("PRAGMA query_only=ON;").unwrap();
+        let cutoff_now = 100.0 + 90.0 * 86_400_000.0;
+        for mode in ["regular", "pve"] {
+            for statistic in ["median", "trimmed_mean"] {
+                for period in ["all", "90d"] {
+                    for (min, max, inclusive) in [
+                        (None, None, true),
+                        (Some(10.0), Some(30.0), true),
+                        (Some(10.0), Some(30.0), false),
+                    ] {
+                        let mut q = input(json!({}));
+                        q.mode = mode.into();
+                        q.dimension = "pmc_raids".into();
+                        q.statistic = statistic.into();
+                        q.period = period.into();
+                        q.min = min;
+                        q.max = max;
+                        q.inclusive = inclusive;
+                        let (base, params) = base_where(mode, period, cutoff_now);
+                        let old = averages_impl(&db, &q, &base, &params, false, MAX_VECTOR_BYTES)
+                            .unwrap();
+                        assert_eq!(
+                            averages_impl(&db, &q, &base, &params, true, MAX_VECTOR_BYTES).unwrap(),
+                            old,
+                            "{mode}/{statistic}/{period}/{min:?}/{max:?}/{inclusive}"
+                        );
+                        assert_eq!(
+                            averages_impl(&db, &q, &base, &params, true, 0).unwrap(),
+                            old,
+                            "budget fallback"
+                        );
+                    }
+                }
+            }
+            let q = input(json!({}));
+            let (base, params) = base_where(mode, "all", cutoff_now);
+            let fast = numeric_averages(
+                &db,
+                &AverageInput {
+                    mode: mode.into(),
+                    ..q
+                },
+                &base,
+                &params,
+                &[40; COLUMNS.len()],
+                MAX_VECTOR_BYTES,
+            )
+            .unwrap();
+            assert!(fast[0].is_some(), "ordinary REAL column takes fast path");
+            assert!(fast[1].is_some(), "ordinary INTEGER column takes fast path");
+            assert!(fast[3].is_none(), "TEXT/BLOB fallback");
+            assert!(fast[6].is_none(), "mixed INTEGER/REAL fallback");
+            assert!(fast[10].is_none(), "infinity fallback");
+            assert!(fast[11].is_none(), "unsafe INTEGER fallback");
+        }
+    }
+
+    #[test]
+    fn missing_array_module_falls_back_on_readonly_query_only_database() {
+        let path = std::env::temp_dir().join(format!(
+            "population-array-fallback-{}-{}.sqlite",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        {
+            let db = Connection::open(&path).unwrap();
+            let fields = COLUMNS
+                .iter()
+                .map(|c| format!("{c} REAL"))
+                .collect::<Vec<_>>()
+                .join(",");
+            db.execute_batch(&format!("CREATE TABLE players(aid INTEGER PRIMARY KEY,profile_updated_at INTEGER,pvp_stats_known INTEGER,{fields});CREATE TABLE mode_players(mode TEXT,aid INTEGER,profile_updated_at INTEGER,pvp_stats_known INTEGER,{fields});CREATE TABLE excluded_players(aid INTEGER PRIMARY KEY);")).unwrap();
+            for i in 1..=21 {
+                db.execute(
+                    "INSERT INTO mode_players(mode,aid,hours,kd_ratio) VALUES('pve',?,100,?)",
+                    rusqlite::params![i, i as f64 / 7.0],
+                )
+                .unwrap();
+            }
+        }
+        {
+            let db = Connection::open_with_flags(&path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+                .unwrap();
+            db.execute_batch("PRAGMA query_only=ON").unwrap();
+            assert!(db.execute("DELETE FROM mode_players", []).is_err());
+            assert!(db.prepare("SELECT AVG(value) FROM rarray(?)").is_err());
+            let q = input(json!({}));
+            let (base, params) = base_where("pve", "all", 0.0);
+            let expected = averages_impl(&db, &q, &base, &params, false, MAX_VECTOR_BYTES).unwrap();
+            assert_eq!(averages(&db, &q, &base, &params).unwrap(), expected);
+            assert_eq!(compute_average(&db, &q, 0.0).unwrap()["storage"], "sqlite");
+            rusqlite::vtab::array::load_module(&db).unwrap();
+            let mut counts = [0; COLUMNS.len()];
+            counts[0] = 21;
+            counts[5] = 21;
+            assert!(
+                numeric_averages(&db, &q, &base, &params, &counts, MAX_VECTOR_BYTES).unwrap()[5]
+                    .is_some()
+            );
+            assert_eq!(averages(&db, &q, &base, &params).unwrap(), expected);
+            // Registration also succeeds after the fast-path query completes.
+            rusqlite::vtab::array::load_module(&db).unwrap();
+        }
+        std::fs::remove_file(path).unwrap();
+    }
+
     #[test]
     fn empty_populations_are_not_unavailable_and_missing_storage_is_not_zero() {
         let db = database();
