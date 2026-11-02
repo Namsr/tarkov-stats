@@ -121,7 +121,7 @@ jobs:
           echo "CADDY_BIN=$RUNNER_TEMP/caddy-bin/caddy" >> "$GITHUB_ENV"
       - name: Run the affected proxy and fixture tests
         if: steps.scope.outputs.ui_proxy_only == 'true'
-        run: node --experimental-strip-types --test tests/caddy-overload.test.mjs tests/rust-http-proxy.test.mjs tests/rust-arena-browser-lifecycle.test.mjs
+        run: node --experimental-strip-types --experimental-sqlite --test tests/caddy-overload.test.mjs tests/rust-http-proxy.test.mjs tests/rust-arena-browser-lifecycle.test.mjs tests/cleanup-does-not-mask-assertions.test.mjs
       - name: Run the affected navigation tests
         if: steps.scope.outputs.ui_proxy_only == 'true' && steps.scope.outputs.navigation == 'true'
         run: |
