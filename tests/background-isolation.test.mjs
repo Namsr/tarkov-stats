@@ -31,6 +31,12 @@ test("VPS containers leave host headroom and all offline jobs use the shared bud
   assert.match(compose, /command: \["node", "--experimental-strip-types", "--experimental-sqlite", "scripts\/sample-home-coverage\.mjs"\]/);
   const dockerfile = await readFile("Dockerfile", "utf8");
   assert.match(dockerfile, /COPY .*scripts\/sample-home-coverage\.mjs/);
+  // The web container also samples the counter, so an outdated compose file
+  // cannot leave the public total frozen until the next index swap.
+  assert.match(dockerfile, /ENV HOME_COUNTER_SAMPLER=true/);
+  const startup = await readFile("scripts/start-web.mjs", "utf8");
+  assert.match(startup, /HOME_COUNTER_SAMPLER === "true"/);
+  assert.match(startup, /"scripts\/sample-home-coverage\.mjs"/);
   const slice = await readFile("ops/systemd/tarkovstats-background.slice", "utf8");
   assert.match(slice, /^MemoryMax=512M$/m);
   assert.match(slice, /^MemorySwapMax=256M$/m);
