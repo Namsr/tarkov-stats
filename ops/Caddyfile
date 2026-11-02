@@ -128,9 +128,9 @@
 	respond @privateFiles 404
 	# Match the first decoded mode value, like URLSearchParams.get(). A plain
 	# query matcher would also accept a later mode=arena after mode=pve.
-	map {http.request.uri.query} {average_first_mode} {
-		~(^|&)(m|%6[dD])(o|%6[fF])(d|%64)(e|%65)(=([^&]*))?(&|$) "${7}"
-		default ""
+	map {http.request.uri.query} {average_first_mode} {average_mode_state} {
+		~(^|&)(m|%6[dD])(o|%6[fF])(d|%64)(e|%65)(=([^&]*))?(&|$) "${7}" present
+		default "" missing
 	}
 	@arenaAverage {
 		path /api/average /api/average/
@@ -141,6 +141,14 @@
 	}
 	@arenaDocument path /population/arena /population/arena/ /average/arena /average/arena/ /_rust/arena/*
 	reverse_proxy @arenaDocument {$ARENA_UI_UPSTREAM:web:3000} {
+		import web_upstream
+	}
+	# The population API selector is independent of all page/UI selectors.
+	@persistentPopulation {
+		path /api/average /api/average/ /api/average/metrics /api/average/metrics/ /api/average/achievements /api/average/achievements/ /api/progression/average /api/progression/average/
+		expression `{average_mode_state} == 'missing' || {average_first_mode}.matches('^(p|%70)(v|%76)(e|%65)$') || {average_first_mode}.matches('^(r|%72)(e|%65)(g|%67)(u|%75)(l|%6[cC])(a|%61)(r|%72)$')`
+	}
+	reverse_proxy @persistentPopulation {$PERSISTENT_POPULATION_API_UPSTREAM:web:3000} {
 		import web_upstream
 	}
 	# AXIS aggregate metrics are calculated and served by the Rust HTTP backend.
@@ -196,6 +204,20 @@
 			}
 			handle @retryArenaAverage {
 				reverse_proxy {$ARENA_UI_UPSTREAM:web:3000} {
+					import web_upstream
+					lb_try_duration 4s
+					lb_try_interval 100ms
+					lb_retry_match {
+						expression false
+					}
+				}
+			}
+			@retryPersistentPopulation {
+				path /api/average /api/average/ /api/average/metrics /api/average/metrics/ /api/average/achievements /api/average/achievements/ /api/progression/average /api/progression/average/
+				expression `{average_mode_state} == 'missing' || {average_first_mode}.matches('^(p|%70)(v|%76)(e|%65)$') || {average_first_mode}.matches('^(r|%72)(e|%65)(g|%67)(u|%75)(l|%6[cC])(a|%61)(r|%72)$')`
+			}
+			handle @retryPersistentPopulation {
+				reverse_proxy {$PERSISTENT_POPULATION_API_UPSTREAM:web:3000} {
 					import web_upstream
 					lb_try_duration 4s
 					lb_try_interval 100ms

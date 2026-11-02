@@ -727,6 +727,10 @@ const suitesThatCloseTheHandleOrTheProcessFirst = [
   "tests/caddy-overload.test.mjs",
   // Benchmark fixtures contain JSON only; no SQLite handles are opened.
   "tests/rust-http-benchmark.test.mjs",
+  // These API benchmark summaries use bounded JSON fixtures and wait for children.
+  "tests/rust-persistent-http-benchmark.test.mjs",
+  // Publication reset and all server/SQLite handles are closed before cleanup.
+  "tests/rust-progression-http.test.mjs",
   // Proxy fixture servers and all upstream sockets are closed before deleting files.
   "tests/rust-http-proxy.test.mjs",
   // Supervised HTTP processes exit before their fixture directory is removed.
