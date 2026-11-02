@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { readFile } from "node:fs/promises";
 import { basename } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
@@ -148,4 +148,39 @@ test("CDP evaluation keeps exception description and stack with a text-only fall
   await assert.rejects(tab.evaluate("expression"), /Execution failed/);
   exceptionDetails = null;
   assert.equal(await tab.evaluate("expression"), 42);
+});
+
+
+test("browser fixture Caddy configuration adapts with the shared admission limit", {
+  skip: !process.env.CADDY_BIN && "Set CADDY_BIN to validate the real fixture configuration",
+}, async () => {
+  const fixtureSource = await readFile(new URL("../scripts/serve-rust-arena-benchmark.mjs", import.meta.url), "utf8");
+  const fixtureTree = ts.createSourceFile("fixture.mjs", fixtureSource, ts.ScriptTarget.Latest, true, ts.ScriptKind.JS);
+  let expression;
+  function visit(node) {
+    if (ts.isVariableDeclaration(node) && node.name.getText(fixtureTree) === "source" &&
+        node.initializer?.getText(fixtureTree).startsWith("canonicalSource.replace(")) {
+      expression = node.initializer.getText(fixtureTree);
+    }
+    ts.forEachChild(node, visit);
+  }
+  visit(fixtureTree);
+  assert.ok(expression, "execute the fixture's actual Caddy configuration builder");
+  const config = runInNewContext(expression, {
+    canonicalSource: await readFile(new URL("../ops/Caddyfile", import.meta.url), "utf8"),
+    syntheticPaths: ["/api/auth/me"], gatewayPort: 19091,
+  });
+  const result = spawnSync(process.env.CADDY_BIN, ["adapt", "--config", "-", "--adapter", "caddyfile"], {
+    input: config, encoding: "utf8", windowsHide: true, timeout: 10000,
+  });
+  assert.equal(result.status, 0, result.stderr || result.error?.message);
+  let syntheticProxy;
+  function findProxy(value) {
+    if (!value || typeof value !== "object") return;
+    if (value.handler === "reverse_proxy" && value.upstreams?.some(upstream => upstream.dial === "127.0.0.1:19091")) syntheticProxy = value;
+    for (const child of Object.values(value)) findProxy(child);
+  }
+  findProxy(JSON.parse(result.stdout));
+  assert.ok(syntheticProxy, "the fixture gateway stays in the adapted config");
+  assert.equal(syntheticProxy.health_checks?.passive?.unhealthy_request_count, 32);
 });
