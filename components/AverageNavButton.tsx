@@ -17,7 +17,7 @@ export default function CompareNavButton({ onNavigate }: { onNavigate?: () => vo
     : base;
 
   return (
-    <Link
+    <Link prefetch={false}
       href="/compare"
       className={className}
       aria-current={active ? "page" : undefined}

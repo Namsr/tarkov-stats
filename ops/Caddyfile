@@ -17,7 +17,7 @@
 (web_upstream) {
 	# Shared across both sites because they use the same upstream address.
 	# Reject excess requests with 503 instead of retaining an unbounded queue.
-	unhealthy_request_count 32
+	unhealthy_request_count {args[0]}
 	# One upstream: do not quarantine both sites after one failed request.
 	fail_duration 0
 	transport http {
@@ -137,29 +137,39 @@
 		expression `{average_first_mode}.matches('^(a|%61)(r|%72)(e|%65)(n|%6[eE])(a|%61)$')`
 	}
 	reverse_proxy @arenaAverage {$ARENA_UI_UPSTREAM:web:3000} {
-		import web_upstream
+		import web_upstream 32
 	}
 	@arenaDocument path /population/arena /population/arena/ /average/arena /average/arena/ /_rust/arena/*
 	reverse_proxy @arenaDocument {$ARENA_UI_UPSTREAM:web:3000} {
-		import web_upstream
+		import web_upstream 32
 	}
 	# AXIS aggregate metrics are calculated and served by the Rust HTTP backend.
 	@axisStatistics path /api/axis-league/statistics /api/axis-league/statistics/
 	reverse_proxy @axisStatistics {$AXIS_STATISTICS_API_UPSTREAM:web:3001} {
-		import web_upstream
+		import web_upstream 32
 	}
 	# Select the complete Seasonal endpoint explicitly. The default still uses Next.
 	@seasonalCohort path /api/seasonal/cohort /api/seasonal/cohort/
 	reverse_proxy @seasonalCohort {$SEASONAL_API_UPSTREAM:web:3000} {
-		import web_upstream
+		import web_upstream 32
 	}
 	# The public home configuration can move independently of Seasonal.
 	@homeShowcase path /api/home/showcase /api/home/showcase/
 	reverse_proxy @homeShowcase {$HOME_SHOWCASE_API_UPSTREAM:web:3000} {
-		import web_upstream
+		import web_upstream 32
+	}
+	# Speculative Next.js prefetch shares the real upstream counter, but stops
+	# at 8 in-flight requests so it cannot fill all 32 navigation/API slots.
+	@nextPrefetch {
+		method GET
+		header RSC 1
+		header Next-Router-Prefetch 1
+	}
+	reverse_proxy @nextPrefetch web:3000 {
+		import web_upstream 8
 	}
 	reverse_proxy web:3000 {
-		import web_upstream
+		import web_upstream 32
 	}
 	# Only a refused TCP dial proves the application has not accepted the request.
 	# Ordinary overload (503), read resets and timeouts never enter this retry pool.
@@ -171,7 +181,7 @@
 			handle @retrySeasonal {
 				# A refused Rust dial retries Rust; it never falls back to Next.
 				reverse_proxy {$SEASONAL_API_UPSTREAM:web:3000} {
-					import web_upstream
+					import web_upstream 32
 					lb_try_duration 4s
 					lb_try_interval 100ms
 					lb_retry_match {
@@ -182,7 +192,7 @@
 			@retryHomeShowcase path /api/home/showcase /api/home/showcase/
 			handle @retryHomeShowcase {
 				reverse_proxy {$HOME_SHOWCASE_API_UPSTREAM:web:3000} {
-					import web_upstream
+					import web_upstream 32
 					lb_try_duration 4s
 					lb_try_interval 100ms
 					lb_retry_match {
@@ -196,7 +206,7 @@
 			}
 			handle @retryArenaAverage {
 				reverse_proxy {$ARENA_UI_UPSTREAM:web:3000} {
-					import web_upstream
+					import web_upstream 32
 					lb_try_duration 4s
 					lb_try_interval 100ms
 					lb_retry_match {
@@ -207,7 +217,17 @@
 			@retryArenaDocument path /population/arena /population/arena/ /average/arena /average/arena/ /_rust/arena/*
 			handle @retryArenaDocument {
 				reverse_proxy {$ARENA_UI_UPSTREAM:web:3000} {
-					import web_upstream
+					import web_upstream 32
+					lb_try_duration 4s
+					lb_try_interval 100ms
+					lb_retry_match {
+						expression false
+					}
+				}
+			}
+			handle @nextPrefetch {
+				reverse_proxy web:3000 {
+					import web_upstream 8
 					lb_try_duration 4s
 					lb_try_interval 100ms
 					lb_retry_match {
@@ -217,7 +237,7 @@
 			}
 			handle {
 				reverse_proxy web:3000 {
-					import web_upstream
+					import web_upstream 32
 					lb_try_duration 4s
 					lb_try_interval 100ms
 					# Never replay a request after a successful connection, including GET.

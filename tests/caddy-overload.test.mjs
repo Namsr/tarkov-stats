@@ -135,12 +135,12 @@ test('Caddy rejects excess HTTP/2 requests across sites and releases timed-out s
       await delay(100);
     }
   }
-  function request(path = '/', host = 'tarkovstats.ru', method = 'GET', body) {
+  function request(path = '/', host = 'tarkovstats.ru', method = 'GET', body, extraHeaders = {}) {
     return new Promise((resolve, reject) => {
       const stream = client.request({ ':path': path, ':authority': `${host}:${port}`, ':method': method,
         authorization: 'Bearer private-test-token', cookie: 'session=private-test-cookie',
         'x-request-id': 'forged-private-request-id',
-        'x-real-ip': '203.0.113.7', 'cf-connecting-ip': '203.0.113.8' });
+        'x-real-ip': '203.0.113.7', 'cf-connecting-ip': '203.0.113.8', ...extraHeaders });
       let headers;
       let responseBody = '';
       stream.on('response', (value) => { headers = value; });
@@ -255,6 +255,30 @@ test('Caddy rejects excess HTTP/2 requests across sites and releases timed-out s
   ]);
   assert.ok(afterReset.every((r) => r.status === 200), 'one upstream reset must not block either site or static assets');
   t.diagnostic('both sites respond immediately after one upstream connection reset');
+  // Background prefetch uses a lower threshold on the SAME upstream counter.
+  // It must stop before ordinary navigation and API requests lose capacity.
+  const prefetchHeaders = { rsc: '1', 'next-router-prefetch': '1' };
+  const prefetched = [];
+  for (let i = 0; i < 8; i++) {
+    prefetched.push(request('/hold', i % 2 ? 'tarkovstats.online' : 'tarkovstats.ru', 'GET', undefined, prefetchHeaders));
+    const accepted = Date.now() + 2000;
+    while (held.size < i + 1 && Date.now() < accepted) await delay(10);
+    assert.equal(held.size, i + 1);
+  }
+  const beforePrefetchOverflow = received;
+  assert.equal((await request('/hold', 'tarkovstats.ru', 'GET', undefined, prefetchHeaders)).status, 503);
+  assert.equal(received, beforePrefetchOverflow, 'excess prefetch must not reach Next');
+  assert.equal((await request('/healthz')).status, 200);
+  assert.equal((await request('/leaderboard', 'tarkovstats.online')).status, 200);
+  assert.equal((await request('/api/player/search?nickname=test')).status, 200);
+  // Ordinary RSC navigation must retain the full budget; one spoofed header is
+  // insufficient to turn a document request into speculative work.
+  assert.equal((await request('/leaderboard', 'tarkovstats.ru', 'GET', undefined, { rsc: '1' })).status, 200);
+  assert.equal((await request('/leaderboard', 'tarkovstats.ru', 'GET', undefined, { 'next-router-prefetch': '1' })).status, 200);
+  for (const res of held) res.end('released');
+  assert.ok((await Promise.all(prefetched)).every((r) => r.status === 200));
+  assert.equal((await request('/', 'tarkovstats.ru', 'GET', undefined, prefetchHeaders)).status, 200);
+  t.diagnostic('prefetch stops at 8 shared requests while navigation, health and APIs remain available');
   const pending = [];
   for (let i = 0; i < 32; i++) {
     pending.push(request('/hold', i % 2 ? 'tarkovstats.online' : 'tarkovstats.ru'));
@@ -262,6 +286,11 @@ test('Caddy rejects excess HTTP/2 requests across sites and releases timed-out s
     while (held.size < i + 1 && Date.now() < accepted) await delay(10);
     assert.equal(held.size, i + 1);
   }
+  // Ordinary work also counts against the prefetch threshold: it is not a
+  // second independent pool with eight additional slots.
+  const beforeSharedPrefetch = received;
+  assert.equal((await request('/hold', 'tarkovstats.online', 'GET', undefined, prefetchHeaders)).status, 503);
+  assert.equal(received, beforeSharedPrefetch);
   const before = received;
   t.diagnostic('32 pending requests accepted across both sites');
   const overflowStarted = Date.now();
