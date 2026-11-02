@@ -32,8 +32,8 @@ jobs:
           ui_proxy_only=false
           arena_browser=false
           navigation=false
-          # Only this narrow set of UI/proxy files qualifies. Unknown paths,
-          # an empty diff, unavailable history and manual runs use full CI.
+          # Only this narrow set of UI/proxy files qualifies. Workflow changes,
+          # unknown paths, an empty diff, unavailable history and manual runs use full CI.
           if { [ "$GITHUB_EVENT_NAME" = pull_request ] || [ "$GITHUB_EVENT_NAME" = push ]; } &&
              [[ "$DIFF_BASE" =~ ^[0-9a-f]{40}$ && ! "$DIFF_BASE" =~ ^0+$ ]] &&
              git fetch --no-tags --depth=1 origin "$DIFF_BASE" &&
@@ -43,7 +43,6 @@ jobs:
             affected_code=false
             while IFS= read -r -d '' path; do
               case "$path" in
-                .github/workflows/vps-image.yml) ;;
                 scripts/serve-rust-arena-benchmark.mjs|tests/rust-arena-browser-lifecycle.test.mjs)
                   affected_code=true
                   arena_browser=true ;;
