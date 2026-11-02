@@ -22,6 +22,7 @@ pub fn document(initial: ArenaInitial, lang: Lang, package: String) -> impl Into
                 <title>{lang.t("meta.title")}</title>
                 <meta name="description" content=lang.t("meta.description")/>
                 <link rel="icon" href="/favicon.ico"/>
+                <link rel="icon" type="image/svg+xml" sizes="any" href="/icon.svg"/>
                 <link rel="stylesheet" href=format!("/{package}/tarkov_ui.css")/>
                 <HydrationScripts options islands=true/>
             </head>
