@@ -286,6 +286,11 @@ test('Caddy rejects excess HTTP/2 requests across sites and releases timed-out s
     while (held.size < i + 1 && Date.now() < accepted) await delay(10);
     assert.equal(held.size, i + 1);
   }
+  // Ordinary work also counts against the prefetch threshold: it is not a
+  // second independent pool with eight additional slots.
+  const beforeSharedPrefetch = received;
+  assert.equal((await request('/hold', 'tarkovstats.online', 'GET', undefined, prefetchHeaders)).status, 503);
+  assert.equal(received, beforeSharedPrefetch);
   const before = received;
   t.diagnostic('32 pending requests accepted across both sites');
   const overflowStarted = Date.now();
