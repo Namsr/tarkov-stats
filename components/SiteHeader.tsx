@@ -32,8 +32,11 @@ export default function SiteHeader() {
     <header className="site-header">
       <div className="site-header__inner">
         <Link href="/" className="site-mark" onClick={() => setOpen(false)}>
-          <span>TARKOV</span>
-          <span>STATS</span>
+          <span className="site-mark__icon" aria-hidden="true" />
+          <span className="site-mark__text">
+            <span>TARKOV</span>
+            <span>STATS</span>
+          </span>
         </Link>
 
         <button

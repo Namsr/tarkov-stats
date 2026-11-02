@@ -70,7 +70,7 @@ pub fn SiteShell(lang: RwSignal<Lang>, children: Children) -> impl IntoView {
     view! {
         <a class="skip-link" href="#main-content">{move ||lang.get().t("nav.skip")}</a>
         <header class="site-header"><div class="site-header__inner">
-            <a href="/" class="site-mark" on:click=move |_|menu.set(false)><span>{"TARKOV"}</span><span>{"STATS"}</span></a>
+            <a href="/" class="site-mark" on:click=move |_|menu.set(false)><span class="site-mark__icon" aria-hidden="true"></span><span class="site-mark__text"><span>{"TARKOV"}</span><span>{"STATS"}</span></span></a>
             <button type="button" class="site-header__menu" aria-label=move ||lang.get().t(if menu.get(){"nav.closeMenu"}else{"nav.menu"}) aria-expanded=move ||menu.get().to_string() on:click=move |_|menu.update(|open|*open = !*open)><span aria-hidden="true">{move ||if menu.get(){"×"}else{"≡"}}</span></button>
             <div class=move ||format!("site-header__controls{}",if menu.get(){" is-open"}else{""})>
                 <nav class="site-header__nav" aria-label=move ||lang.get().t("nav.primary")>
