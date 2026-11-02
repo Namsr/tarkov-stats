@@ -9,8 +9,8 @@ import { setTimeout as delay } from "node:timers/promises";
 import test from "node:test";
 
 const caddy = process.env.CADDY_BIN;
-const request = (port, path, host = "tarkovstats.ru") => new Promise((resolve, reject) => {
-  const req = http.get({ host: "127.0.0.1", port, path, headers: { Host: host }, timeout: 10000 }, (res) => {
+const request = (port, path, host = "tarkovstats.ru", extraHeaders = {}) => new Promise((resolve, reject) => {
+  const req = http.get({ host: "127.0.0.1", port, path, headers: { Host: host, ...extraHeaders }, timeout: 10000 }, (res) => {
     let body = ""; res.setEncoding("utf8"); res.on("data", (chunk) => { body += chunk; });
     res.on("end", () => resolve({ status: res.statusCode, headers: res.headers, body }));
   });
@@ -90,6 +90,12 @@ test("production proxy selects the Rust endpoint, bounds each upstream and never
   assert.equal((await request(port, "/api/seasonal/cohort?aid=1")).status, 502);
   assert.equal((await request(port, "/api/home/showcase")).status, 502);
   assert.equal(nextCount, before); reset = false;
+
+  for (const path of ["/population/arena", "/api/seasonal/cohort", "/api/home/showcase", "/api/average?mode=arena"]) {
+    const result = await request(port, path, "tarkovstats.online", { RSC: "1", "Next-Router-Prefetch": "1" });
+    assert.equal(result.status, 200);
+    assert.equal(JSON.parse(result.body).backend, "rust", "prefetch admission must not reroute native paths to Next");
+  }
 
   // The two real upstream addresses have separate 32-request bounds. Confirm
   // the mixed limit instead of retaining the former one-address global claim.
