@@ -108,7 +108,7 @@ export default function AxisLeaguePage() {
 
   return (
     <main className="page-frame leaderboard-page axis-page">
-      <Link href="/leaderboard" className="back-link">{t("nav.leaderboard")}</Link>
+      <Link prefetch={false} href="/leaderboard" className="back-link">{t("nav.leaderboard")}</Link>
       <header className="axis-hero">
         <h1 className="page-title">{t("axis.title")}</h1>
         <a href={AXIS_DISCORD_URL} target="_blank" rel="noopener noreferrer" className="tactical-button axis-join">{t("axis.join")} <span aria-hidden>↗</span></a>
@@ -119,10 +119,10 @@ export default function AxisLeaguePage() {
         {data && <span className="axis-season-count">{t("axis.results", { n: number(data.players.length) })}<span aria-hidden="true"> · </span>{t("axis.gamesPlayed")}: <strong>{number(data.currentSeason?.games ?? null)}</strong></span>}
       </div>
       <nav className="admin-tabs axis-view-switch" aria-label={t("axis.history.view")}>
-        <Link href="/axis-league/leaderboard" scroll={false} onNavigate={(event) => navigateView(event, "/axis-league/leaderboard")} className={view === "leaderboard" ? "is-active" : ""} aria-current={view === "leaderboard" ? "page" : undefined}>{t("axis.standings")}</Link>
-        <Link href="/axis-league/statistics" scroll={false} onNavigate={(event) => navigateView(event, "/axis-league/statistics")} className={view === "statistics" ? "is-active" : ""} aria-current={view === "statistics" ? "page" : undefined}>{t("axis.stats.tab")}</Link>
-        <Link href={historyHref} scroll={false} onNavigate={(event) => navigateView(event, historyHref)} className={view === "history" ? "is-active" : ""} aria-current={view === "history" ? "page" : undefined}>{t("axis.history.title")}</Link>
-        {canEdit && <Link href="/axis-league/profiles" scroll={false} onNavigate={(event) => navigateView(event, "/axis-league/profiles")} className={view === "profiles" ? "is-active" : ""} aria-current={view === "profiles" ? "page" : undefined}>{t("axis.profiles.title")}</Link>}
+        <Link prefetch={false} href="/axis-league/leaderboard" scroll={false} onNavigate={(event) => navigateView(event, "/axis-league/leaderboard")} className={view === "leaderboard" ? "is-active" : ""} aria-current={view === "leaderboard" ? "page" : undefined}>{t("axis.standings")}</Link>
+        <Link prefetch={false} href="/axis-league/statistics" scroll={false} onNavigate={(event) => navigateView(event, "/axis-league/statistics")} className={view === "statistics" ? "is-active" : ""} aria-current={view === "statistics" ? "page" : undefined}>{t("axis.stats.tab")}</Link>
+        <Link prefetch={false} href={historyHref} scroll={false} onNavigate={(event) => navigateView(event, historyHref)} className={view === "history" ? "is-active" : ""} aria-current={view === "history" ? "page" : undefined}>{t("axis.history.title")}</Link>
+        {canEdit && <Link prefetch={false} href="/axis-league/profiles" scroll={false} onNavigate={(event) => navigateView(event, "/axis-league/profiles")} className={view === "profiles" ? "is-active" : ""} aria-current={view === "profiles" ? "page" : undefined}>{t("axis.profiles.title")}</Link>}
       </nav>
       <div hidden={view !== "history"}><AxisMatchHistory key={historyMatch ?? "all"} initialMatch={historyMatch} players={data?.players} averageKda={data?.averageKda ?? null} active={view === "history"} canEditKda={canEdit === true} canSubmitScreenshot={canSubmit} /></div>
       {view === "statistics" && <AxisLeagueStatistics players={data?.players} averageKda={data?.averageKda ?? null} />}
