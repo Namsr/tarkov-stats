@@ -186,7 +186,7 @@ try {
   const source = canonicalSource.replace("(hardening) {", `(hardening) {
     @syntheticFixture path ${syntheticPaths.join(" ")}
     reverse_proxy @syntheticFixture 127.0.0.1:${gatewayPort} {
-      import web_upstream
+      import web_upstream 32
     }`);
   const caddy = process.env.CADDY_BIN || "caddy";
   async function frontend(label, arenaUpstream) {
