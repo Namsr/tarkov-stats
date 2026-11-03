@@ -245,25 +245,26 @@ test("profile totals also reveal a verified decrease instead of artificial growt
   });
 });
 
-test("missed endpoints freeze a target and midday recovery remains continuous", async () => {
+test("missed endpoints recover on the next day without a jump", async () => {
   await counterFixture(async ({ setTotal, progression }) => {
     setTotal(1); await captureHomeCounter(at(0, 1000));
     setTotal(2); await captureHomeCounter(end(0));
-    const lastGood = await captureHomeCounter(at(1, DAY_MS / 2));
+    const first = await captureHomeCounter(at(1, DAY_MS / 2));
+    assert.deepEqual(first, { from: 1, to: 2, startsAt: at(1, DAY_MS / 2), endsAt: at(2) });
     setTotal(3);
-    assert.deepEqual(await captureHomeCounter(at(2, DAY_MS / 2)), lastGood);
-    assert.equal(homeCountAt(await getPublicHomeCounter(), at(2)), 2);
+    const recovered = await captureHomeCounter(at(2, DAY_MS / 2));
+    assert.deepEqual(recovered, { from: 2, to: 3, startsAt: at(2, DAY_MS / 2), endsAt: at(3) });
+    assert.equal(homeCountAt(recovered, recovered.startsAt), homeCountAt(first, first.endsAt));
     await captureHomeCounter(end(2));
-    assert.deepEqual(await captureHomeCounter(at(3, 1000)), lastGood);
+    const flat = await captureHomeCounter(at(3, 1000));
+    assert.deepEqual(flat, { from: 3, to: 3, startsAt: at(3, 1000), endsAt: at(4) });
+    assert.equal(homeCountAt(flat, flat.startsAt), homeCountAt(recovered, recovered.endsAt));
     setTotal(4); await captureHomeCounter(end(3));
     const recoveryAt = at(4, DAY_MS / 2);
     const before = homeCountAt(await getPublicHomeCounter(), recoveryAt);
-    const recovered = await captureHomeCounter(recoveryAt);
-    assert.deepEqual(recovered, { from: 2, to: 4, startsAt: recoveryAt, endsAt: at(5) });
-    assert.equal(homeCountAt(recovered, recoveryAt), before);
-    await captureHomeCounter(end(4));
-    const nextDay = await captureHomeCounter(at(5, 1000));
-    assert.equal(homeCountAt(nextDay, nextDay.startsAt), homeCountAt(recovered, recovered.endsAt));
+    const next = await captureHomeCounter(recoveryAt);
+    assert.deepEqual(next, { from: 3, to: 4, startsAt: recoveryAt, endsAt: at(5) });
+    assert.equal(homeCountAt(next, next.startsAt), before);
     assert.equal(progression.prepare("SELECT observed_at FROM home_coverage_daily WHERE day_start=?").get(at(1)).observed_at, at(1, DAY_MS / 2));
   });
 });
