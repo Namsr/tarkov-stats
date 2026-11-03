@@ -11,7 +11,7 @@ import { createSqliteModerationStore } from "../lib/admin/moderation-db.ts";
 import { getPublicIndexCoverage } from "../lib/public-index-coverage.ts";
 import { getPublicHomeCounter } from "../lib/public-home-counter.ts";
 import { getPublicBanCount } from "../lib/public-ban-counter.ts";
-import { captureHomeCounter } from "../lib/home-counter-sampler.ts";
+import { captureHomeCounter, HOME_COUNTER_SAMPLE_MS } from "../lib/home-counter-sampler.ts";
 import { initializeBanImportDb, importBanCandidate } from "../lib/ban-import.ts";
 import { DAY_MS, homeCounterDay, homeCountAt } from "../lib/home-counter.ts";
 
@@ -179,12 +179,12 @@ test("profile sampling runs without visitors, smooths yesterday's growth and sur
     setTotal(10);
     await captureHomeCounter(at(0, DAY_MS / 2));
     setTotal(12); await captureHomeCounter(end(0));
-    const first = await captureHomeCounter(at(1, 1000));
-    assert.deepEqual(first, { from: 10, to: 12, startsAt: at(1, 1000), endsAt: at(2) });
+    const first = await captureHomeCounter(at(1, HOME_COUNTER_SAMPLE_MS));
+    assert.deepEqual(first, { from: 10, to: 12, startsAt: at(1, HOME_COUNTER_SAMPLE_MS), endsAt: at(2) });
     setTotal(15); await captureHomeCounter(end(1));
-    await captureHomeCounter(at(2));
+    await captureHomeCounter(at(2, HOME_COUNTER_SAMPLE_MS));
     const second = await captureHomeCounter(at(2, DAY_MS / 2));
-    assert.deepEqual(second, { from: 12, to: 15, startsAt: at(2), endsAt: at(3) });
+    assert.deepEqual(second, { from: 12, to: 15, startsAt: at(2, HOME_COUNTER_SAMPLE_MS), endsAt: at(3) });
     assert.equal(homeCountAt(second, at(2, DAY_MS / 2)), 13);
     assert.deepEqual(await getPublicHomeCounter(), second);
     const child = execFileSync(process.execPath, ["--experimental-strip-types", "--input-type=module", "-e",
@@ -240,7 +240,7 @@ test("profile totals also reveal a verified decrease instead of artificial growt
   await counterFixture(async ({ setTotal }) => {
     await captureHomeCounter(at(0, 1000));
     setTotal(90); await captureHomeCounter(end(0));
-    const tomorrow = await captureHomeCounter(at(1, 1000));
+    const tomorrow = await captureHomeCounter(at(1, HOME_COUNTER_SAMPLE_MS));
     assert.equal(tomorrow.from, 100); assert.equal(tomorrow.to, 90);
   });
 });
@@ -256,8 +256,8 @@ test("missed endpoints recover on the next day without a jump", async () => {
     assert.deepEqual(recovered, { from: 2, to: 3, startsAt: at(2, DAY_MS / 2), endsAt: at(3) });
     assert.equal(homeCountAt(recovered, recovered.startsAt), homeCountAt(first, first.endsAt));
     await captureHomeCounter(end(2));
-    const flat = await captureHomeCounter(at(3, 1000));
-    assert.deepEqual(flat, { from: 3, to: 3, startsAt: at(3, 1000), endsAt: at(4) });
+    const flat = await captureHomeCounter(at(3, HOME_COUNTER_SAMPLE_MS));
+    assert.deepEqual(flat, { from: 3, to: 3, startsAt: at(3, HOME_COUNTER_SAMPLE_MS), endsAt: at(4) });
     assert.equal(homeCountAt(flat, flat.startsAt), homeCountAt(recovered, recovered.endsAt));
     setTotal(4); await captureHomeCounter(end(3));
     const recoveryAt = at(4, DAY_MS / 2);

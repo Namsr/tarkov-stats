@@ -32,10 +32,12 @@ export async function captureHomeCounter(now = Date.now()): Promise<HomeCounterW
       db.prepare("INSERT OR IGNORE INTO home_coverage_counter_state VALUES (1,?,?,?,?,?,?)")
         .run(now, total, total, total, startsAt, endsAt);
       const previous = readHomeCounterWindow(db)!;
-      if (previous.startsAt < startsAt) {
-        // Start at publication time so a midday restart cannot reveal the whole
-        // backlog at once. The target is the real total observed now, never a
-        // projection, so the displayed value cannot run ahead of the database.
+      if (previous.startsAt < startsAt && now - startsAt >= HOME_COUNTER_SAMPLE_MS) {
+        // Wait one sample before publishing a new day: the midnight index swap
+        // can land just after the first tick, and publishing then would freeze
+        // the target on yesterday's total. Start at publication time so a midday
+        // restart cannot reveal the whole backlog at once. The target is the real
+        // total observed now, never a projection.
         db.prepare("UPDATE home_coverage_counter_state SET from_count=?,to_count=?,starts_at=?,ends_at=? WHERE id=1")
           .run(previous.to, total, now, endsAt);
       }

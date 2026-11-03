@@ -14,6 +14,9 @@ test("VPS containers leave host headroom and all offline jobs use the shared bud
   const web = compose.slice(compose.indexOf("  web:"), compose.indexOf("  worker:"));
   const worker = compose.slice(compose.indexOf("  worker:"), compose.indexOf("  caddy:"));
   assert.match(web, /WEB_BACKGROUND_WORKERS: "false"/);
+  // The dedicated service owns the sampler in this deployment; the web child is
+  // only the fallback for composes that predate that service.
+  assert.match(web, /HOME_COUNTER_SAMPLER: "false"/);
   assert.match(web, /mem_limit: 896m/);
   assert.match(web, /memswap_limit: 1152m/);
   assert.match(web, /^\s+- \/tmp:size=64m$/m);
