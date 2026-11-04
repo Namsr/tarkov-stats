@@ -245,6 +245,36 @@ test("profile totals also reveal a verified decrease instead of artificial growt
   });
 });
 
+test("a late index swap starts movement that day instead of freezing a flat midnight target", async () => {
+  await counterFixture(async ({ setTotal }) => {
+    const baseline = await captureHomeCounter(at(0, DAY_MS / 2));
+    assert.deepEqual(await captureHomeCounter(at(1, HOME_COUNTER_SAMPLE_MS)), baseline);
+    assert.deepEqual(await captureHomeCounter(at(1, 5 * 60_000)), baseline);
+    setTotal(124);
+    const publishedAt = at(1, 10 * 60_000);
+    const moving = await captureHomeCounter(publishedAt);
+    assert.deepEqual(moving, { from: 100, to: 124, startsAt: publishedAt, endsAt: at(2) });
+    assert.equal(homeCountAt(moving, publishedAt), homeCountAt(baseline, publishedAt));
+    assert.equal(homeCountAt(moving, (publishedAt + at(2)) / 2), 112);
+    assert.equal(homeCountAt(moving, at(2)), 124);
+    setTotal(130);
+    assert.deepEqual(await captureHomeCounter(at(1, DAY_MS / 2)), moving);
+  });
+});
+
+test("a flat window published by an older sampler recovers without reseeding", async () => {
+  await counterFixture(async ({ setTotal, progression }) => {
+    await captureHomeCounter(at(0, DAY_MS / 2));
+    progression.prepare("UPDATE home_coverage_counter_state SET starts_at=?,ends_at=? WHERE id=1")
+      .run(at(1, HOME_COUNTER_SAMPLE_MS), at(2));
+    setTotal(90);
+    const publishedAt = at(1, 10 * 60_000);
+    assert.deepEqual(await captureHomeCounter(publishedAt), {
+      from: 100, to: 90, startsAt: publishedAt, endsAt: at(2),
+    });
+  });
+});
+
 test("missed endpoints recover on the next day without a jump", async () => {
   await counterFixture(async ({ setTotal, progression }) => {
     setTotal(1); await captureHomeCounter(at(0, 1000));
@@ -257,13 +287,15 @@ test("missed endpoints recover on the next day without a jump", async () => {
     assert.equal(homeCountAt(recovered, recovered.startsAt), homeCountAt(first, first.endsAt));
     await captureHomeCounter(end(2));
     const flat = await captureHomeCounter(at(3, HOME_COUNTER_SAMPLE_MS));
-    assert.deepEqual(flat, { from: 3, to: 3, startsAt: at(3, HOME_COUNTER_SAMPLE_MS), endsAt: at(4) });
-    assert.equal(homeCountAt(flat, flat.startsAt), homeCountAt(recovered, recovered.endsAt));
-    setTotal(4); await captureHomeCounter(end(3));
+    assert.deepEqual(flat, recovered, "unchanged totals leave the last target waiting for movement");
+    setTotal(4);
+    const late = await captureHomeCounter(end(3));
+    assert.deepEqual(late, { from: 3, to: 4, startsAt: end(3), endsAt: at(4) });
     const recoveryAt = at(4, DAY_MS / 2);
     const before = homeCountAt(await getPublicHomeCounter(), recoveryAt);
+    setTotal(5);
     const next = await captureHomeCounter(recoveryAt);
-    assert.deepEqual(next, { from: 3, to: 4, startsAt: recoveryAt, endsAt: at(5) });
+    assert.deepEqual(next, { from: 4, to: 5, startsAt: recoveryAt, endsAt: at(5) });
     assert.equal(homeCountAt(next, next.startsAt), before);
     assert.equal(progression.prepare("SELECT observed_at FROM home_coverage_daily WHERE day_start=?").get(at(1)).observed_at, at(1, DAY_MS / 2));
   });

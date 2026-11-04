@@ -32,12 +32,14 @@ export async function captureHomeCounter(now = Date.now()): Promise<HomeCounterW
       db.prepare("INSERT OR IGNORE INTO home_coverage_counter_state VALUES (1,?,?,?,?,?,?)")
         .run(now, total, total, total, startsAt, endsAt);
       const previous = readHomeCounterWindow(db)!;
-      if (previous.startsAt < startsAt && now - startsAt >= HOME_COUNTER_SAMPLE_MS) {
-        // Wait one sample before publishing a new day: the midnight index swap
-        // can land just after the first tick, and publishing then would freeze
-        // the target on yesterday's total. Start at publication time so a midday
-        // restart cannot reveal the whole backlog at once. The target is the real
-        // total observed now, never a projection.
+      const seeded = db.prepare("SELECT seeded_at FROM home_coverage_counter_state WHERE id=1").get()!;
+      const seededToday = homeCounterDay(Number(seeded.seeded_at)).startsAt === startsAt;
+      // A flat window from an older sampler can also recover during this day.
+      // Keep the first day's baseline and any moving window stable. Otherwise
+      // wait for a measured change, however late the index swap finishes.
+      const awaitingMovement = previous.startsAt < startsAt ||
+        (!seededToday && previous.from === previous.to);
+      if (awaitingMovement && total !== previous.to) {
         db.prepare("UPDATE home_coverage_counter_state SET from_count=?,to_count=?,starts_at=?,ends_at=? WHERE id=1")
           .run(previous.to, total, now, endsAt);
       }

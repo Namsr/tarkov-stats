@@ -20,7 +20,10 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     outputs:
-      ui_proxy_only: ${{ steps.scope.outputs.ui_proxy_only }}
+      full: ${{ steps.scope.outputs.full }}
+      image: ${{ steps.scope.outputs.image }}
+      benchmarks: ${{ steps.scope.outputs.benchmarks }}
+      runtime_contract: ${{ steps.scope.outputs.runtime_contract }}
       arena_browser: ${{ steps.scope.outputs.arena_browser }}
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
@@ -29,55 +32,29 @@ jobs:
         env:
           DIFF_BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
         run: |
-          ui_proxy_only=false
-          arena_browser=false
-          navigation=false
-          # Only this narrow set of UI/proxy files qualifies. Workflow changes,
-          # unknown paths, an empty diff, unavailable history and manual runs use full CI.
+          # NUL-delimited paths preserve spaces, renames and deletions. Missing
+          # history and manual runs use the full gate; the selector owns all groups.
           if { [ "$GITHUB_EVENT_NAME" = pull_request ] || [ "$GITHUB_EVENT_NAME" = push ]; } &&
              [[ "$DIFF_BASE" =~ ^[0-9a-f]{40}$ && ! "$DIFF_BASE" =~ ^0+$ ]] &&
              git fetch --no-tags --depth=1 origin "$DIFF_BASE" &&
              git diff --no-renames --name-only -z "$DIFF_BASE" HEAD > "$RUNNER_TEMP/check-paths" &&
              [ -s "$RUNNER_TEMP/check-paths" ]; then
-            ui_proxy_only=true
-            affected_code=false
-            while IFS= read -r -d '' path; do
-              case "$path" in
-                scripts/serve-rust-arena-benchmark.mjs|tests/rust-arena-browser-lifecycle.test.mjs)
-                  affected_code=true
-                  arena_browser=true ;;
-                components/AverageNavButton.tsx|components/AxisLeaguePage.tsx|components/FaqWidget.tsx|components/LeaderboardPage.tsx|components/SiteFooter.tsx|components/SiteHeader.tsx)
-                  affected_code=true
-                  navigation=true ;;
-                ops/Caddyfile)
-                  affected_code=true
-                  arena_browser=true ;;
-                tests/caddy-overload.test.mjs|tests/rust-http-proxy.test.mjs)
-                  affected_code=true ;;
-                *) ui_proxy_only=false ;;
-              esac
-            done < "$RUNNER_TEMP/check-paths"
-            if [ "$affected_code" != true ]; then ui_proxy_only=false; fi
+            node scripts/ci-scope.mjs "$RUNNER_TEMP/check-paths"
+          else
+            node scripts/ci-scope.mjs
           fi
-          if [ "$ui_proxy_only" != true ]; then
-            navigation=false
-            arena_browser=false
-          fi
-          echo "navigation=$navigation" >> "$GITHUB_OUTPUT"
-          echo "ui_proxy_only=$ui_proxy_only" >> "$GITHUB_OUTPUT"
-          echo "arena_browser=$arena_browser" >> "$GITHUB_OUTPUT"
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
           node-version: 22
           cache: npm
       - name: Install the Rust pilot toolchain
-        if: steps.scope.outputs.ui_proxy_only != 'true'
+        if: steps.scope.outputs.full == 'true'
         run: |
           rustup toolchain install 1.98.1 --profile minimal --component rustfmt --component clippy
           rustup default 1.98.1
           rustup target add wasm32-unknown-unknown --toolchain 1.98.1
       - name: Install the verified WebAssembly binding CLI
-        if: steps.scope.outputs.ui_proxy_only != 'true'
+        if: steps.scope.outputs.full == 'true'
         run: |
           curl --fail --silent --show-error --location --retry 3 --max-time 90 \
             --output "$RUNNER_TEMP/wasm-bindgen.tar.gz" \
@@ -88,29 +65,30 @@ jobs:
           test "$("$RUNNER_TEMP/wasm-bindgen/wasm-bindgen" --version)" = "wasm-bindgen 0.2.129"
           echo "$RUNNER_TEMP/wasm-bindgen" >> "$GITHUB_PATH"
           echo "WASM_BINDGEN_BIN=$RUNNER_TEMP/wasm-bindgen/wasm-bindgen" >> "$GITHUB_ENV"
-      - if: steps.scope.outputs.ui_proxy_only != 'true'
+      - if: steps.scope.outputs.full == 'true'
         run: cargo fmt --manifest-path rust/ui/Cargo.toml -- --check
-      - if: steps.scope.outputs.ui_proxy_only != 'true'
+      - if: steps.scope.outputs.full == 'true'
         run: cargo clippy --locked --all-targets --features ssr --manifest-path rust/ui/Cargo.toml -- -D warnings
-      - if: steps.scope.outputs.ui_proxy_only != 'true'
+      - if: steps.scope.outputs.full == 'true'
         run: cargo clippy --locked --lib --features hydrate --target wasm32-unknown-unknown --manifest-path rust/ui/Cargo.toml -- -D warnings
-      - if: steps.scope.outputs.ui_proxy_only != 'true'
+      - if: steps.scope.outputs.full == 'true'
         run: cargo fmt --manifest-path rust/backend/Cargo.toml -- --check
-      - if: steps.scope.outputs.ui_proxy_only != 'true'
+      - if: steps.scope.outputs.full == 'true'
         run: cargo clippy --locked --all-targets --manifest-path rust/backend/Cargo.toml -- -D warnings
-      - if: steps.scope.outputs.ui_proxy_only != 'true'
+      - if: steps.scope.outputs.full == 'true'
         run: cargo fmt --manifest-path rust/axis-probability/Cargo.toml -- --check
-      - if: steps.scope.outputs.ui_proxy_only != 'true'
+      - if: steps.scope.outputs.full == 'true'
         run: cargo clippy --locked --all-targets --manifest-path rust/axis-probability/Cargo.toml -- -D warnings
-      - if: steps.scope.outputs.ui_proxy_only != 'true'
+      - if: steps.scope.outputs.full == 'true'
         run: cargo fmt --manifest-path rust/cohort-worker/Cargo.toml -- --check
-      - if: steps.scope.outputs.ui_proxy_only != 'true'
+      - if: steps.scope.outputs.full == 'true'
         run: cargo clippy --locked --all-targets --manifest-path rust/cohort-worker/Cargo.toml -- -D warnings
       - run: npm ci
       - run: npm run i18n:check
       - run: npm run lint
       - run: npm run typecheck
       - name: Install the production Caddy for proxy integration tests
+        if: steps.scope.outputs.full == 'true' || steps.scope.outputs.proxy == 'true'
         run: |
           curl --fail --silent --show-error --location --retry 3 --max-time 90 \
             --output "$RUNNER_TEMP/caddy.tar.gz" \
@@ -120,19 +98,26 @@ jobs:
           tar -xzf "$RUNNER_TEMP/caddy.tar.gz" -C "$RUNNER_TEMP/caddy-bin" caddy
           echo "CADDY_BIN=$RUNNER_TEMP/caddy-bin/caddy" >> "$GITHUB_ENV"
       - name: Run the affected proxy and fixture tests
-        if: steps.scope.outputs.ui_proxy_only == 'true'
+        if: steps.scope.outputs.proxy == 'true'
         run: node --experimental-strip-types --experimental-sqlite --test tests/caddy-overload.test.mjs tests/rust-http-proxy.test.mjs tests/rust-arena-browser-lifecycle.test.mjs tests/cleanup-does-not-mask-assertions.test.mjs
       - name: Run the affected navigation tests
-        if: steps.scope.outputs.ui_proxy_only == 'true' && steps.scope.outputs.navigation == 'true'
+        if: steps.scope.outputs.proxy == 'true' && steps.scope.outputs.navigation == 'true'
         run: |
           node --experimental-strip-types --test tests/active-link-pending.test.ts tests/client-axis-league.test.mjs tests/leaderboard-ui.test.mjs
           node --experimental-strip-types --test --test-name-pattern='FAQ dialog|active navigation links|global navigation points|header dot clears' tests/profile-ui.test.mjs tests/compare-ui.test.mjs tests/support-content-ui.test.mjs
-      - if: steps.scope.outputs.ui_proxy_only != 'true'
+      - name: Run the affected homepage counter tests
+        if: steps.scope.outputs.full != 'true' && steps.scope.outputs.home_counter == 'true'
+        run: node --experimental-strip-types --experimental-sqlite --test tests/public-index-coverage.test.ts tests/home-showcase-mode.test.mjs
+      - name: Run the affected startup, operations and CI selector tests
+        if: steps.scope.outputs.full != 'true' && steps.scope.outputs.ops == 'true'
+        run: node --experimental-strip-types --experimental-sqlite --test tests/background-isolation.test.mjs tests/deploy-wrapper.test.mjs tests/worker-supervisor.test.mjs tests/runtime-health.test.mjs tests/test-registry.test.mjs
+      - if: steps.scope.outputs.full == 'true'
         run: npm test
       - run: npm audit --omit=dev
-      - if: steps.scope.outputs.ui_proxy_only != 'true'
+      - if: steps.scope.outputs.full == 'true'
         run: systemd-analyze verify ops/systemd/tarkovstats-publications.service ops/systemd/tarkovstats-background.slice ops/systemd/tarkovstats-backup.service ops/systemd/tarkovstats-backup.timer ops/systemd/tarkovstats-profile-queue.service ops/systemd/tarkovstats-profile-catchup.service ops/systemd/tarkovstats-profile-catchup.timer
   build:
+    if: needs.checks.outputs.image == 'true'
     needs: checks
     runs-on: ubuntu-24.04
     timeout-minutes: 45
@@ -147,8 +132,18 @@ jobs:
         with:
           node-version: 22
           cache: npm
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
       - name: Build the production image
-        run: docker build --build-arg "SOURCE_REVISION=$GITHUB_SHA" --tag "tarkovstats-web:$GITHUB_SHA" .
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        with:
+          context: .
+          load: true
+          platforms: linux/amd64
+          tags: tarkovstats-web:${{ github.sha }}
+          build-args: SOURCE_REVISION=${{ github.sha }}
+          cache-from: type=gha,scope=vps-image
+          cache-to: type=gha,scope=vps-image,mode=max,ignore-error=true
       - name: Validate the VPS worker configuration
         run: |
           touch ops/.env ops/.env.private
@@ -216,7 +211,7 @@ jobs:
               nice -n 19 node --experimental-strip-types --experimental-sqlite scripts/materialize-achievement-tempo.mjs
             '
       - name: Verify the full Rust HTTP runtime contract
-        if: needs.checks.outputs.ui_proxy_only != 'true'
+        if: needs.checks.outputs.runtime_contract == 'true'
         run: |
           docker run --detach --network none --memory 896m --memory-swap 896m --read-only --pids-limit 256 \
             --cap-drop ALL --security-opt no-new-privileges \
@@ -228,7 +223,7 @@ jobs:
           trap 'docker logs rust-http-smoke; docker rm --force rust-http-smoke' EXIT
           docker exec rust-http-smoke node scripts/verify-rust-http-runtime.mjs
       - name: Verify the independently enabled Rust Arena UI runtime
-        if: needs.checks.outputs.ui_proxy_only != 'true'
+        if: needs.checks.outputs.runtime_contract == 'true'
         run: |
           docker run --detach --network none --memory 896m --memory-swap 896m --read-only --pids-limit 256 \
             --cap-drop ALL --security-opt no-new-privileges \
@@ -244,11 +239,11 @@ jobs:
           trap 'docker logs rust-arena-ui-smoke; docker rm --force rust-arena-ui-smoke' EXIT
           docker exec rust-arena-ui-smoke node --experimental-strip-types --experimental-sqlite scripts/verify-rust-http-runtime.mjs --arena-ui
       - name: Benchmark isolated TypeScript and Rust API workloads
-        if: needs.checks.outputs.ui_proxy_only != 'true'
+        if: needs.checks.outputs.benchmarks == 'true'
         timeout-minutes: 20
         run: bash scripts/benchmark-rust-container.sh "tarkovstats-web:$GITHUB_SHA" "$RUNNER_TEMP/rust-linux-benchmark"
       - name: Save synthetic Linux benchmark evidence
-        if: always() && needs.checks.outputs.ui_proxy_only != 'true'
+        if: always() && needs.checks.outputs.benchmarks == 'true'
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: rust-linux-benchmark-${{ github.sha }}
@@ -259,11 +254,11 @@ jobs:
           if-no-files-found: warn
           retention-days: 14
       - name: Benchmark production Next and Rust HTTP endpoints
-        if: needs.checks.outputs.ui_proxy_only != 'true'
+        if: needs.checks.outputs.benchmarks == 'true'
         timeout-minutes: 12
         run: bash scripts/benchmark-rust-http-container.sh --image "tarkovstats-web:$GITHUB_SHA" --output "$RUNNER_TEMP/rust-http-benchmark"
       - name: Save full HTTP benchmark evidence
-        if: always() && needs.checks.outputs.ui_proxy_only != 'true'
+        if: always() && needs.checks.outputs.benchmarks == 'true'
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: rust-http-benchmark-${{ github.sha }}
@@ -274,7 +269,7 @@ jobs:
           if-no-files-found: warn
           retention-days: 14
       - name: Compare Arena interfaces on the isolated Linux browser runner
-        if: needs.checks.outputs.ui_proxy_only != 'true' || needs.checks.outputs.arena_browser == 'true'
+        if: needs.checks.outputs.arena_browser == 'true'
         timeout-minutes: 10
         env:
           GH_TOKEN: ""
@@ -289,7 +284,7 @@ jobs:
           export CADDY_BIN="$RUNNER_TEMP/arena-caddy-bin/caddy"
           bash scripts/benchmark-rust-arena-browser-image.sh --image "tarkovstats-web:$GITHUB_SHA" --output "$RUNNER_TEMP/rust-arena-browser"
       - name: Save Arena browser correctness and measurement evidence
-        if: always() && (needs.checks.outputs.ui_proxy_only != 'true' || needs.checks.outputs.arena_browser == 'true')
+        if: always() && needs.checks.outputs.arena_browser == 'true'
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: rust-arena-browser-${{ github.sha }}
