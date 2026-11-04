@@ -12,6 +12,9 @@ services:
       - .env.private
     environment:
       WEB_BACKGROUND_WORKERS: "false"
+      # The dedicated home-counter-sampler service owns the counter here; the
+      # image default only covers deployments that lack it.
+      HOME_COUNTER_SAMPLER: "false"
       # TLS 1.3 handshakes to Cloudflare-hosted NeatQueue stall from this VPS.
       NODE_OPTIONS: "--tls-max-v1.2"
       SEASONAL_API_UPSTREAM: ${SEASONAL_API_UPSTREAM:-web:3000}

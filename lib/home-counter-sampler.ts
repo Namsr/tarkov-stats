@@ -1,13 +1,15 @@
 import { DatabaseSync } from "node:sqlite";
-import { DAY_MS, homeCounterDay, type HomeCounterWindow } from "./home-counter.ts";
+import { homeCounterDay, type HomeCounterWindow } from "./home-counter.ts";
 import { progressionCounterPath, readHomeCounterWindow } from "./public-home-counter.ts";
 import { getPublicIndexCoverage } from "./public-index-coverage.ts";
 
 export const HOME_COUNTER_SAMPLE_MS = 60_000;
-const ENDPOINT_GRACE_MS = 2 * HOME_COUNTER_SAMPLE_MS;
 
 /** Minute sampling runs independently of page visits. Only this collector writes
- * the small tables; progression.db is already persisted and included in backups. */
+ * the small tables; progression.db is already persisted and included in backups.
+ * Each new day reveals the movement from the last published target to the total
+ * observed now, so a missed midnight sample delays the target instead of
+ * freezing the public counter. */
 export async function captureHomeCounter(now = Date.now()): Promise<HomeCounterWindow> {
   if (!Number.isSafeInteger(now) || now <= 0) throw new Error("invalid observation time");
   const { total } = await getPublicIndexCoverage();
@@ -29,24 +31,15 @@ export async function captureHomeCounter(now = Date.now()): Promise<HomeCounterW
         total=excluded.total, observed_at=excluded.observed_at`).run(startsAt, total, now);
       db.prepare("INSERT OR IGNORE INTO home_coverage_counter_state VALUES (1,?,?,?,?,?,?)")
         .run(now, total, total, total, startsAt, endsAt);
-      const state = db.prepare("SELECT seeded_at, baseline FROM home_coverage_counter_state WHERE id=1").get()!;
       const previous = readHomeCounterWindow(db)!;
-      function completed(day: number): number | null {
-        const row = db.prepare("SELECT total, observed_at FROM home_coverage_daily WHERE day_start=?").get(day);
-        return row && Number(row.observed_at) >= day + DAY_MS - ENDPOINT_GRACE_MS && Number(row.observed_at) < day + DAY_MS
-          ? Number(row.total) : null;
-      }
-      const yesterday = completed(startsAt - DAY_MS);
-      const beforeYesterday = completed(startsAt - 2 * DAY_MS);
-      const firstDay = homeCounterDay(Number(state.seeded_at)).startsAt === startsAt - DAY_MS;
-      if (previous.startsAt < startsAt && yesterday !== null && (beforeYesterday !== null || firstDay)) {
-        // On recovery, catch up from the frozen target instead of jumping over
-        // growth during the collection gap. Start at publication time so a
-        // midday restart cannot reveal half the backlog immediately. Never
-        // invent the missing day's row.
-        const from = previous.to;
+      if (previous.startsAt < startsAt && now - startsAt >= HOME_COUNTER_SAMPLE_MS) {
+        // Wait one sample before publishing a new day: the midnight index swap
+        // can land just after the first tick, and publishing then would freeze
+        // the target on yesterday's total. Start at publication time so a midday
+        // restart cannot reveal the whole backlog at once. The target is the real
+        // total observed now, never a projection.
         db.prepare("UPDATE home_coverage_counter_state SET from_count=?,to_count=?,starts_at=?,ends_at=? WHERE id=1")
-          .run(from, yesterday, now, endsAt);
+          .run(previous.to, total, now, endsAt);
       }
       const counter = readHomeCounterWindow(db)!;
       db.exec("COMMIT");

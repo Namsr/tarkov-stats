@@ -14,6 +14,9 @@ test("VPS containers leave host headroom and all offline jobs use the shared bud
   const web = compose.slice(compose.indexOf("  web:"), compose.indexOf("  worker:"));
   const worker = compose.slice(compose.indexOf("  worker:"), compose.indexOf("  caddy:"));
   assert.match(web, /WEB_BACKGROUND_WORKERS: "false"/);
+  // The dedicated service owns the sampler in this deployment; the web child is
+  // only the fallback for composes that predate that service.
+  assert.match(web, /HOME_COUNTER_SAMPLER: "false"/);
   assert.match(web, /mem_limit: 896m/);
   assert.match(web, /memswap_limit: 1152m/);
   assert.match(web, /^\s+- \/tmp:size=64m$/m);
@@ -31,6 +34,12 @@ test("VPS containers leave host headroom and all offline jobs use the shared bud
   assert.match(compose, /command: \["node", "--experimental-strip-types", "--experimental-sqlite", "scripts\/sample-home-coverage\.mjs"\]/);
   const dockerfile = await readFile("Dockerfile", "utf8");
   assert.match(dockerfile, /COPY .*scripts\/sample-home-coverage\.mjs/);
+  // The web container also samples the counter, so an outdated compose file
+  // cannot leave the public total frozen until the next index swap.
+  assert.match(dockerfile, /ENV HOME_COUNTER_SAMPLER=true/);
+  const startup = await readFile("scripts/start-web.mjs", "utf8");
+  assert.match(startup, /HOME_COUNTER_SAMPLER === "true"/);
+  assert.match(startup, /"scripts\/sample-home-coverage\.mjs"/);
   const slice = await readFile("ops/systemd/tarkovstats-background.slice", "utf8");
   assert.match(slice, /^MemoryMax=512M$/m);
   assert.match(slice, /^MemorySwapMax=256M$/m);
