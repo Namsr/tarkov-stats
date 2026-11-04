@@ -17,9 +17,10 @@ export function detectAxisSeasons(matches: AxisMatch[]): AxisSeason[] {
     const players = match.teams.flatMap((team) => team.players).filter((player) => player.mmr != null);
     const known = players.filter((player) => ratings.has(player.id));
     const resets = known.filter((player) => player.mmr === 1000 && Math.abs(ratings.get(player.id)! - 1000) > 1);
+    const completed = match.winner != null && (match.winner >= 0 || match.winner === -2);
     const last = seasons.at(-1);
     const confirmed = match.time! >= AXIS_CURRENT_SEASON_START && (!last || last.startsAt < AXIS_CURRENT_SEASON_START);
-    if (!last || confirmed || match.winner != null && match.winner >= 0 && resets.length >= 6 && resets.length >= known.length * .75) {
+    if (!last || confirmed || completed && resets.length >= 6 && resets.length >= known.length * .75) {
       const startsAt = confirmed ? AXIS_CURRENT_SEASON_START : match.time!;
       if (last) last.endsAt = startsAt;
       seasons.push({ id: `match-${match.number}`, startsAt, endsAt: null,
@@ -27,7 +28,7 @@ export function detectAxisSeasons(matches: AxisMatch[]): AxisSeason[] {
       ratings.clear();
     }
     seasons.at(-1)!.matches++;
-    if (match.winner != null && match.winner >= 0) {
+    if (completed) {
       for (const player of players) if (player.change != null) ratings.set(player.id, player.mmr! + player.change);
     }
   }

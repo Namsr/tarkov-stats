@@ -87,7 +87,7 @@ export function createAxisLeagueStore(db: SqliteDatabase) {
     CREATE INDEX IF NOT EXISTS axis_archive_queue_time ON axis_archive_matches(
       json_extract(payload, '$.queueId'), json_extract(payload, '$.time'), number
     );
-    CREATE TABLE IF NOT EXISTS axis_archive_seasons (id INTEGER PRIMARY KEY CHECK(id = 1), payload TEXT);
+    CREATE TABLE IF NOT EXISTS axis_archive_seasons (id INTEGER PRIMARY KEY CHECK(id = 1), payload TEXT, version INTEGER NOT NULL DEFAULT 0);
     INSERT OR IGNORE INTO axis_archive_seasons(id) VALUES(1);
     CREATE TABLE IF NOT EXISTS axis_archive_state (
       id INTEGER PRIMARY KEY CHECK(id = 1), next_page INTEGER NOT NULL DEFAULT 2,
@@ -119,6 +119,16 @@ export function createAxisLeagueStore(db: SqliteDatabase) {
       try { db.exec("ROLLBACK"); } catch { /* Preserve the original failure. */ }
       throw error;
     }
+  }
+  // Older summaries ignored rating resets in draws. Invalidate once so the saved
+  // archive is reclassified even when subsequent imports contain no changed matches.
+  const hasSeasonVersion = () => db.prepare("PRAGMA table_info(axis_archive_seasons)").all()
+    .some((column: { name: string }) => column.name === "version");
+  if (!hasSeasonVersion() || db.prepare("SELECT version FROM axis_archive_seasons WHERE id=1").get().version < 1) {
+    withImmediateTransaction(() => {
+      if (!hasSeasonVersion()) db.exec("ALTER TABLE axis_archive_seasons ADD COLUMN version INTEGER NOT NULL DEFAULT 0");
+      db.prepare("UPDATE axis_archive_seasons SET payload=NULL,version=1 WHERE id=1 AND version<1").run();
+    });
   }
   // Existing evidence predates capture-only uploads and is already processed.
   if (!db.prepare("PRAGMA table_info(axis_match_submissions)").all().some((column: { name: string }) => column.name === "processing_status")) {

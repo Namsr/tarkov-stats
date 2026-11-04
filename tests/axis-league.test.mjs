@@ -261,6 +261,59 @@ test("future mass resets create another season without erasing the confirmed bou
   assert.equal(seasons[1].inferred, false);
 });
 
+test("a mass rating reset in a draw starts a season and draws retain rating evidence", () => {
+  const first = { ...seasonMatch(5916, AXIS_CURRENT_SEASON_START + 1000, 1200), winner: -2 };
+  first.teams[0].players.forEach(player => { player.change = 0; });
+  const reset = { ...seasonMatch(5917, Date.parse("2026-11-04T13:40:30Z"), 1000), winner: -2 };
+  reset.teams[0].players.forEach(player => { player.change = 0; });
+  const next = seasonMatch(5918, reset.time + 1000, 1000);
+  const seasons = detectAxisSeasons([next, reset, first]);
+  assert.equal(seasons.length, 2);
+  assert.equal(seasons[0].firstMatch, 5917);
+  assert.equal(seasons[0].startsAt, reset.time);
+  assert.equal(seasons[0].matches, 2, "the following decisive match must not create another season");
+  assert.equal(seasons[1].endsAt, reset.time);
+});
+
+test("cancelled, unresolved and minority resets cannot start a season or consume rating evidence", () => {
+  const first = seasonMatch(100, AXIS_CURRENT_SEASON_START + 1000, 1200);
+  for (const winner of [-1, null]) {
+    const cancelled = { ...seasonMatch(101, first.time + 1000, 1000), winner };
+    const reset = seasonMatch(102, first.time + 2000, 1000);
+    assert.equal(detectAxisSeasons([first, cancelled]).length, 1);
+    assert.equal(detectAxisSeasons([first, cancelled, reset])[0].firstMatch, 102);
+  }
+  for (const count of [1, 5, 7]) {
+    const partial = { ...seasonMatch(101, first.time + 1000, 1200), winner: -2 };
+    partial.teams[0].players.slice(0, count).forEach(player => { player.mmr = 1000; });
+    assert.equal(detectAxisSeasons([first, partial]).length, 1);
+  }
+});
+
+test("legacy season summaries are rebuilt once from saved draws without waiting for another match", t => {
+  const sql = new DatabaseSync(":memory:"); t.after(() => sql.close());
+  const first = seasonMatch(5916, AXIS_CURRENT_SEASON_START + 1000, 1200);
+  const reset = { ...seasonMatch(5917, Date.parse("2026-11-04T13:40:30Z"), 1000), winner: -2 };
+  reset.teams[0].players.forEach(player => { player.change = 0; });
+  const oldSeasons = detectAxisSeasons([first, { ...reset, winner: null }]);
+  sql.exec("CREATE TABLE axis_archive_seasons (id INTEGER PRIMARY KEY CHECK(id=1), payload TEXT); CREATE TABLE axis_archive_matches (number INTEGER PRIMARY KEY, payload TEXT NOT NULL)");
+  sql.prepare("INSERT INTO axis_archive_seasons VALUES(1,?)").run(JSON.stringify(oldSeasons));
+  for (const match of [first, reset]) sql.prepare("INSERT INTO axis_archive_matches VALUES(?,?)").run(match.number, JSON.stringify(match));
+  const db = createAxisLeagueStore(sql);
+  sql.prepare("UPDATE axis_archive_state SET complete=1,updated_at=1000 WHERE id=1").run();
+  const current = db.readSeasonHistory(1, "current");
+  assert.deepEqual(current.matches.map(match => match.number), [5917]);
+  assert.equal(current.summary.played, 1);
+  assert.equal(current.seasons[1].firstMatch, 5916);
+  assert.deepEqual(db.readSeasonHistory(1, current.seasons[1].id).matches.map(match => match.number), [5916]);
+  assert.equal(db.read().currentSeason.startsAt, reset.time);
+  assert.equal(db.readSeasonHistory(1, "all").total, 2);
+  sql.exec("CREATE TRIGGER no_repeat_season_migration BEFORE UPDATE ON axis_archive_seasons BEGIN SELECT RAISE(ABORT,'season migration repeated'); END");
+  const reopened = createAxisLeagueStore(sql);
+  assert.equal(reopened.readSeasonHistory(1, "current").seasons[0].firstMatch, 5917);
+  reopened.publishArchive({ page: 1, pages: 1, total: 2, matches: [first, reset] });
+});
+
 test("history statistics cover every selected page and count completed matches and distinct maps", t => {
   const db = store(t);
   assert.deepEqual(db.readSeasonHistory(1, "current").summary, { played: 0, winsA: 0, winsB: 0, maps: [], averageWinProbability: null });
