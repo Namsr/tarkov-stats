@@ -1,12 +1,13 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { runInNewContext } from "node:vm";
 import test from "node:test";
 import ts from "typescript";
+import { selectCiScope } from "../scripts/ci-scope.mjs";
 
 const source = await readFile(new URL("../scripts/benchmark-rust-arena-browser.mjs", import.meta.url), "utf8");
 const tree = ts.createSourceFile("benchmark.mjs", source, ts.ScriptTarget.Latest, true, ts.ScriptKind.JS);
@@ -187,7 +188,7 @@ test("browser fixture Caddy configuration adapts with the shared admission limit
 });
 
 
-test("CI workflow changes retain full checks when combined with scoped files", async (t) => {
+test("CI workflow executes the current selector for scoped, mixed and unknown changes", async (t) => {
   const workflow = (await readFile(new URL("../.github/workflows/vps-image.yml", import.meta.url), "utf8")).replaceAll("\r\n", "\n");
   const step = workflow.indexOf("      - name: Select checks for the changed files\n");
   const marker = "        run: |\n";
@@ -202,20 +203,27 @@ test("CI workflow changes retain full checks when combined with scoped files", a
     ? resolve(spawnSync("git", ["--exec-path"], { encoding: "utf8", windowsHide: true }).stdout.trim(), "../../../bin/bash.exe")
     : "/bin/bash";
   const dir = await mkdtemp(join(tmpdir(), "ci-scope-"));
+  // The workflow now invokes a separate module from the checkout. The fixture
+  // must carry that real module alongside its mocked Git diff.
+  await mkdir(join(dir, "scripts"));
+  await writeFile(join(dir, "scripts/ci-scope.mjs"), await readFile(new URL("../scripts/ci-scope.mjs", import.meta.url)));
   t.after(async () => {
     assert.equal(dirname(resolve(dir)), resolve(tmpdir()));
     assert.ok(basename(dir).startsWith("ci-scope-"));
     await rm(dir, { recursive: true, force: true });
   });
   const cases = [
-    [[".github/workflows/vps-image.yml", "components/SiteHeader.tsx"], false, false, false],
-    [["scripts/serve-rust-arena-benchmark.mjs", ".github/workflows/vps-image.yml"], false, false, false],
-    [[".github/workflows/vps-image.yml"], false, false, false],
-    [["components/SiteHeader.tsx"], true, false, true],
-    [["scripts/serve-rust-arena-benchmark.mjs"], true, true, false],
-    [["components/SiteHeader.tsx", "rust/backend/src/main.rs"], false, false, false],
+    [".github/workflows/vps-image.yml", "components/SiteHeader.tsx"],
+    ["scripts/serve-rust-arena-benchmark.mjs", ".github/workflows/vps-image.yml"],
+    [".github/workflows/vps-image.yml"],
+    ["components/SiteHeader.tsx"],
+    ["scripts/serve-rust-arena-benchmark.mjs"],
+    ["tests/rust-arena-browser-lifecycle.test.mjs"],
+    ["components/SiteHeader.tsx", "rust/backend/src/main.rs"],
+    ["lib/axis-seasons.ts", "lib/admin/axis-league-db.ts", "tests/axis-league.test.mjs"],
+    ["lib/axis-seasons.ts", "rust/backend/src/axis_stats.rs"],
   ];
-  for (const event of ["pull_request", "push"]) for (const [paths, scoped, browser, navigation] of cases) {
+  for (const event of ["pull_request", "push"]) for (const paths of cases) {
     await writeFile(join(dir, "paths"), paths.join("\0") + "\0");
     await writeFile(join(dir, "output"), "");
     const result = spawnSync(shell, ["-e", "-c", `git() {
@@ -227,6 +235,6 @@ ${script}`], {
     });
     assert.equal(result.status, 0, result.stderr || result.error?.message);
     const output = Object.fromEntries((await readFile(join(dir, "output"), "utf8")).trim().split("\n").map(line => line.split("=")));
-    assert.deepEqual(output, { navigation: String(navigation), ui_proxy_only: String(scoped), arena_browser: String(browser) }, `${event}: ${paths.join(", ")}`);
+    assert.deepEqual(output, Object.fromEntries(Object.entries(selectCiScope(paths, event)).map(([key, value]) => [key, String(value)])), `${event}: ${paths.join(", ")}`);
   }
 });

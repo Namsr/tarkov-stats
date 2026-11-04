@@ -55,6 +55,12 @@ test("CI retains full manual and missing-diff runs, and builds every deployed ma
   assert.equal(ci.ops, true);
   assert.equal(ci.runtime_contract, true);
   assert.equal(ci.full, false);
+  const fixtureTests = selectCiScope(["tests/rust-arena-browser-lifecycle.test.mjs"], "pull_request");
+  assert.equal(fixtureTests.proxy, true);
+  assert.equal(fixtureTests.arena_browser, false);
+  for (const path of ["ops/Caddyfile", "scripts/serve-rust-arena-benchmark.mjs"]) {
+    assert.equal(selectCiScope([path], "pull_request").arena_browser, true);
+  }
 });
 
 test("CI selector consumes NUL-delimited paths and writes only boolean step outputs", async () => {

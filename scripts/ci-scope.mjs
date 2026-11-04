@@ -48,7 +48,9 @@ export function selectCiScope(paths, eventName) {
       scope.proxy = true;
     } else if (proxy.has(path)) {
       scope.proxy = true;
-      if (["ops/Caddyfile", "scripts/serve-rust-arena-benchmark.mjs", "tests/rust-arena-browser-lifecycle.test.mjs"].includes(path)) {
+      // Test-only edits run the real Caddy/fixture regressions in this group;
+      // the browser image benchmark is needed when its runtime inputs change.
+      if (["ops/Caddyfile", "scripts/serve-rust-arena-benchmark.mjs"].includes(path)) {
         scope.arena_browser = true;
       }
     } else scope.full = true;
