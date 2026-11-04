@@ -20,6 +20,30 @@ test("CI selects the union of affected groups and keeps unknown changes on the f
   }
 });
 
+test("CI scopes AXIS seasons with shared store callers and composes mixed changes", () => {
+  const axisPaths = ["lib/axis-seasons.ts", "lib/admin/axis-league-db.ts", "tests/axis-league.test.mjs"];
+  for (const event of ["pull_request", "push"]) {
+    for (const paths of axisPaths.map(path => [path]).concat([axisPaths])) {
+      const scope = selectCiScope(paths, event);
+      assert.equal(scope.axis_seasons, true);
+      assert.equal(scope.image, true);
+      for (const key of ["full", "benchmarks", "runtime_contract", "arena_browser"]) assert.equal(scope[key], false, key);
+    }
+    const mixed = selectCiScope([...axisPaths, "scripts/ci-scope.mjs", ".github/workflows/vps-image.yml", "tests/background-isolation.test.mjs"], event);
+    assert.equal(mixed.full, false);
+    assert.equal(mixed.axis_seasons, true);
+    assert.equal(mixed.ops, true);
+    assert.equal(mixed.runtime_contract, true);
+    assert.equal(mixed.benchmarks, false);
+    assert.equal(mixed.arena_browser, false);
+    for (const path of ["package.json", "lib/axis-history.ts", "lib/axis-win-probability.ts", "rust/backend/src/axis_stats.rs"]) {
+      const scope = selectCiScope([...axisPaths, path], event);
+      assert.equal(scope.full, true, path);
+      assert.equal(scope.benchmarks, true, path);
+    }
+  }
+});
+
 test("CI retains full manual and missing-diff runs, and builds every deployed main revision", () => {
   for (const paths of [null, []]) assert.equal(selectCiScope(paths, "pull_request").full, true);
   assert.equal(selectCiScope(["lib/home-counter.ts"], "workflow_dispatch").full, true);
@@ -31,6 +55,12 @@ test("CI retains full manual and missing-diff runs, and builds every deployed ma
   assert.equal(ci.ops, true);
   assert.equal(ci.runtime_contract, true);
   assert.equal(ci.full, false);
+  const fixtureTests = selectCiScope(["tests/rust-arena-browser-lifecycle.test.mjs"], "pull_request");
+  assert.equal(fixtureTests.proxy, true);
+  assert.equal(fixtureTests.arena_browser, false);
+  for (const path of ["ops/Caddyfile", "scripts/serve-rust-arena-benchmark.mjs"]) {
+    assert.equal(selectCiScope([path], "pull_request").arena_browser, true);
+  }
 });
 
 test("CI selector consumes NUL-delimited paths and writes only boolean step outputs", async () => {
@@ -60,6 +90,14 @@ test("workflow keeps scoped tests, full fallback and cached image validation wir
   assert.match(workflow, /if: steps\.scope\.outputs\.full == 'true'\s+run: npm test/);
   assert.match(workflow, /home_counter == 'true'\s+run: node .*tests\/public-index-coverage\.test\.ts tests\/home-showcase-mode\.test\.mjs/);
   assert.match(workflow, /ops == 'true'\s+run: node .*tests\/background-isolation\.test\.mjs tests\/deploy-wrapper\.test\.mjs/);
+  const axisStep = workflow.match(/- name: Run the affected AXIS season and shared store tests\n([\s\S]*?)(?=\n      - )/);
+  assert.ok(axisStep);
+  assert.match(axisStep[1], /full != 'true' && steps\.scope\.outputs\.axis_seasons == 'true'/);
+  // Every existing test that imports the shared store or season detector belongs
+  // in this group, including auth, access and submission callers outside history.
+  for (const file of ["axis-league", "axis-player-profile", "axis-league-routes", "axis-win-probability", "axis-access", "axis-history-access", "axis-match-submission", "axis-submission-storage", "axis-discord-submission", "axis-ocr-context", "client-axis-league", "auth-session"]) {
+    assert.ok(axisStep[1].includes(`tests/${file}.test.mjs`), file);
+  }
   assert.match(workflow, /if: needs\.checks\.outputs\.image == 'true'/);
   for (const name of ["Benchmark isolated TypeScript and Rust API workloads", "Benchmark production Next and Rust HTTP endpoints"]) {
     assert.ok(workflow.includes(`name: ${name}\n        if: needs.checks.outputs.benchmarks == 'true'`));

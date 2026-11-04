@@ -14,6 +14,11 @@ const runtime = new Set([
 const ci = new Set([
   ".github/workflows/vps-image.yml", "scripts/ci-scope.mjs", "tests/background-isolation.test.mjs",
 ]);
+// This narrow group covers the shared store as well as season detection. Other
+// AXIS changes still require the full gate until their affected checks are mapped.
+const axisSeasons = new Set([
+  "lib/axis-seasons.ts", "lib/admin/axis-league-db.ts", "tests/axis-league.test.mjs",
+]);
 const navigation = new Set([
   "components/AverageNavButton.tsx", "components/AxisLeaguePage.tsx", "components/FaqWidget.tsx",
   "components/LeaderboardPage.tsx", "components/SiteFooter.tsx", "components/SiteHeader.tsx",
@@ -26,7 +31,7 @@ const proxy = new Set([
 /** Unknown/shared changes fail closed to the full gate. Groups compose, so a
  * mixed PR runs the union of its checks rather than qualifying as one exception. */
 export function selectCiScope(paths, eventName) {
-  const scope = { full: false, home_counter: false, ops: false, proxy: false,
+  const scope = { full: false, home_counter: false, axis_seasons: false, ops: false, proxy: false,
     navigation: false, arena_browser: false, benchmarks: false, runtime_contract: false,
     image: eventName !== "pull_request" };
   if (!["pull_request", "push"].includes(eventName) || !paths?.length) scope.full = true;
@@ -34,6 +39,7 @@ export function selectCiScope(paths, eventName) {
     if (/^(docs\/.*|README\.md|PERFORMANCE\.md)$/.test(path)) continue;
     scope.image = true;
     if (home.has(path)) scope.home_counter = true;
+    else if (axisSeasons.has(path)) scope.axis_seasons = true;
     else if (runtime.has(path) || ci.has(path)) {
       scope.ops = true;
       scope.runtime_contract = true;
@@ -42,7 +48,9 @@ export function selectCiScope(paths, eventName) {
       scope.proxy = true;
     } else if (proxy.has(path)) {
       scope.proxy = true;
-      if (["ops/Caddyfile", "scripts/serve-rust-arena-benchmark.mjs", "tests/rust-arena-browser-lifecycle.test.mjs"].includes(path)) {
+      // Test-only edits run the real Caddy/fixture regressions in this group;
+      // the browser image benchmark is needed when its runtime inputs change.
+      if (["ops/Caddyfile", "scripts/serve-rust-arena-benchmark.mjs"].includes(path)) {
         scope.arena_browser = true;
       }
     } else scope.full = true;

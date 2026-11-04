@@ -108,6 +108,16 @@ jobs:
       - name: Run the affected homepage counter tests
         if: steps.scope.outputs.full != 'true' && steps.scope.outputs.home_counter == 'true'
         run: node --experimental-strip-types --experimental-sqlite --test tests/public-index-coverage.test.ts tests/home-showcase-mode.test.mjs
+      - name: Run the affected AXIS season and shared store tests
+        if: steps.scope.outputs.full != 'true' && steps.scope.outputs.axis_seasons == 'true'
+        run: >-
+          node --experimental-strip-types --experimental-sqlite --test
+          tests/axis-league.test.mjs tests/axis-player-profile.test.mjs
+          tests/axis-league-routes.test.mjs tests/axis-win-probability.test.mjs
+          tests/axis-access.test.mjs tests/axis-history-access.test.mjs
+          tests/axis-match-submission.test.mjs tests/axis-submission-storage.test.mjs
+          tests/axis-discord-submission.test.mjs tests/axis-ocr-context.test.mjs
+          tests/client-axis-league.test.mjs tests/auth-session.test.mjs
       - name: Run the affected startup, operations and CI selector tests
         if: steps.scope.outputs.full != 'true' && steps.scope.outputs.ops == 'true'
         run: node --experimental-strip-types --experimental-sqlite --test tests/background-isolation.test.mjs tests/deploy-wrapper.test.mjs tests/worker-supervisor.test.mjs tests/runtime-health.test.mjs tests/test-registry.test.mjs
