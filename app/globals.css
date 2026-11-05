@@ -903,7 +903,6 @@ a.leaderboard-rank { transition: border-color 160ms ease, background-color 160ms
 .axis-cards { display: none; list-style: none; margin: 0; padding: 12px; }
 .axis-cards .leaderboard-card__name a { color: var(--foreground); }
 .axis-empty { padding: 24px 18px; color: var(--muted-strong); }
-.axis-leaderboard-link { margin-top: 18px; }
 .axis-admin-search { margin-top: 18px; }
 .axis-admin-players { display: grid; gap: 18px; list-style: none; margin: 18px 0 0; padding: 0; }
 .axis-admin-linked { margin-top: 20px; border-top: 1px solid var(--card-border); }
