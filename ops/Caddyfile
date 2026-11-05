@@ -53,8 +53,28 @@
 			}
 		}
 	}
-	@notProfile not path /api/player/profile
-	log_skip @notProfile
+	# Opt-in observation on .online only. Keep existing profile API logs on both sites.
+	@skipAccess `!path('/api/player/profile') && !('{$PROFILE_BOT_SHADOW:false}' == 'true' && host('tarkovstats.online', 'www.tarkovstats.online') && method('GET') && path('/player', '/player/*') && !header({'RSC':'1', 'Next-Router-Prefetch':'1'}))`
+	log_skip @skipAccess
+	@profileBotShadow `'{$PROFILE_BOT_SHADOW:false}' == 'true' && host('tarkovstats.online', 'www.tarkovstats.online') && method('GET') && path('/player', '/player/*', '/api/player/profile') && !header({'RSC':'1', 'Next-Router-Prefetch':'1'})`
+	map {header.User-Agent} {profile_shadow_agent} {
+		~(?i)(bot|crawler|spider|slurp|facebookexternalhit) other
+		~(?i)(headless|playwright|puppeteer|selenium) headless
+		~(?i)(android|iphone|ipad) other
+		~Chrome/(10[3-9]|1[12][0-9]|13[0-3])[.] sampled_chrome
+		default other
+	}
+	map "{profile_shadow_agent}|{header.Sec-Fetch-Site}|{header.Sec-Fetch-Mode}|{header.Sec-Fetch-User}" {profile_shadow_result} {
+		~^headless[|] headless
+		"sampled_chrome|||" missing_fetch_metadata
+		default no_match
+	}
+	map {path} {profile_shadow_route} {
+		~(?i)^/api/player/profile$ profile_api
+		default player_page
+	}
+	log_append @profileBotShadow profile_bot_shadow_v1 {profile_shadow_result}
+	log_append @profileBotShadow profile_bot_shadow_route {profile_shadow_route}
 	# Query placeholders JOIN repeated values. Capture the first raw value for
 	# rejection, so aid=123&aid= stays valid and aid=&aid=123 is rejected.
 	map {http.request.uri.query} {profile_first_aid} {
