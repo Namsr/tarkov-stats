@@ -43,7 +43,7 @@ test('Caddy rejects excess HTTP/2 requests across sites and releases timed-out s
       req.on('data', (chunk) => { body += chunk; });
       req.on('end', () => res.end(body));
     }
-    else if (req.url === '/hold' || req.url === '/stall') held.add(res);
+    else if (req.url === '/hold' || req.url === '/stall' || /^\/player\/(regular|pve|arena|seasonal)\/hold(?:\?|$)/.test(req.url)) held.add(res);
     else {
       res.setHeader('Content-Type', 'application/json');
       res.end(JSON.stringify({ ip: req.headers['x-real-ip'], requestId: req.headers['x-request-id'] }));
@@ -310,6 +310,7 @@ test('Caddy rejects excess HTTP/2 requests across sites and releases timed-out s
   }
   const beforePrefetchOverflow = received;
   assert.equal((await request('/hold', 'tarkovstats.ru', 'GET', undefined, prefetchHeaders)).status, 503);
+  assert.equal((await request('/player/regular/hold', 'tarkovstats.online', 'GET', undefined, prefetchHeaders)).status, 503, 'profile prefetch must retain the stricter threshold of 8');
   assert.equal(received, beforePrefetchOverflow, 'excess prefetch must not reach Next');
   assert.equal((await request('/healthz')).status, 200);
   assert.equal((await request('/leaderboard', 'tarkovstats.online')).status, 200);
@@ -322,6 +323,48 @@ test('Caddy rejects excess HTTP/2 requests across sites and releases timed-out s
   assert.ok((await Promise.all(prefetched)).every((r) => r.status === 200));
   assert.equal((await request('/', 'tarkovstats.ru', 'GET', undefined, prefetchHeaders)).status, 200);
   t.diagnostic('prefetch stops at 8 shared requests while navigation, health and APIs remain available');
+  // Profile bursts stop at half the shared capacity on either domain. Include
+  // ordinary RSC navigation and HEAD: neither may bypass profile admission.
+  const profilePending = [];
+  const modes = ['regular', 'pve', 'arena', 'seasonal'];
+  for (let i = 0; i < 16; i++) {
+    profilePending.push(request(`/player/${modes[i % modes.length]}/hold?fixture=1`,
+      i % 2 ? 'tarkovstats.online' : 'tarkovstats.ru', i === 15 ? 'HEAD' : 'GET', undefined,
+      i === 12 ? { rsc: '1' } : {}));
+    const accepted = Date.now() + 2000;
+    while (held.size < i + 1 && Date.now() < accepted) await delay(10);
+    assert.equal(held.size, i + 1);
+  }
+  const beforeProfileOverflow = received;
+  for (const host of ['tarkovstats.ru', 'tarkovstats.online']) {
+    for (const path of ['/player', '/player/', '/player/regular/1', '/player/pve/1',
+      '/player/arena/1', '/player/seasonal/1', '/player/%72egular/1']) {
+      assert.equal((await request(path, host)).status, 503, `${host}${path} shares profile admission`);
+    }
+  }
+  assert.equal((await request('/player/regular/1', 'tarkovstats.ru', 'HEAD')).status, 503);
+  assert.equal((await request('/player/arena/1', 'tarkovstats.ru', 'GET', undefined, { rsc: '1' })).status, 503);
+  assert.equal(received, beforeProfileOverflow, 'excess profile documents must never reach Next');
+  for (const path of ['/', '/healthz', '/api/player/profile?aid=123', '/api/player/search?nickname=test',
+    '/leaderboard', '/_next/static/fixture.js', '/playerish']) {
+    assert.equal((await request(path)).status, 200, `${path} remains available during a profile burst`);
+  }
+  assert.equal((await request('/player/regular/1', 'tarkovstats.ru', 'POST')).status, 200,
+    'profile admission is limited to read-only page requests');
+  // The remaining 16 slots belong to the same 32-request budget, not a second
+  // independent pool. Show that ordinary requests can actually occupy them.
+  const reservedPending = [];
+  for (let i = 0; i < 16; i++) {
+    reservedPending.push(request('/hold', i % 2 ? 'tarkovstats.online' : 'tarkovstats.ru'));
+    const accepted = Date.now() + 2000;
+    while (held.size < 17 + i && Date.now() < accepted) await delay(10);
+    assert.equal(held.size, 17 + i);
+  }
+  assert.equal((await request('/healthz')).status, 503, 'the combined pool still stops at 32');
+  for (const res of held) res.end('released');
+  assert.ok((await Promise.all([...profilePending, ...reservedPending])).every((r) => r.status === 200));
+  assert.equal((await request('/player/regular/1')).status, 200, 'profile capacity recovers after release');
+  t.diagnostic('profile bursts stop at 16 shared requests and leave 16 ordinary slots available');
   const pending = [];
   for (let i = 0; i < 32; i++) {
     pending.push(request('/hold', i % 2 ? 'tarkovstats.online' : 'tarkovstats.ru'));
@@ -331,6 +374,9 @@ test('Caddy rejects excess HTTP/2 requests across sites and releases timed-out s
   }
   // Ordinary work also counts against the prefetch threshold: it is not a
   // second independent pool with eight additional slots.
+  const beforeSharedProfiles = received;
+  assert.equal((await request('/player/regular/1')).status, 503, 'ordinary work also counts against profile admission');
+  assert.equal(received, beforeSharedProfiles);
   const beforeSharedPrefetch = received;
   assert.equal((await request('/hold', 'tarkovstats.online', 'GET', undefined, prefetchHeaders)).status, 503);
   assert.equal(received, beforeSharedPrefetch);

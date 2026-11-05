@@ -188,6 +188,16 @@
 	reverse_proxy @nextPrefetch web:3000 {
 		import web_upstream 8
 	}
+	# Profile documents and RSC navigation share the same upstream counter.
+	# Stop admitting them at 16 so a profile burst leaves half of the 32 slots
+	# available for the home page, health checks and API requests.
+	@playerPages {
+		method GET HEAD
+		path /player /player/*
+	}
+	reverse_proxy @playerPages web:3000 {
+		import web_upstream 16
+	}
 	reverse_proxy web:3000 {
 		import web_upstream 32
 	}
@@ -248,6 +258,16 @@
 			handle @nextPrefetch {
 				reverse_proxy web:3000 {
 					import web_upstream 8
+					lb_try_duration 4s
+					lb_try_interval 100ms
+					lb_retry_match {
+						expression false
+					}
+				}
+			}
+			handle @playerPages {
+				reverse_proxy web:3000 {
+					import web_upstream 16
 					lb_try_duration 4s
 					lb_try_interval 100ms
 					lb_retry_match {
