@@ -18,6 +18,7 @@ test('Caddy rejects excess HTTP/2 requests across sites and releases timed-out s
   skip: !caddy && 'Set CADDY_BIN to run the Caddy integration check',
   timeout: 60_000,
 }, async (t) => {
+  const shadowEnabled = process.env.PROFILE_BOT_SHADOW !== 'false';
   const dir = await mkdtemp(join(tmpdir(), 'caddy-overload-'));
   let child;
   let client;
@@ -94,10 +95,11 @@ test('Caddy rejects excess HTTP/2 requests across sites and releases timed-out s
   await writeFile(file, config);
   child = spawn(caddy, ['run', '--config', file, '--adapter', 'caddyfile'], {
     cwd: dir, windowsHide: true, stdio: ['ignore', 'ignore', 'pipe'],
-    env: { ...process.env, ARENA_UI_UPSTREAM: `127.0.0.1:${upstreamPort}`, HOME_SHOWCASE_API_UPSTREAM: `127.0.0.1:${upstreamPort}`, SEASONAL_API_UPSTREAM: `127.0.0.1:${upstreamPort}`, GOMEMLIMIT: '192MiB', APPDATA: dir, XDG_DATA_HOME: dir, XDG_CONFIG_HOME: dir },
+    env: { ...process.env, PROFILE_BOT_SHADOW: String(shadowEnabled), ARENA_UI_UPSTREAM: `127.0.0.1:${upstreamPort}`, HOME_SHOWCASE_API_UPSTREAM: `127.0.0.1:${upstreamPort}`, SEASONAL_API_UPSTREAM: `127.0.0.1:${upstreamPort}`, GOMEMLIMIT: '192MiB', APPDATA: dir, XDG_DATA_HOME: dir, XDG_CONFIG_HOME: dir },
   });
   let logs = '';
   const profileLogs = [];
+  const accessLogs = [];
   let partial = '';
   child.stderr.on('data', (chunk) => {
     logs = (logs + chunk).slice(-12_000);
@@ -107,6 +109,7 @@ test('Caddy rejects excess HTTP/2 requests across sites and releases timed-out s
       try {
         const entry = JSON.parse(line);
         if (entry.event === 'profile_access_v1') profileLogs.push(entry);
+        if (entry.logger?.startsWith('http.log.access')) accessLogs.push(entry);
       } catch { /* Caddy may emit an unstructured startup diagnostic. */ }
     }
   });
@@ -228,6 +231,46 @@ test('Caddy rejects excess HTTP/2 requests across sites and releases timed-out s
   }
   assert.ok(profileLogs.slice(0, emptyPaths.length * 2).every((entry) => entry.status === 400 && String(entry.aid) === 'none'));
   t.diagnostic('empty IDs rejected before Next; every profile request logged with safe identity fields');
+  const beforeShadow = accessLogs.length;
+  const chrome = { 'user-agent': 'Mozilla/5.0 Chrome/116.0.0.0 Safari/537.36' };
+  const shadowCases = [
+    ['/player/regular/123?secret=private-query', 'tarkovstats.online', 'GET', chrome],
+    ['/api/player/profile?aid=123', 'www.tarkovstats.online', 'GET', chrome],
+    ['/player/regular/123', 'tarkovstats.online', 'GET', { ...chrome, 'sec-fetch-mode': 'navigate' }],
+    ['/player/regular/123', 'tarkovstats.online', 'GET', { ...chrome, 'sec-fetch-site': 'none' }],
+    ['/player/regular/123', 'tarkovstats.online', 'GET', { 'user-agent': `${chrome['user-agent']} Googlebot` }],
+    ['/player/regular/123', 'tarkovstats.online', 'GET', { 'user-agent': `Android ${chrome['user-agent']}` }],
+    ['/player/regular/123', 'tarkovstats.online', 'GET', { 'user-agent': 'HeadlessChrome/151.0.0.0' }],
+    ['/player/regular/123', 'tarkovstats.online', 'GET', { ...chrome, rsc: '1', 'next-router-prefetch': '1' }],
+    ['/player/regular/123', 'tarkovstats.online', 'HEAD', chrome],
+    ['/player/regular/123', 'tarkovstats.ru', 'GET', chrome],
+    ['/leaderboard', 'tarkovstats.online', 'GET', chrome],
+    ['/api/player/profile?aid=987654', 'tarkovstats.ru', 'GET', chrome],
+  ];
+  for (const [path, host, method, headers] of shadowCases) {
+    assert.equal((await request(path, host, method, undefined, headers)).status, 200, `${host}${path} should still reach the upstream`);
+  }
+  const shadowDeadline = Date.now() + 3000;
+  while (!profileLogs.some((entry) => String(entry.aid) === '987654') && Date.now() < shadowDeadline) await delay(10);
+  assert.ok(profileLogs.some((entry) => String(entry.aid) === '987654'));
+  const shadowWindow = accessLogs.slice(beforeShadow);
+  assert.equal(shadowWindow.length, shadowEnabled ? 8 : 2, 'only existing profile logs and scoped shadow logs should be emitted');
+  assert.deepEqual(shadowWindow.filter((entry) => entry.profile_bot_shadow_v1).map((entry) => [entry.profile_bot_shadow_route, entry.profile_bot_shadow_v1]), shadowEnabled ? [
+    ['player_page', 'missing_fetch_metadata'],
+    ['profile_api', 'missing_fetch_metadata'],
+    ['player_page', 'no_match'],
+    ['player_page', 'no_match'],
+    ['player_page', 'no_match'],
+    ['player_page', 'no_match'],
+    ['player_page', 'headless'],
+  ] : []);
+  for (const entry of shadowWindow) {
+    assert.equal(entry.request.uri, undefined);
+    assert.equal(entry.request.headers, undefined);
+    assert.equal(entry.resp_headers, undefined);
+    assert.doesNotMatch(JSON.stringify(entry), /private-|Mozilla|HeadlessChrome|Googlebot/);
+  }
+  t.diagnostic(`profile bot shadow logging ${shadowEnabled ? 'enabled' : 'disabled'}; proxy responses unchanged`);
   const beforePost = received;
   assert.equal((await request('/api/player/profile', 'tarkovstats.ru', 'POST')).status, 200);
   assert.equal(received, beforePost + 1, 'unsupported-method handling must remain with Next, preserving 405/OPTIONS');
