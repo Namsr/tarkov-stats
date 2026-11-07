@@ -120,7 +120,7 @@ jobs:
           tests/client-axis-league.test.mjs tests/auth-session.test.mjs
       - name: Run the affected startup, operations and CI selector tests
         if: steps.scope.outputs.full != 'true' && steps.scope.outputs.ops == 'true'
-        run: node --experimental-strip-types --experimental-sqlite --test tests/background-isolation.test.mjs tests/deploy-wrapper.test.mjs tests/worker-supervisor.test.mjs tests/runtime-health.test.mjs tests/test-registry.test.mjs
+        run: node --experimental-strip-types --experimental-sqlite --test tests/background-isolation.test.mjs tests/deploy-wrapper.test.mjs tests/worker-supervisor.test.mjs tests/runtime-health.test.mjs tests/test-registry.test.mjs tests/profile-challenge.test.mjs
       - if: steps.scope.outputs.full == 'true'
         run: npm test
       - run: npm audit --omit=dev

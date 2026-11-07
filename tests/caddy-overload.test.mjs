@@ -52,12 +52,28 @@ test('Caddy rejects excess HTTP/2 requests across sites and releases timed-out s
   // Match the advertised Next.js timeout without Node's optional grace buffer.
   upstream.keepAliveTimeout = 5000;
   upstream.keepAliveTimeoutBuffer = 0;
+  // Stand-in for ops/profile-challenge.mjs: the integration test checks the
+  // Caddy wiring, while the service's own decisions live in its unit suite.
+  const admissions = [];
+  const admissionsServer = http.createServer((req, res) => {
+    const uri = req.headers['x-forwarded-uri'] ?? '';
+    admissions.push({ method: req.method, uri, ip: req.headers['x-profile-client-ip'] });
+    if (uri.includes('admission=deny')) return res.writeHead(429, { 'Retry-After': '7' }).end();
+    if (uri.includes('admission=challenge')) {
+      return res.writeHead(302, { Location: `/__profile-check?return=${encodeURIComponent(uri)}` }).end();
+    }
+    res.writeHead(204).end();
+  });
+  admissionsServer.listen(0, '127.0.0.1');
+  await once(admissionsServer, 'listening');
   t.after(async () => {
     client?.destroy();
     if (child) {
       child.kill();
       await closed;
     }
+    admissionsServer.closeAllConnections();
+    await new Promise((resolve) => admissionsServer.close(resolve));
     const stopped = new Promise((resolve) => upstream.close(resolve));
     upstream.closeAllConnections();
     await stopped;
@@ -95,7 +111,7 @@ test('Caddy rejects excess HTTP/2 requests across sites and releases timed-out s
   await writeFile(file, config);
   child = spawn(caddy, ['run', '--config', file, '--adapter', 'caddyfile'], {
     cwd: dir, windowsHide: true, stdio: ['ignore', 'ignore', 'pipe'],
-    env: { ...process.env, PROFILE_BOT_SHADOW: String(shadowEnabled), ARENA_UI_UPSTREAM: `127.0.0.1:${upstreamPort}`, HOME_SHOWCASE_API_UPSTREAM: `127.0.0.1:${upstreamPort}`, SEASONAL_API_UPSTREAM: `127.0.0.1:${upstreamPort}`, GOMEMLIMIT: '192MiB', APPDATA: dir, XDG_DATA_HOME: dir, XDG_CONFIG_HOME: dir },
+    env: { ...process.env, PROFILE_BOT_SHADOW: String(shadowEnabled), PROFILE_CHALLENGE_UPSTREAM: `127.0.0.1:${admissionsServer.address().port}`, ARENA_UI_UPSTREAM: `127.0.0.1:${upstreamPort}`, HOME_SHOWCASE_API_UPSTREAM: `127.0.0.1:${upstreamPort}`, SEASONAL_API_UPSTREAM: `127.0.0.1:${upstreamPort}`, GOMEMLIMIT: '192MiB', APPDATA: dir, XDG_DATA_HOME: dir, XDG_CONFIG_HOME: dir },
   });
   let logs = '';
   const profileLogs = [];
@@ -231,24 +247,62 @@ test('Caddy rejects excess HTTP/2 requests across sites and releases timed-out s
   }
   assert.ok(profileLogs.slice(0, emptyPaths.length * 2).every((entry) => entry.status === 400 && String(entry.aid) === 'none'));
   t.diagnostic('empty IDs rejected before Next; every profile request logged with safe identity fields');
+  // A desktop browser UA without all three Fetch Metadata headers is the
+  // incident signature; Googlebot and mobile WebViews must stay exempt.
+  const desktopChrome = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36';
+  for (const host of ['tarkovstats.ru', 'tarkovstats.online']) {
+    for (const path of ['/player/regular/123', '/api/player/profile?aid=123']) {
+      assert.equal((await request(path, host, 'GET', undefined, { 'user-agent': desktopChrome })).status, 403,
+        `${host}${path} must reject a browser UA without Fetch Metadata`);
+    }
+  }
+  assert.equal((await request('/player/regular/123', 'tarkovstats.online', 'HEAD', undefined, { 'user-agent': desktopChrome })).status, 403,
+    'HEAD must not bypass the browser check');
+  const browserPasses = [
+    ['/player/regular/123', 'tarkovstats.ru', { 'user-agent': desktopChrome, 'sec-fetch-site': 'none' }],
+    ['/player/regular/123', 'tarkovstats.online', { 'user-agent': desktopChrome, 'sec-fetch-mode': 'navigate' }],
+    ['/api/player/profile?aid=123', 'tarkovstats.online', { 'user-agent': desktopChrome, 'sec-fetch-user': '?1' }],
+    ['/player/regular/123', 'tarkovstats.online', { 'user-agent': `${desktopChrome} Googlebot/2.1` }],
+    ['/player/regular/123', 'tarkovstats.online', { 'user-agent': 'Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Mobile Safari/537.36' }],
+    ['/leaderboard', 'tarkovstats.online', { 'user-agent': desktopChrome }],
+  ];
+  for (const [path, host, headers] of browserPasses) {
+    assert.equal((await request(path, host, 'GET', undefined, headers)).status, 200, `${host}${path} must stay available`);
+  }
+  // The challenge service owns the 429/challenge decisions; Caddy must pass
+  // them through unchanged and always ask with GET + the original URI.
+  assert.equal((await request('/player/regular/123', 'tarkovstats.ru')).status, 200);
+  const limited = await request('/player/regular/123?admission=deny', 'tarkovstats.ru');
+  assert.equal(limited.status, 429);
+  assert.equal(limited.headers['retry-after'], '7');
+  const challenged = await request('/player/regular/123?admission=challenge', 'tarkovstats.online');
+  assert.equal(challenged.status, 302);
+  assert.match(challenged.headers.location, /^\/__profile-check\?return=%2Fplayer%2Fregular%2F123/);
+  assert.equal(admissions.at(-1).method, 'GET');
+  assert.equal(admissions.at(-1).ip, '127.0.0.1');
+  assert.equal(admissions.at(-1).uri, '/player/regular/123?admission=challenge');
+  assert.equal((await request('/player/regular/123', 'tarkovstats.ru', 'HEAD')).status, 200);
+  assert.equal(admissions.at(-1).method, 'GET', 'HEAD admission is evaluated as a GET');
+  assert.equal(admissions.at(-1).uri, '/player/regular/123');
+  t.diagnostic('fake desktop browsers rejected; admission 429/302 pass through with the original URI');
   const beforeShadow = accessLogs.length;
   const chrome = { 'user-agent': 'Mozilla/5.0 Chrome/116.0.0.0 Safari/537.36' };
   const shadowCases = [
-    ['/player/regular/123?secret=private-query', 'tarkovstats.online', 'GET', chrome],
-    ['/api/player/profile?aid=123', 'www.tarkovstats.online', 'GET', chrome],
-    ['/player/regular/123', 'tarkovstats.online', 'GET', { ...chrome, 'sec-fetch-mode': 'navigate' }],
-    ['/player/regular/123', 'tarkovstats.online', 'GET', { ...chrome, 'sec-fetch-site': 'none' }],
-    ['/player/regular/123', 'tarkovstats.online', 'GET', { 'user-agent': `${chrome['user-agent']} Googlebot` }],
-    ['/player/regular/123', 'tarkovstats.online', 'GET', { 'user-agent': `Android ${chrome['user-agent']}` }],
-    ['/player/regular/123', 'tarkovstats.online', 'GET', { 'user-agent': 'HeadlessChrome/151.0.0.0' }],
-    ['/player/regular/123', 'tarkovstats.online', 'GET', { ...chrome, rsc: '1', 'next-router-prefetch': '1' }],
-    ['/player/regular/123', 'tarkovstats.online', 'HEAD', chrome],
-    ['/player/regular/123', 'tarkovstats.ru', 'GET', chrome],
-    ['/leaderboard', 'tarkovstats.online', 'GET', chrome],
-    ['/api/player/profile?aid=987654', 'tarkovstats.ru', 'GET', chrome],
+    ['/player/regular/123?secret=private-query', 'tarkovstats.online', 'GET', chrome, 403],
+    ['/api/player/profile?aid=123', 'www.tarkovstats.online', 'GET', chrome, 403],
+    ['/player/regular/123', 'tarkovstats.online', 'GET', { ...chrome, 'sec-fetch-mode': 'navigate' }, 200],
+    ['/player/regular/123', 'tarkovstats.online', 'GET', { ...chrome, 'sec-fetch-site': 'none' }, 200],
+    ['/player/regular/123', 'tarkovstats.online', 'GET', { 'user-agent': `${chrome['user-agent']} Googlebot` }, 200],
+    ['/player/regular/123', 'tarkovstats.online', 'GET', { 'user-agent': `Android ${chrome['user-agent']}` }, 200],
+    ['/player/regular/123', 'tarkovstats.online', 'GET', { 'user-agent': 'HeadlessChrome/151.0.0.0' }, 403],
+    ['/player/regular/123', 'tarkovstats.online', 'GET', { ...chrome, rsc: '1', 'next-router-prefetch': '1' }, 403],
+    ['/player/regular/123', 'tarkovstats.online', 'HEAD', chrome, 403],
+    ['/player/regular/123', 'tarkovstats.ru', 'GET', chrome, 403],
+    ['/leaderboard', 'tarkovstats.online', 'GET', chrome, 200],
+    ['/api/player/profile?aid=987654', 'tarkovstats.ru', 'GET', chrome, 403],
   ];
-  for (const [path, host, method, headers] of shadowCases) {
-    assert.equal((await request(path, host, method, undefined, headers)).status, 200, `${host}${path} should still reach the upstream`);
+  for (const [path, host, method, headers, status] of shadowCases) {
+    assert.equal((await request(path, host, method, undefined, headers)).status, status, `${host}${path}`);
   }
   const shadowDeadline = Date.now() + 3000;
   while (!profileLogs.some((entry) => String(entry.aid) === '987654') && Date.now() < shadowDeadline) await delay(10);

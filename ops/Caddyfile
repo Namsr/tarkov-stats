@@ -31,6 +31,38 @@
 	header_up X-Request-ID {http.request.uuid}
 }
 
+(profile_challenge) {
+	# Adaptive admission for profile reads. A per-client token bucket answers
+	# 429 before Next, and a Turnstile challenge replaces the old blanket 503
+	# once the global page rate crosses its limit.
+	@profileCheckEndpoint path /__profile-check
+	@profileAdmission {
+		method GET HEAD
+		path /player /player/* /api/player/profile
+		not {
+			expression {profile_fetch_state} == "missing"
+		}
+	}
+	request_body @profileCheckEndpoint {
+		max_size 8KB
+	}
+	reverse_proxy @profileCheckEndpoint {$PROFILE_CHALLENGE_UPSTREAM:profile-challenge:3119} {
+		header_up X-Profile-Client-IP {client_ip}
+		transport http {
+			dial_timeout 500ms
+			response_header_timeout 5s
+		}
+	}
+	forward_auth @profileAdmission {$PROFILE_CHALLENGE_UPSTREAM:profile-challenge:3119} {
+		uri /internal/profile-admission
+		header_up X-Profile-Client-IP {client_ip}
+		transport http {
+			dial_timeout 250ms
+			response_header_timeout 750ms
+		}
+	}
+}
+
 (response_headers) {
 	header {
 		Strict-Transport-Security "max-age=31536000; includeSubDomains"
@@ -40,6 +72,34 @@
 }
 
 (hardening) {
+	# Incident 2026-11-05/06: scraper ranges that ignore robots.txt and keep
+	# opening profiles from rotating addresses inside the same allocation.
+	@observedScrapers client_ip 57.141.20.0/24 43.172.194.0/24 43.172.195.0/24 43.172.196.0/24 43.172.197.0/24 43.172.198.0/24 43.173.173.0/24 43.173.174.0/24 43.173.175.0/24 43.173.176.0/24 43.173.177.0/24 43.173.178.0/24 43.173.179.0/24 43.173.180.0/24 43.173.181.0/24 43.173.182.0/24
+	# Desktop Chrome, Chromium, Edge, Opera and Firefox always send all three
+	# Fetch Metadata headers. A copy of their User-Agent without those headers
+	# is a scraper. Mobile WebViews stay exempt: older versions omit them.
+	map {header.User-Agent} {profile_client_family} {
+		~(?i)(bot|crawler|spider|slurp|facebookexternalhit) bot
+		~(?i)(headless|playwright|puppeteer|selenium) headless
+		~(?i)(android|iphone|ipad|mobile) mobile
+		~(?i)(edg(?:e|a|ios)?/|opr/|opera|chromium/|chrome/|firefox/) browser
+		default other
+	}
+	map "{profile_client_family}|{header.Sec-Fetch-Site}|{header.Sec-Fetch-Mode}|{header.Sec-Fetch-User}" {profile_fetch_state} {
+		~^(browser|headless)[|][|][|]$ missing
+		default present
+	}
+	# This route runs before the generic redirects and proxies below, so denied
+	# requests never reach Next.
+	route {
+		respond @observedScrapers 403
+		@profileScraper {
+			method GET HEAD
+			path /player /player/* /api/player/profile
+			expression {profile_fetch_state} == "missing"
+		}
+		respond @profileScraper 403
+	}
 	# Profile access logs include proxy failures and early rejections. Keep only
 	# allowlisted identity fields; never log cookies, arbitrary queries or URLs.
 	log {
@@ -296,9 +356,11 @@
 tarkovstats.ru, www.tarkovstats.ru {
 	encode gzip
 	import hardening
+	import profile_challenge
 }
 
 tarkovstats.online, www.tarkovstats.online {
 	encode gzip
 	import hardening
+	import profile_challenge
 }
