@@ -79,6 +79,8 @@ test('a global page burst challenges .online but leaves API and .ru alone', asyn
     'API calls are rate limited, never challenged');
   assert.equal((await admission(service.port, { ip: '198.51.100.24', headers: { rsc: '1', 'next-router-prefetch': '1' } })).status, 429,
     'prefetch gets 429 instead of an HTML challenge');
+  assert.equal((await admission(service.port, { ip: '198.51.100.27', headers: { rsc: '1' } })).status, 429,
+    'client navigation (RSC without prefetch) gets 429, not an HTML body');
   assert.equal((await admission(service.port, { ip: '198.51.100.25', host: RU })).status, 204,
     '.ru gets the token bucket but is not challenged');
   service.advance(1001);
@@ -122,9 +124,62 @@ test('the challenge issues a host-bound pass that bypasses a later hold', async 
   assert.deepEqual(seen, ['good'], 'a valid pass is not re-verified');
 });
 
+test('token verification is rate limited per client', async (t) => {
+  const service = await start({ verifyRatePerSecond: 0, verifyBurst: 2, ipBurst: 100, ipRatePerSecond: 100 });
+  t.after(() => service.close());
+  const post = (ip) => request(service.port, 'POST', '/__profile-check', {
+    host: ONLINE,
+    'x-profile-client-ip': ip,
+    origin: `https://${ONLINE}`,
+    'content-type': 'application/x-www-form-urlencoded',
+  }, 'return=%2Fplayer%2Fregular%2F42&token=bad');
+  const attempts = await Promise.all([post('198.51.100.50'), post('198.51.100.50'), post('198.51.100.50'), post('198.51.100.50')]);
+  assert.equal(attempts.filter((entry) => entry.status === 403).length, 2, 'the first attempts reach siteverify');
+  const limited = attempts.filter((entry) => entry.status === 429);
+  assert.equal(limited.length, 2, 'junk tokens exhaust the verification bucket');
+  assert.equal(limited[0].headers['retry-after'], '10');
+  assert.equal((await post('198.51.100.51')).status, 403, 'another client keeps its own verification budget');
+});
+
+test('only a forward-confirmed Googlebot skips the hold', async (t) => {
+  const verified = '66.249.66.1';
+  const service = await start({
+    ipBurst: 100,
+    ipRatePerSecond: 100,
+    globalLimit: 2,
+    globalWindowMs: 100,
+    holdMs: 1000,
+    verifyBot: async (ip, userAgent) => ip === verified && /googlebot/i.test(userAgent ?? ''),
+  });
+  t.after(() => service.close());
+  const googlebot = { 'user-agent': 'Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)' };
+  assert.equal((await admission(service.port, { ip: '198.51.100.60' })).status, 204);
+  assert.equal((await admission(service.port, { ip: '198.51.100.61' })).status, 302, 'the hold is active');
+  assert.equal((await admission(service.port, { ip: verified, headers: googlebot })).status, 204,
+    'a verified crawler is not sent to Turnstile');
+  assert.equal((await admission(service.port, { ip: '198.51.100.62', headers: googlebot })).status, 302,
+    'a spoofed Googlebot User-Agent still gets the challenge');
+  assert.equal((await admission(service.port, { ip: verified })).status, 302,
+    'the bypass is tied to the crawler User-Agent');
+});
+
+test('a distributed API burst is capped globally', async (t) => {
+  const service = await start({ ipBurst: 100, ipRatePerSecond: 100, apiLimit: 2, apiWindowMs: 100, holdMs: 1000 });
+  t.after(() => service.close());
+  assert.equal((await admission(service.port, { ip: '198.51.100.70', uri: '/api/player/profile' })).status, 204);
+  assert.equal((await admission(service.port, { ip: '198.51.100.71', uri: '/api/player/profile' })).status, 204);
+  const limited = await admission(service.port, { ip: '198.51.100.72', uri: '/api/player/profile' });
+  assert.equal(limited.status, 429, 'the API ceiling is not per client');
+  assert.equal(limited.headers['retry-after'], '10');
+  assert.equal((await admission(service.port, { ip: '198.51.100.73' })).status, 204, 'pages are unaffected by the API hold');
+  service.advance(1001);
+  assert.equal((await admission(service.port, { ip: '198.51.100.74', uri: '/api/player/profile' })).status, 204);
+});
+
 test('unknown hosts, invalid client addresses and non-profile targets are refused', async (t) => {
   const service = await start();
   t.after(() => service.close());
+  assert.equal((await request(service.port, 'GET', '/__health')).status, 200);
   assert.equal((await admission(service.port, { host: 'example.com' })).status, 404);
   assert.equal((await admission(service.port, { ip: 'not-an-ip' })).status, 404);
   assert.equal((await admission(service.port, { ip: '198.51.100.40', uri: '/leaderboard' })).status, 400);

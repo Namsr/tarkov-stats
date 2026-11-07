@@ -5,6 +5,22 @@ APP=/opt/tarkovstats-auto
 cd "$APP"
 compose() { docker compose -p tarkovstats -f "$APP/docker-compose.vps.yml" "$@"; }
 container() { compose ps -q web; }
+admission_container() { compose ps -q profile-challenge; }
+admission_healthy() {
+  admission_cid=$(admission_container)
+  [ -n "$admission_cid" ] || return 1
+  admission_status=$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{end}}' "$admission_cid" 2>/dev/null) || return 1
+  [ "$admission_status" = healthy ]
+}
+wait_admission() {
+  admission_attempt=0
+  while [ "$admission_attempt" -lt 15 ]; do
+    if admission_healthy; then return 0; fi
+    admission_attempt=$((admission_attempt + 1))
+    sleep 2
+  done
+  return 1
+}
 healthy() {
   health_cid=$(container)
   [ -n "$health_cid" ] || return 1
@@ -31,6 +47,12 @@ git diff --cached --quiet || { logger -t tarkovstats-deploy "deploy deferred: in
 if ! git fetch --prune origin; then logger -t tarkovstats-deploy "git fetch failed, deferred"; exit 0; fi
 previous=$(git rev-parse HEAD)
 remote=$(git rev-parse origin/main)
+# Older checkouts have no admission service. When the compose file defines it,
+# it must be running before the Caddyfile that routes profile reads is loaded.
+admission_service=
+if compose config --services 2>/dev/null | grep -qx profile-challenge; then
+  admission_service=profile-challenge
+fi
 cid=$(container)
 deployed=
 previous_image=
@@ -219,14 +241,23 @@ docker image tag "$candidate" tarkovstats-web:latest
 git merge --ff-only origin/main
 starting=1
 compose up -d --no-build web
+if [ -n "$admission_service" ]; then
+  # The admission container runs the bind-mounted script, so a new web image
+  # does not require recreating it. Create it only when it is missing.
+  compose up -d --no-recreate "$admission_service"
+fi
 attempt=0
 while [ "$attempt" -lt 30 ]; do
   cid=$(container)
   actual=$(docker inspect --format '{{index .Config.Labels "org.opencontainers.image.revision"}}' "$cid" 2>/dev/null || true)
   if [ "$actual" = "$remote" ] && healthy; then
     # Bind-mounted Caddyfile changes are not applied by recreating web alone.
-    # Reload only after the new Rust listener is healthy.
+    # Reload only after the new Rust listener and the admission service are healthy.
     if ! git diff --quiet "$previous" "$remote" -- ops/Caddyfile; then
+      if [ -n "$admission_service" ] && ! wait_admission; then
+        logger -t tarkovstats-deploy "deploy deferred: profile admission service is not healthy"
+        exit 1
+      fi
       compose exec -T caddy caddy reload --config /etc/caddy/Caddyfile
     fi
     success=1

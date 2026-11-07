@@ -37,7 +37,7 @@ test('deploy consumes verified CI images and preserves recovery and rollback', a
     'current-unreachable', 'current-sync-busy', 'current-isolated-sync-busy', 'current-restart-fail', 'checkout-ahead',
     'tag-fail', 'sync-busy', 'image-missing', 'download-fail', 'checksum-fail',
     'invalid-checksum', 'multiline-checksum', 'load-fail', 'revision-mismatch', 'tag-target-fail', 'merge-fail',
-    'signal', 'start-fail', 'health-fail'];
+    'signal', 'start-fail', 'health-fail', 'admission-healthy', 'admission-missing'];
   const showcaseScenarios = ['routing-to-rust', 'routing-invalid', 'unsupported-rollback',
     'native-candidate-incompatible', 'native-upgrade', 'current-rust', 'current-rust-sick'];
   const routingCases = [...scenarios.map((scenario) => ({ scenario, selector: 'SEASONAL_API_UPSTREAM' })),
@@ -52,12 +52,15 @@ test('deploy consumes verified CI images and preserves recovery and rollback', a
         case "$*" in
           'rev-parse HEAD'|'rev-parse origin/main') echo remote;;
           'merge --ff-only origin/main') [ "$SCENARIO" != merge-fail ];;
+          *'diff --quiet'*'ops/Caddyfile'*) case "$SCENARIO" in admission-healthy|admission-missing) return 1;; esac;;
         esac
       }
       docker() {
         echo "docker $*" >> "$APP/calls"
         case "$*" in
           *'ps -q web') echo web;;
+          *'ps -q profile-challenge') case "$SCENARIO" in admission-healthy|admission-missing) echo admission;; esac;;
+          *'config --services') case "$SCENARIO" in admission-healthy|admission-missing) echo profile-challenge;; esac;;
           *'config --environment')
             case "$SCENARIO" in
               routing-invalid) echo "$SELECTOR=invalid";;
@@ -73,6 +76,7 @@ test('deploy consumes verified CI images and preserves recovery and rollback', a
             esac;;
           *inspect*)
             case "$*" in
+              *'.State.Health'*) case "$SCENARIO" in admission-healthy) echo healthy;; esac;;
               *'.NetworkSettings.Networks'*) if [ "$SCENARIO" != current-no-ip ]; then echo 172.18.0.3; fi;;
               *'.Image'*) echo old-image;;
               *'.Config.Env'*)
@@ -86,7 +90,7 @@ test('deploy consumes verified CI images and preserves recovery and rollback', a
             if [ "$SCENARIO" = load-fail ]; then return 3; fi
             if [ "$SCENARIO" = signal ]; then kill -TERM $$; fi;;
           'image tag tarkovstats-web:remote tarkovstats-web:latest') [ "$SCENARIO" != tag-target-fail ];;
-          *'up -d --no-build web')
+          *'up -d --no-build web'*)
             if [ "$SCENARIO" = start-fail ]; then return 4; fi
             touch "$APP/started";;
           *'restart -t 10 web') [ "$SCENARIO" != current-restart-fail ];;
@@ -143,9 +147,18 @@ test('deploy consumes verified CI images and preserves recovery and rollback', a
         assert.match(calls, /curl .*http:\/\/172\.18\.0\.3:3001\/healthz/);
       }
       const current = scenario.startsWith('current');
-      const succeeds = current || ['checkout-ahead', 'tag-fail', 'image-missing', 'native-upgrade'].includes(scenario);
+      const succeeds = current || ['checkout-ahead', 'tag-fail', 'image-missing', 'native-upgrade', 'admission-healthy'].includes(scenario);
       assert.equal(result.status === 0, succeeds, `${scenario}: ${result.stderr}\n${calls}`);
       assert.doesNotMatch(calls, /compose .*build --|buildx|docker pull|exec -T web node/);
+      if (scenario === 'admission-healthy') {
+        assert.match(calls, /up -d --no-recreate profile-challenge/);
+        assert.match(calls, /exec -T caddy caddy reload --config \/etc\/caddy\/Caddyfile/);
+      }
+      if (scenario === 'admission-missing') {
+        assert.match(calls, /up -d --no-recreate profile-challenge/);
+        assert.doesNotMatch(calls, /caddy reload/);
+        assert.match(calls, /profile admission service is not healthy/);
+      }
       if ((current && scenario !== 'current-no-ip') || ['checkout-ahead', 'tag-fail', 'health-fail'].includes(scenario)) {
         assert.match(calls, /curl .*--noproxy \* .*--max-time 5 .*http:\/\/172\.18\.0\.3:3000\/healthz/);
       }
@@ -171,7 +184,7 @@ test('deploy consumes verified CI images and preserves recovery and rollback', a
           assert.ok(calls.indexOf('image inspect') < calls.indexOf('git merge'));
         }
       }
-      if (['checkout-ahead', 'tag-fail', 'native-upgrade'].includes(scenario)) {
+      if (['checkout-ahead', 'tag-fail', 'native-upgrade', 'admission-healthy'].includes(scenario)) {
         assert.match(calls, /image tag old-image tarkovstats-web-previous/);
         if (scenario === 'tag-fail') assert.doesNotMatch(calls, /^docker image prune/m);
         else assert.match(calls, /image prune -f --filter until=24h/);

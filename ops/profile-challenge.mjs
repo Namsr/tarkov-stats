@@ -1,4 +1,5 @@
 import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
+import { promises as dns } from 'node:dns';
 import { createServer } from 'node:http';
 import { isIP } from 'node:net';
 import { performance } from 'node:perf_hooks';
@@ -15,6 +16,21 @@ const HOSTS = new Set([
 // challenge on the hostname already verified there; .ru still gets the token
 // bucket (429) and can join this set once its names are added to the widget.
 const CHALLENGE_HOSTS = new Set(['tarkovstats.online', 'www.tarkovstats.online']);
+// Verification attempts need their own bucket: without it, token spam holds all
+// four siteverify slots and locks real visitors out of the challenge.
+const VERIFY_RATE_PER_SECOND = 0.5;
+const VERIFY_BURST = 5;
+// A distributed API scraper never asks for pages, so the page hold never sees
+// it. Give the profile API its own global ceiling.
+const API_WINDOW_MS = 10_000;
+const API_LIMIT = 100;
+// Googlebot cannot solve Turnstile. Trust it only after a forward-confirmed
+// reverse lookup, and cache the answer briefly.
+const BOT_UA = /(?:googlebot|google-inspectiontool)/i;
+const BOT_CACHE_MS = 10 * 60_000;
+const BOT_CACHE_MISS_MS = 60_000;
+const BOT_CACHE_LIMIT = 1000;
+const BOT_LOOKUP_MS = 250;
 // Per-client token bucket: ordinary browsing stays below it, while a single
 // address that opens pages in a tight loop is cut before it reaches Next.
 const IP_RATE_PER_SECOND = 3;
@@ -51,6 +67,41 @@ function html(value) {
   return value.replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
 }
 
+function withTimeout(promise, ms) {
+  return Promise.race([
+    promise,
+    new Promise((_, reject) => setTimeout(() => reject(new Error('lookup timeout')), ms).unref()),
+  ]);
+}
+
+// Cloudflare cannot vouch for Googlebot here (traffic is not proxied), so the
+// only trustworthy signal is the forward-confirmed reverse lookup Google
+// documents. A resolver failure counts as unverified and is cached briefly.
+export function createBotVerifier() {
+  const cache = new Map();
+  return async (ip, userAgent) => {
+    if (!BOT_UA.test(userAgent ?? '')) return false;
+    const hit = cache.get(ip);
+    if (hit && hit.until > Date.now()) return hit.value;
+    let value = false;
+    try {
+      for (const name of await withTimeout(dns.reverse(ip), BOT_LOOKUP_MS)) {
+        if (!/(?:^|\.)(?:googlebot\.com|google\.com)$/i.test(name)) continue;
+        const addresses = await withTimeout(isIP(ip) === 6 ? dns.resolve6(name) : dns.resolve4(name), BOT_LOOKUP_MS);
+        if (addresses.includes(ip)) {
+          value = true;
+          break;
+        }
+      }
+    } catch {
+      // Keep the miss short so a resolver hiccup does not hide Googlebot for long.
+    }
+    if (cache.size >= BOT_CACHE_LIMIT) cache.delete(cache.keys().next().value);
+    cache.set(ip, { value, until: Date.now() + (value ? BOT_CACHE_MS : BOT_CACHE_MISS_MS) });
+    return value;
+  };
+}
+
 function challengePage(req, res, siteKey, target, status = 200) {
   const nonce = randomBytes(18).toString('base64');
   const ru = /^ru(?:\b|[-_])/i.test(req.headers['accept-language'] ?? '');
@@ -68,6 +119,7 @@ function challengePage(req, res, siteKey, target, status = 200) {
     'Content-Security-Policy': `default-src 'none'; script-src 'nonce-${nonce}' ${turnstile}; frame-src ${turnstile}; connect-src ${turnstile}; style-src 'unsafe-inline'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'`,
     'Referrer-Policy': 'strict-origin',
     'X-Content-Type-Options': 'nosniff',
+    ...(status === 429 ? { 'Retry-After': '10' } : {}),
   });
   res.end(`<!doctype html><html lang="${ru ? 'ru' : 'en'}">
 <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>${title}</title>
@@ -110,18 +162,27 @@ export function createProfileChallenge({
   siteKey,
   signingKey,
   verify,
+  verifyBot = createBotVerifier(),
+  challengeHosts = CHALLENGE_HOSTS,
   clock = () => performance.now(),
   ipRatePerSecond = IP_RATE_PER_SECOND,
   ipBurst = IP_BURST,
+  verifyRatePerSecond = VERIFY_RATE_PER_SECOND,
+  verifyBurst = VERIFY_BURST,
   globalWindowMs = GLOBAL_WINDOW_MS,
   globalLimit = GLOBAL_LIMIT,
+  apiWindowMs = API_WINDOW_MS,
+  apiLimit = API_LIMIT,
   holdMs = HOLD_MS,
 }) {
+  const buckets = new Map();
+  const verifyBuckets = new Map();
   let recent = [];
   let activeUntil = 0;
+  let apiRecent = [];
+  let apiActiveUntil = 0;
   let inFlight = 0;
-  const buckets = new Map();
-  let admissions = 0;
+  let checks = 0;
 
   function sign(host, ip, expiry) {
     return createHmac('sha256', signingKey).update(`${host}:${ip}:${expiry}`).digest('base64url');
@@ -134,22 +195,24 @@ export function createProfileChallenge({
     return timingSafeEqual(Buffer.from(token[2]), Buffer.from(sign(host, ip, token[1])));
   }
 
-  function hasTokens(ip, now) {
-    let bucket = buckets.get(ip);
+  function takeToken(map, ip, now, rate, burst) {
+    let bucket = map.get(ip);
     if (!bucket) {
-      if (buckets.size >= IP_BUCKET_LIMIT) buckets.delete(buckets.keys().next().value);
-      bucket = { tokens: ipBurst, at: now };
-      buckets.set(ip, bucket);
-    } else {
-      bucket.tokens = Math.min(ipBurst, bucket.tokens + ((now - bucket.at) / 1000) * ipRatePerSecond);
-      bucket.at = now;
+      if (map.size >= IP_BUCKET_LIMIT) map.delete(map.keys().next().value);
+      map.set(ip, { tokens: burst - 1, at: now });
+      return true;
     }
+    bucket.tokens = Math.min(burst, bucket.tokens + ((now - bucket.at) / 1000) * rate);
+    bucket.at = now;
     if (bucket.tokens < 1) return false;
     bucket.tokens -= 1;
-    if (++admissions % 1024 === 0) {
-      for (const [key, value] of buckets) if (now - value.at >= IP_IDLE_MS) buckets.delete(key);
-    }
     return true;
+  }
+
+  function sweep(now) {
+    if (++checks % 1024 !== 0) return;
+    for (const [key, value] of buckets) if (now - value.at >= IP_IDLE_MS) buckets.delete(key);
+    for (const [key, value] of verifyBuckets) if (now - value.at >= IP_IDLE_MS) verifyBuckets.delete(key);
   }
 
   function registerPage(now) {
@@ -161,8 +224,21 @@ export function createProfileChallenge({
     }
   }
 
+  function registerApi(now) {
+    apiRecent = apiRecent.filter((at) => at > now - apiWindowMs);
+    apiRecent.push(now);
+    if (apiRecent.length >= apiLimit) {
+      apiActiveUntil = now + holdMs;
+      apiRecent = [];
+    }
+  }
+
   return createServer({ requestTimeout: 8000, headersTimeout: 4000, maxHeaderSize: 16384 }, async (req, res) => {
     res.setHeader('Cache-Control', 'private, no-store');
+    // Container health checks use the loopback address, which is not a site host.
+    if (req.url === '/__health' && req.method === 'GET') {
+      return res.writeHead(200, { 'Content-Type': 'text/plain' }).end('ok');
+    }
     const host = req.headers.host;
     const ip = req.headers['x-profile-client-ip'];
     if (!HOSTS.has(host) || typeof ip !== 'string' || !isIP(ip)) return res.writeHead(404).end();
@@ -174,14 +250,22 @@ export function createProfileChallenge({
       const target = admissionTarget(req.headers['x-forwarded-uri']);
       if (!target) return res.writeHead(400).end();
       const now = clock();
-      if (!hasTokens(ip, now)) return res.writeHead(429, { 'Retry-After': '10' }).end();
-      if (target.kind === 'api' || !CHALLENGE_HOSTS.has(host)) return res.writeHead(204).end();
+      if (!takeToken(buckets, ip, now, ipRatePerSecond, ipBurst)) return res.writeHead(429, { 'Retry-After': '10' }).end();
+      sweep(now);
+      if (target.kind === 'api') {
+        if (now < apiActiveUntil) return res.writeHead(429, { 'Retry-After': '10' }).end();
+        registerApi(now);
+        return res.writeHead(204).end();
+      }
+      if (!challengeHosts.has(host)) return res.writeHead(204).end();
       registerPage(now);
       if (hasPass(req, host, ip)) return res.writeHead(204).end();
       if (now < activeUntil) {
-        if (req.headers.rsc === '1' && req.headers['next-router-prefetch'] === '1') {
-          return res.writeHead(429, { 'Retry-After': '10' }).end();
-        }
+        // Any RSC request is handled by the app router; an HTML challenge body
+        // would be parsed as a flight response, so answer 429 and let Next fall
+        // back to a full navigation that can render the challenge page.
+        if (req.headers.rsc === '1') return res.writeHead(429, { 'Retry-After': '10' }).end();
+        if (await verifyBot(ip, req.headers['user-agent'])) return res.writeHead(204).end();
         return res.writeHead(302, { Location: CHALLENGE + '?return=' + encodeURIComponent(target.value) }).end();
       }
       return res.writeHead(204).end();
@@ -214,6 +298,12 @@ export function createProfileChallenge({
     const token = form.get('token');
     if (!target || !token || token.length > 2048) return res.writeHead(400).end();
     if (hasPass(req, host, ip)) return res.writeHead(303, { Location: target }).end();
+    // Verify attempts have their own budget: a scraper posting junk tokens must
+    // not occupy the siteverify slots real visitors need.
+    const now = clock();
+    if (!takeToken(verifyBuckets, ip, now, verifyRatePerSecond, verifyBurst)) {
+      return challengePage(req, res, siteKey, target, 429);
+    }
     if (inFlight >= 4) return challengePage(req, res, siteKey, target, 429);
     inFlight++;
     try {
@@ -244,6 +334,10 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   const server = createProfileChallenge({
     siteKey: TURNSTILE_SITE_KEY,
     signingKey: Buffer.from(PROFILE_CHALLENGE_SIGNING_KEY, 'hex'),
+    // Turnstile tokens are host-bound. Add names here only after the widget
+    // lists them, otherwise verification always fails on those hostnames.
+    challengeHosts: new Set((process.env.PROFILE_CHALLENGE_HOSTS ?? 'tarkovstats.online,www.tarkovstats.online')
+      .split(',').map((value) => value.trim()).filter(Boolean)),
     verify: async (response) => {
       const res = await fetch('https://challenges.cloudflare.com/turnstile/v0/siteverify', {
         method: 'POST',

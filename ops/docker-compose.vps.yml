@@ -70,12 +70,18 @@ services:
     command: ["node", "/opt/profile-challenge.mjs"]
     env_file:
       # Holds TURNSTILE_SITE_KEY, TURNSTILE_SECRET_KEY and the signing key.
-      # required: false keeps compose parsing before the file is installed.
-      - path: /opt/tarkovstats-profile-challenge/runtime.env
-        required: false
+      # Missing secrets must fail before Caddy starts, not at request time.
+      - /opt/tarkovstats-profile-challenge/runtime.env
     restart: unless-stopped
     expose:
       - "3119"
+    healthcheck:
+      # /__health answers on loopback, where the site Host header is absent.
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3119/__health').then((r) => process.exit(r.ok ? 0 : 1), () => process.exit(1))"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 10s
     # --- hardening ---
     security_opt:
       - no-new-privileges:true
@@ -212,8 +218,12 @@ services:
       - caddy_data:/data
       - caddy_config:/config
     depends_on:
-      - web
-      - profile-challenge
+      web:
+        condition: service_started
+      # Caddy routes profile reads through this service; starting it before the
+      # proxy avoids 502s on the first requests after a cold start.
+      profile-challenge:
+        condition: service_healthy
     logging:
       driver: journald
       options:
