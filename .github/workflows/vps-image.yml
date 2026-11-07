@@ -157,6 +157,10 @@ jobs:
       - name: Validate the VPS worker configuration
         run: |
           touch ops/.env ops/.env.private
+          # The production profile-challenge env_file is mandatory. CI only
+          # validates Compose parsing, so provide an empty local fixture.
+          sudo install -d -m 755 /opt/tarkovstats-profile-challenge
+          sudo install -m 644 /dev/null /opt/tarkovstats-profile-challenge/runtime.env
           docker compose --profile background -p image-config -f ops/docker-compose.vps.yml config --format json > /tmp/vps-compose.json
           node -e '
             const assert = require("node:assert/strict");
