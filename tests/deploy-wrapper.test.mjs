@@ -34,6 +34,8 @@ test('deploy consumes verified CI images and preserves recovery and rollback', a
   // CI writes release files under umask 077. The bind-mounted admission script
   // must stay readable or the container restarts on EACCES after a deploy.
   assert.match(source, /chmod 0644 "\$APP\/ops\/profile-challenge\.mjs"/);
+  assert.ok(source.indexOf('chmod 0644 "$APP/ops/profile-challenge.mjs"') > source.indexOf('git merge --ff-only origin/main'),
+    'the admission script must be healed after the checkout is written');
   const { createHash } = await import('node:crypto');
   const checksum = createHash('sha256').update('fixture').digest('hex');
   const scenarios = ['routing-to-rust', 'routing-invalid', 'unsupported-rollback', 'native-candidate-incompatible', 'native-upgrade', 'current-rust', 'current-rust-sick', 'current', 'current-sick', 'current-redirect', 'current-no-ip',
@@ -54,7 +56,7 @@ test('deploy consumes verified CI images and preserves recovery and rollback', a
         echo "git $*" >> "$APP/calls"
         case "$*" in
           'rev-parse HEAD'|'rev-parse origin/main') echo remote;;
-          'merge --ff-only origin/main') [ "$SCENARIO" != merge-fail ];;
+          'merge --ff-only origin/main') echo "git-umask $(umask)" >> "$APP/calls"; [ "$SCENARIO" != merge-fail ];;
           *'diff --quiet'*'ops/Caddyfile'*) case "$SCENARIO" in admission-healthy|admission-missing) return 1;; esac;;
         esac
       }
@@ -184,6 +186,7 @@ test('deploy consumes verified CI images and preserves recovery and rollback', a
           assert.doesNotMatch(calls, /git merge|up -d/);
         } else {
           assert.match(calls, /image tag tarkovstats-web:remote tarkovstats-web:latest/);
+          assert.match(calls, /git-umask 0022/, 'the checkout must not inherit the private download umask');
           assert.ok(calls.indexOf('image inspect') < calls.indexOf('git merge'));
         }
       }

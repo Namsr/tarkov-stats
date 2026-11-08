@@ -238,10 +238,14 @@ image_revision=$(docker image inspect --format '{{index .Config.Labels "org.open
 [ "$image_revision" = "$remote" ]
 image_supports_routing "$candidate"
 docker image tag "$candidate" tarkovstats-web:latest
+# Download staging needs umask 077, but a checkout written under it gets 0600.
+# The admission script is bind-mounted and must stay readable for the container
+# user, so restore a normal umask before git writes the checkout. The rollback
+# reset later in this script writes under the same umask.
+umask 022
 git merge --ff-only origin/main
-# Release assets and fresh checkouts inherit umask 077, which leaves the
-# bind-mounted admission script unreadable for the container user. Keep it
-# readable so a restart does not loop on EACCES.
+# The merge only rewrites changed paths. Heal a file that still carries a
+# private mode from an earlier deploy, so a restart does not loop on EACCES.
 if [ -f "$APP/ops/profile-challenge.mjs" ]; then
   chmod 0644 "$APP/ops/profile-challenge.mjs"
 fi
