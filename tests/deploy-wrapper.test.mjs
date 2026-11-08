@@ -31,6 +31,9 @@ test('deploy consumes verified CI images and preserves recovery and rollback', a
   const compose = await readFile('ops/docker-compose.vps.yml', 'utf8');
   assert.doesNotMatch(compose, /NEXT_PUBLIC_TURNSTILE_SITE_KEY/);
   assert.match(compose, /image: tarkovstats-web:latest\s+pull_policy: never/);
+  // CI writes release files under umask 077. The bind-mounted admission script
+  // must stay readable or the container restarts on EACCES after a deploy.
+  assert.match(source, /chmod 0644 "\$APP\/ops\/profile-challenge\.mjs"/);
   const { createHash } = await import('node:crypto');
   const checksum = createHash('sha256').update('fixture').digest('hex');
   const scenarios = ['routing-to-rust', 'routing-invalid', 'unsupported-rollback', 'native-candidate-incompatible', 'native-upgrade', 'current-rust', 'current-rust-sick', 'current', 'current-sick', 'current-redirect', 'current-no-ip',

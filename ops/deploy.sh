@@ -239,6 +239,12 @@ image_revision=$(docker image inspect --format '{{index .Config.Labels "org.open
 image_supports_routing "$candidate"
 docker image tag "$candidate" tarkovstats-web:latest
 git merge --ff-only origin/main
+# Release assets and fresh checkouts inherit umask 077, which leaves the
+# bind-mounted admission script unreadable for the container user. Keep it
+# readable so a restart does not loop on EACCES.
+if [ -f "$APP/ops/profile-challenge.mjs" ]; then
+  chmod 0644 "$APP/ops/profile-challenge.mjs"
+fi
 starting=1
 compose up -d --no-build web
 if [ -n "$admission_service" ]; then
