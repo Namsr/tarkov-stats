@@ -805,8 +805,12 @@ test("profile mode switching is available during loading and capture is post-res
 });
 
 test("profile navigation exposes the shell immediately and overlaps regular API work", async () => {
+  const route = await readFile("app/player/[[...segments]]/page.tsx", "utf8");
   const loading = await readFile("app/player/loading.tsx", "utf8");
   const search = await readFile("components/SearchBar.tsx", "utf8");
+
+  assert.doesNotMatch(route, /getProgressionStore/);
+  assert.match(route, /mode === "regular"\s*\? await readLatestRegularSnapshot\(parsedAid\)/);
 
   assert.match(loading, /usePathname/);
   assert.match(loading, /useSearchParams/);

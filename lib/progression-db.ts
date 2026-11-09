@@ -1,3 +1,4 @@
+import type { DatabaseSync } from "node:sqlite";
 import type { PlayerSnapshotInput } from "@/lib/ban-db";
 import { initializeSeasonalSchema } from "@/lib/seasonal/storage";
 import {
@@ -126,6 +127,26 @@ function toSnapshot(row: SnapshotRow | undefined): ProgressionSnapshot | null {
   }
 }
 
+function latestSnapshot(
+  db: DatabaseSync,
+  mode: PersistentProgressionMode,
+  aid: number,
+  { requireIdentityIndex = false } = {},
+): ProgressionSnapshot | null {
+  // Persistent captures keep profile/upstream versions equal. A page requires
+  // the identity index so a partial schema cannot make it sort raw history.
+  const indexedBy = requireIdentityIndex ? " INDEXED BY idx_progression_snapshots_identity_time" : "";
+  const rows = db.prepare(
+    `SELECT * FROM progression_snapshots${indexedBy}
+      WHERE mode = ? AND cycle_id = ? AND aid = ? ORDER BY profile_updated_at DESC`,
+  ).iterate(mode, PERSISTENT_CYCLE_ID, aid) as Iterable<SnapshotRow>;
+  for (const row of rows) {
+    const snapshot = toSnapshot(row);
+    if (snapshot) return snapshot;
+  }
+  return null;
+}
+
 function compare(previous: ProgressionSnapshot, input: PlayerSnapshotInput) {
   const changes: Record<string, number> = {};
   const resetFields: string[] = [];
@@ -144,6 +165,24 @@ function compare(previous: ProgressionSnapshot, input: PlayerSnapshotInput) {
   };
 }
 
+function progressionDatabasePath(): string {
+  return process.env.PROGRESSION_SQLITE_PATH || process.env.PROGRESSION_DB_PATH || "/data/progression.db";
+}
+
+/** Optional first-render data from an already initialized database. */
+export async function readLatestRegularSnapshot(aid: number): Promise<ProgressionSnapshot | null> {
+  let db: DatabaseSync | undefined;
+  try {
+    const { DatabaseSync } = await import("node:sqlite");
+    db = new DatabaseSync(progressionDatabasePath(), { readOnly: true, timeout: 0 });
+    return latestSnapshot(db, "regular", aid, { requireIdentityIndex: true });
+  } catch {
+    return null;
+  } finally {
+    db?.close();
+  }
+}
+
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 let sqliteDb: any = null;
 let warned = false;
@@ -153,10 +192,9 @@ let warned = false;
 async function getSqliteDb(): Promise<any | null> {
   if (sqliteDb) return sqliteDb;
   try {
-    const progressionPath = process.env.PROGRESSION_SQLITE_PATH || process.env.PROGRESSION_DB_PATH || "/data/progression.db";
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const sqlite = (await import("node:sqlite" as string)) as any;
-    const db = new sqlite.DatabaseSync(progressionPath);
+    const db = new sqlite.DatabaseSync(progressionDatabasePath());
     db.exec("PRAGMA busy_timeout = 250");
     // Initialize before caching, so a failed schema init cannot leave a
     // half-initialized handle behind: the cache stays empty, every later request
@@ -264,16 +302,7 @@ export function createSqliteProgressionStore(
       };
     },
     async latest(aid) {
-      // Persistent captures keep profile/upstream versions equal. Use the
-      // indexed version so finding a readable row does not sort all raw JSON.
-      const rows = db.prepare(
-        "SELECT * FROM progression_snapshots WHERE mode = ? AND cycle_id = ? AND aid = ? ORDER BY profile_updated_at DESC"
-      ).iterate(mode, PERSISTENT_CYCLE_ID, aid) as Iterable<SnapshotRow>;
-      for (const row of rows) {
-        const snapshot = toSnapshot(row);
-        if (snapshot) return snapshot;
-      }
-      return null;
+      return latestSnapshot(db, mode, aid);
     },
     async history(aid) {
       const rows = db.prepare(
