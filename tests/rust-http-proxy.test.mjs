@@ -76,7 +76,7 @@ test("production proxy selects the Rust endpoint, bounds each upstream and never
       assert.equal(result.headers.server, undefined);
       assert.match(result.headers["strict-transport-security"], /max-age=31536000/);
     }
-    for (const path of ["/api/seasonal/profile", "/api/seasonal/cohort-extra", "/api/home/showcase-extra", "/api/home/coverage", "/healthz", "/population/pve", "/api/average?mode=pve&mode=arena", "/api/average?mode=&mode=arena", "/api/average?MODE=arena", "/api/average?mode=arenax", "/api/average?mode=arena%20", "/api/average?mode=pve"]) {
+    for (const path of ["/api/seasonal/profile", "/api/seasonal/cohort-extra", "/api/home/showcase-extra", "/api/home/coverage", "/healthz", "/population/pve", "/api/average", "/api/average/metrics", "/api/average/achievements", "/api/progression/average", "/api/average?mode=pve&mode=arena", "/api/average?mode=&mode=arena", "/api/average?MODE=arena", "/api/average?mode=arenax", "/api/average?mode=arena%20", "/api/average?mode=pve"]) {
       assert.equal(JSON.parse((await request(port, path, host)).body).backend, "next");
     }
   }
@@ -102,13 +102,14 @@ test("production proxy selects the Rust endpoint, bounds each upstream and never
   hold = true;
   const heldPaths = ["/api/seasonal/cohort", "/api/home/showcase", "/api/average?mode=arena", "/population/arena", "/_rust/arena/hash/tarkov_ui.js"];
   const heldRequests = Array.from({ length: 32 }, (_, i) => request(port, heldPaths[i % heldPaths.length], i % 2 ? "tarkovstats.online" : "tarkovstats.ru"));
-  const nextRequests = Array.from({ length: 32 }, (_, i) => request(port, "/api/seasonal/profile", i % 2 ? "tarkovstats.online" : "tarkovstats.ru"));
+  const nextRequests = Array.from({ length: 32 }, (_, i) => request(port, i % 2 ? "/api/average?mode=pve" : "/api/seasonal/profile", i % 2 ? "tarkovstats.online" : "tarkovstats.ru"));
   while (heldRust.length !== 32 || heldNext.length !== 32) {
     assert.ok(Date.now() < deadline + 10000, `mixed admission did not fill both pools: ${heldRust.length}/${heldNext.length} ${logs}`);
     await delay(10);
   }
   assert.equal((await request(port, "/api/seasonal/cohort")).status, 503);
   assert.equal((await request(port, "/api/seasonal/profile")).status, 503);
+  assert.equal((await request(port, "/api/average?mode=pve")).status, 503);
   hold = false;
   for (const res of [...heldNext, ...heldRust]) { res.writeHead(200); res.end("released"); }
   for (const result of await Promise.all([...heldRequests, ...nextRequests])) assert.equal(result.status, 200);
@@ -133,4 +134,54 @@ test("production proxy selects the Rust endpoint, bounds each upstream and never
   assert.equal(recoveredHome.status, 200);
   const recovered = await request(port, "/api/seasonal/cohort");
   assert.equal(recovered.status, 200); assert.equal(JSON.parse(recovered.body).backend, "rust");
+});
+
+
+test("population API routing is independent and preserves first-mode semantics", {
+  skip: !caddy && "Set CADDY_BIN for the real production-proxy integration test", timeout: 60000,
+}, async t => {
+  const directory = await mkdtemp(join(tmpdir(), "rust-population-proxy-"));
+  let failing = false, nextCount = 0, nativeCount = 0;
+  const next = http.createServer((req, res) => { nextCount++; res.end(JSON.stringify({ backend: "next", path: req.url })); });
+  const native = http.createServer((req, res) => { nativeCount++; res.writeHead(failing ? 503 : 200); res.end(JSON.stringify({ backend: "rust", path: req.url })); });
+  const nextPort = await listen(next), rustPort = await listen(native);
+  const probe = http.createServer(), port = await listen(probe); await close(probe);
+  const source = await readFile("ops/Caddyfile", "utf8");
+  const config = source.replace("{", "{\n admin off\n persist_config off\n auto_https off\n default_bind 127.0.0.1")
+    .replaceAll("web:3000", `127.0.0.1:${nextPort}`)
+    .replace(/^tarkovstats\.ru, www\.tarkovstats\.ru \{/m, `http://tarkovstats.ru:${port} {`)
+    .replace(/^tarkovstats\.online, www\.tarkovstats\.online \{/m, `http://tarkovstats.online:${port} {`);
+  const file = join(directory, "Caddyfile"); await writeFile(file, config);
+  const child = spawn(caddy, ["run", "--config", file, "--adapter", "caddyfile"], {
+    cwd: directory, windowsHide: true, stdio: ["ignore", "ignore", "pipe"],
+    env: { ...process.env, PERSISTENT_POPULATION_API_UPSTREAM: `127.0.0.1:${rustPort}`,
+      AXIS_STATISTICS_API_UPSTREAM: `127.0.0.1:${rustPort}`, ARENA_UI_UPSTREAM: `127.0.0.1:${nextPort}`,
+      SEASONAL_API_UPSTREAM: `127.0.0.1:${nextPort}`, HOME_SHOWCASE_API_UPSTREAM: `127.0.0.1:${nextPort}`,
+      APPDATA: directory, XDG_CONFIG_HOME: directory, XDG_DATA_HOME: directory },
+  });
+  let logs = ""; child.stderr.on("data", value => { logs = (logs + value).slice(-16000); });
+  const stopped = once(child, "close");
+  t.after(async () => { child.kill(); await stopped; await close(next); await close(native);
+    assert.equal(dirname(resolve(directory)), resolve(tmpdir())); assert.ok(basename(directory).startsWith("rust-population-proxy-"));
+    await rm(directory, { recursive: true, force: true }); });
+  const deadline = Date.now() + 15000;
+  while (true) { assert.equal(child.exitCode, null, logs); try { await request(port, "/proxy-ready"); break; } catch { assert.ok(Date.now() < deadline, logs); await delay(20); } }
+  const families = ["/api/average", "/api/average/metrics", "/api/average/achievements", "/api/progression/average"];
+  for (const host of ["tarkovstats.ru", "tarkovstats.online"]) {
+    for (const path of families) {
+      for (const suffix of ["", "/"]) {
+        for (const query of ["", "?mode=regular", "?mode=pve", "?mode=pve&mode=arena", "?m%6Fde=%70v%65"]) {
+          const result = await request(port, path + suffix + query, host); assert.equal(JSON.parse(result.body).backend, "rust", path + suffix + query);
+        }
+        for (const query of ["?mode=", "?mode=seasonal", "?mode=arena", "?mode=invalid&mode=pve", "?mode=pve%20"]) {
+          const result = await request(port, path + suffix + query, host); assert.equal(JSON.parse(result.body).backend, "next", path + suffix + query);
+        }
+      }
+    }
+    for (const path of ["/population/pve", "/population/regular", "/api/average-extra?mode=pve"]) assert.equal(JSON.parse((await request(port, path, host)).body).backend, "next", path);
+    assert.equal(JSON.parse((await request(port, "/api/axis-league/statistics", host)).body).backend, "rust");
+  }
+  const before = nextCount, nativeBefore = nativeCount; failing = true;
+  assert.equal((await request(port, "/api/average?mode=pve")).status, 503);
+  assert.equal(nextCount, before); assert.equal(nativeCount, nativeBefore + 1);
 });
