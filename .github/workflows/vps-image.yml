@@ -130,7 +130,7 @@ jobs:
     if: needs.checks.outputs.image == 'true'
     needs: checks
     runs-on: ubuntu-24.04
-    timeout-minutes: 45
+    timeout-minutes: 60
     permissions:
       contents: write
     env:
@@ -170,6 +170,8 @@ jobs:
             assert.equal(services.caddy.environment.SEASONAL_API_UPSTREAM, services.web.environment.SEASONAL_API_UPSTREAM);
             assert.equal(services.web.environment.HOME_SHOWCASE_API_UPSTREAM, "web:3000");
             assert.equal(services.caddy.environment.HOME_SHOWCASE_API_UPSTREAM, services.web.environment.HOME_SHOWCASE_API_UPSTREAM);
+            assert.equal(services.web.environment.PERSISTENT_POPULATION_API_UPSTREAM, "web:3000");
+            assert.equal(services.caddy.environment.PERSISTENT_POPULATION_API_UPSTREAM, services.web.environment.PERSISTENT_POPULATION_API_UPSTREAM);
             assert.equal(services.web.environment.ARENA_UI_UPSTREAM, "web:3000");
             assert.equal(services.caddy.environment.ARENA_UI_UPSTREAM, services.web.environment.ARENA_UI_UPSTREAM);
             assert.equal(services.web.ports, undefined);
@@ -183,6 +185,7 @@ jobs:
         run: |
           test "$(docker image inspect --format '{{index .Config.Labels "org.opencontainers.image.revision"}}' "tarkovstats-web:$GITHUB_SHA")" = "$GITHUB_SHA"
           test "$(docker image inspect --format '{{index .Config.Labels "org.tarkovstats.rust-arena-ui"}}' "tarkovstats-web:$GITHUB_SHA")" = "v1"
+          test "$(docker image inspect --format '{{index .Config.Labels "org.tarkovstats.rust-population-api"}}' "tarkovstats-web:$GITHUB_SHA")" = "v1"
           docker run --rm --network none --entrypoint node "tarkovstats-web:$GITHUB_SHA" --experimental-strip-types --experimental-sqlite -e "require('node:sqlite'); require('discord.js'); require('node:fs').accessSync('/app/server.js'); require('node:fs').accessSync('/app/scripts/axis-discord-bot.mjs')"
           docker run --rm --network none --entrypoint /app/rust/cohort-worker/target/release/tarkov-cohort-worker "tarkovstats-web:$GITHUB_SHA" < /dev/null
           docker network create image-smoke
@@ -280,6 +283,21 @@ jobs:
             ${{ runner.temp }}/rust-http-benchmark/*.json
             ${{ runner.temp }}/rust-http-benchmark/*.log
             ${{ runner.temp }}/rust-http-benchmark/summary.md
+          if-no-files-found: warn
+          retention-days: 14
+      - name: Compare isolated production Regular and PvE population APIs
+        if: needs.checks.outputs.benchmarks == 'true'
+        timeout-minutes: 28
+        run: bash scripts/benchmark-rust-persistent-http-container.sh --image "tarkovstats-web:$GITHUB_SHA" --output "$RUNNER_TEMP/rust-persistent-http"
+      - name: Save persistent API comparison evidence
+        if: always() && needs.checks.outputs.benchmarks == 'true'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: rust-persistent-http-${{ github.sha }}
+          path: |
+            ${{ runner.temp }}/rust-persistent-http/*.json
+            ${{ runner.temp }}/rust-persistent-http/*.log
+            ${{ runner.temp }}/rust-persistent-http/summary.md
           if-no-files-found: warn
           retention-days: 14
       - name: Compare Arena interfaces on the isolated Linux browser runner
