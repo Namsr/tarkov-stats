@@ -13,6 +13,8 @@ import { gameModeFromAppRoute } from "@/types/seasonal";
 import { getAxisLeagueStore } from "@/lib/admin/axis-league-db";
 import type { AxisIdentity } from "@/lib/axis-player-profile";
 import { getArenaProfile } from "@/lib/arena/service";
+import { getProgressionStore } from "@/lib/progression-db";
+import { regularProfileOverview } from "@/lib/regular-profile-overview";
 
 interface Props {
   params: Promise<{ segments?: string[] }>;
@@ -44,6 +46,9 @@ export default async function CanonicalPlayerPage({ params, searchParams }: Prop
   const parsedAid = parsePlayerId(aid);
   if (parsedAid === null) notFound();
   if (mode !== "seasonal") {
+    const savedRegular = mode === "regular"
+      ? await getProgressionStore("regular").then((store) => store?.latest(parsedAid)).catch(() => null)
+      : null;
     let axisIdentity: AxisIdentity | null = null;
     let axisHours: number | null = null;
     let axisHoursFetchedAt: number | null = null;
@@ -69,6 +74,7 @@ export default async function CanonicalPlayerPage({ params, searchParams }: Prop
         axisHours={axisHours}
         axisHoursFetchedAt={axisHoursFetchedAt}
         initialAxis={mode === "arena" && query.arenaMode === "axis"}
+        initialOverview={savedRegular ? regularProfileOverview(savedRegular.stats) : undefined}
       />
     );
   }
