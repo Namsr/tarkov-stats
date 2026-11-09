@@ -350,6 +350,9 @@ test("fresh legacy achievement cache is refreshed from JSON when upstream is hea
   };
   try {
     const restartedApi = await import(`../lib/tarkov-api.ts?legacy-refresh=${Date.now()}`);
+    assert.equal((await restartedApi.getAchievements("regular", { cacheOnly: true })).get("legacy")?.nameEn, "Legacy");
+    assert.deepEqual(await restartedApi.getWeaponMastery({ cacheOnly: true }), []);
+    assert.deepEqual(requested, [], "cache-only reads do not fetch even when reference data is stale or absent");
     const stale = await restartedApi.getAchievements("regular");
     assert.equal(stale.get("legacy")?.nameEn, "Legacy");
     await new Promise((resolve) => setImmediate(resolve));

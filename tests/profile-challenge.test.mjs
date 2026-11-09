@@ -176,6 +176,47 @@ test('a distributed API burst is capped globally', async (t) => {
   assert.equal((await admission(service.port, { ip: '198.51.100.74', uri: '/api/player/profile' })).status, 204);
 });
 
+test('online API bursts reserve capacity for a valid pass and restrict anonymous reads', async (t) => {
+  const service = await start({ apiLimit: 4, apiWindowMs: 100, holdMs: 1000 });
+  t.after(() => service.close());
+  const ip = '198.51.100.80';
+  const created = await request(service.port, 'POST', '/__profile-check', {
+    host: ONLINE,
+    'x-profile-client-ip': ip,
+    origin: `https://${ONLINE}`,
+    'content-type': 'application/x-www-form-urlencoded',
+  }, 'return=%2Fplayer%2Fregular%2F42&token=good');
+  assert.equal(created.status, 303);
+  const cookie = created.headers['set-cookie'][0].split(';')[0];
+  const version = { 'x-profile-admission-version': '1' };
+  const call = (clientIp, extraHeaders = {}, host = ONLINE) => admission(service.port, {
+    host, ip: clientIp, uri: '/api/player/profile?aid=42', headers: { ...version, ...extraHeaders },
+  });
+
+  assert.equal((await call(ip)).headers['x-profile-access'], 'anonymous');
+  assert.equal((await call(ip)).headers['x-profile-access'], 'snapshot-only');
+  const limited = await call('198.51.100.81', { cookie });
+  assert.equal(limited.status, 429, 'a pass copied to a different IP cannot use the reserved budget');
+  assert.deepEqual(JSON.parse(limited.body), { error: 'Rate limit exceeded' });
+  assert.equal(limited.headers['retry-after'], '10');
+  assert.equal((await call(ip, { cookie }, 'www.tarkovstats.online')).status, 429,
+    'a pass copied to another hostname cannot use the reserved budget');
+  assert.equal((await call(ip, { cookie: cookie + 'x' })).status, 429);
+  assert.equal((await call(ip, { cookie })).status, 204, 'anonymous exhaustion on the same IP leaves the verified budget');
+  assert.equal((await call(ip, { cookie })).headers['x-profile-access'], undefined, 'verified reads can refresh');
+  assert.equal((await call(ip, { cookie })).status, 429, 'verified requests are also bounded');
+
+  const page = await admission(service.port, { ip: '198.51.100.82', headers: version });
+  assert.equal(page.status, 302, 'API-only traffic also activates the browser verification flow');
+  assert.equal((await call('198.51.100.83', {}, RU)).headers['x-profile-access'], undefined);
+  assert.equal((await admission(service.port, { uri: '/api/player/profile' })).status, 204,
+    'a gateway that does not copy policy headers keeps the legacy contract');
+  service.advance(101);
+  assert.equal((await call('198.51.100.84')).headers['x-profile-access'], 'snapshot-only');
+  service.advance(1000);
+  assert.equal((await call('198.51.100.85')).headers['x-profile-access'], 'anonymous');
+});
+
 test('unknown hosts, invalid client addresses and non-profile targets are refused', async (t) => {
   const service = await start();
   t.after(() => service.close());

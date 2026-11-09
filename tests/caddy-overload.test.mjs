@@ -46,7 +46,9 @@ test('Caddy rejects excess HTTP/2 requests across sites and releases timed-out s
     else if (req.url === '/hold' || req.url === '/stall' || /^\/player\/(regular|pve|arena|seasonal)\/hold(?:\?|$)/.test(req.url)) held.add(res);
     else {
       res.setHeader('Content-Type', 'application/json');
-      res.end(JSON.stringify({ ip: req.headers['x-real-ip'], requestId: req.headers['x-request-id'] }));
+      res.end(JSON.stringify({
+        ip: req.headers['x-real-ip'], requestId: req.headers['x-request-id'], access: req.headers['x-profile-access'],
+      }));
     }
   });
   // Match the advertised Next.js timeout without Node's optional grace buffer.
@@ -57,11 +59,14 @@ test('Caddy rejects excess HTTP/2 requests across sites and releases timed-out s
   const admissions = [];
   const admissionsServer = http.createServer((req, res) => {
     const uri = req.headers['x-forwarded-uri'] ?? '';
-    admissions.push({ method: req.method, uri, ip: req.headers['x-profile-client-ip'] });
+    admissions.push({
+      method: req.method, uri, ip: req.headers['x-profile-client-ip'], version: req.headers['x-profile-admission-version'],
+    });
     if (uri.includes('admission=deny')) return res.writeHead(429, { 'Retry-After': '7' }).end();
     if (uri.includes('admission=challenge')) {
       return res.writeHead(302, { Location: `/__profile-check?return=${encodeURIComponent(uri)}` }).end();
     }
+    if (uri.includes('admission=snapshot')) return res.writeHead(204, { 'X-Profile-Access': 'snapshot-only' }).end();
     res.writeHead(204).end();
   });
   admissionsServer.listen(0, '127.0.0.1');
@@ -284,6 +289,16 @@ test('Caddy rejects excess HTTP/2 requests across sites and releases timed-out s
   assert.equal((await request('/player/regular/123', 'tarkovstats.ru', 'HEAD')).status, 200);
   assert.equal(admissions.at(-1).method, 'GET', 'HEAD admission is evaluated as a GET');
   assert.equal(admissions.at(-1).uri, '/player/regular/123');
+  const forwarded = await request('/api/player/profile?aid=123&admission=snapshot', 'tarkovstats.online', 'GET', undefined, {
+    'x-profile-access': 'verified', 'x-profile-admission-version': 'bogus',
+  });
+  assert.equal(forwarded.status, 200);
+  assert.equal(JSON.parse(forwarded.body).access, 'snapshot-only');
+  assert.equal(admissions.at(-1).version, '1');
+  const spoofed = await request('/api/player/profile?aid=123', 'tarkovstats.online', 'GET', undefined, {
+    'x-profile-access': 'snapshot-only',
+  });
+  assert.equal(JSON.parse(spoofed.body).access, undefined, 'only the admission response can set the policy');
   t.diagnostic('fake desktop browsers rejected; admission 429/302 pass through with the original URI');
   const beforeShadow = accessLogs.length;
   const chrome = { 'user-agent': 'Mozilla/5.0 Chrome/116.0.0.0 Safari/537.36' };
@@ -398,7 +413,13 @@ test('Caddy rejects excess HTTP/2 requests across sites and releases timed-out s
   }
   assert.equal((await request('/player/regular/1', 'tarkovstats.ru', 'HEAD')).status, 503);
   assert.equal((await request('/player/arena/1', 'tarkovstats.ru', 'GET', undefined, { rsc: '1' })).status, 503);
+  const anonymousOverflow = await request('/api/player/profile?aid=123&admission=snapshot', 'tarkovstats.online');
+  assert.equal(anonymousOverflow.status, 429);
+  assert.deepEqual(JSON.parse(anonymousOverflow.body), { error: 'Rate limit exceeded' });
+  assert.equal(anonymousOverflow.headers['retry-after'], '10');
   assert.equal(received, beforeProfileOverflow, 'excess profile documents must never reach Next');
+  assert.equal((await request('/api/player/profile?aid=123', 'tarkovstats.online')).status, 200,
+    'verified profile API reads still have access to the remaining slots');
   for (const path of ['/', '/healthz', '/api/player/profile?aid=123', '/api/player/search?nickname=test',
     '/leaderboard', '/_next/static/fixture.js', '/playerish']) {
     assert.equal((await request(path)).status, 200, `${path} remains available during a profile burst`);

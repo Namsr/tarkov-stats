@@ -768,7 +768,10 @@ async function refreshAchievements(
 }
 
 /** Achievement id -> metadata, cached in-isolate. Rarely changes (per wipe). */
-export async function getAchievements(mode: AchievementMode = "regular"): Promise<Map<string, AchievementMeta>> {
+export async function getAchievements(
+  mode: AchievementMode = "regular",
+  options: { cacheOnly?: boolean } = {},
+): Promise<Map<string, AchievementMeta>> {
   const cached = getCachedAchievements(mode);
   if (cached) {
     console.info("tarkov reference", { reference: "achievements", mode, source: "memory-cache" });
@@ -778,13 +781,13 @@ export async function getAchievements(mode: AchievementMode = "regular"): Promis
   const persisted = memory ?? await readPersistedAchievements(mode);
   if (persisted) {
     achievementsCache.set(mode, persisted);
-    if (Date.now() - persisted.ts >= ACHIEVEMENTS_TTL_MS) {
+    if (!options.cacheOnly && Date.now() - persisted.ts >= ACHIEVEMENTS_TTL_MS) {
       void refreshAchievements(mode, persisted);
     }
     console.info("tarkov reference", { reference: "achievements", mode, source: "persistent-cache" });
     return persisted.data;
   }
-  return refreshAchievements(mode, null);
+  return options.cacheOnly ? new Map() : refreshAchievements(mode, null);
 }
 
 async function refreshWeaponMastery(fallback: MasteryCache | null): Promise<WeaponMasteryReference[]> {
@@ -819,7 +822,7 @@ async function refreshWeaponMastery(fallback: MasteryCache | null): Promise<Weap
  * the upstream service, which keeps stored profile responses local-only.
  */
 export async function getWeaponMastery(
-  options: { staleOnly?: boolean } = {},
+  options: { staleOnly?: boolean; cacheOnly?: boolean } = {},
 ): Promise<WeaponMasteryReference[]> {
   const now = Date.now();
   if (masteryCache && now - masteryCache.ts < MASTERY_TTL_MS) {
@@ -829,10 +832,11 @@ export async function getWeaponMastery(
   const persisted = masteryCache ?? await readPersistedMastery();
   if (persisted) {
     masteryCache = persisted;
-    if (now - persisted.ts >= MASTERY_TTL_MS) void refreshWeaponMastery(persisted);
+    if (!options.cacheOnly && now - persisted.ts >= MASTERY_TTL_MS) void refreshWeaponMastery(persisted);
     console.info("tarkov reference", { reference: "mastering", source: "persistent-cache" });
     return persisted.data;
   }
+  if (options.cacheOnly) return [];
   if (options.staleOnly) {
     void refreshWeaponMastery(null);
     return [];

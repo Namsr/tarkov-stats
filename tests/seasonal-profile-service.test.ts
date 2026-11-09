@@ -58,6 +58,24 @@ test("Seasonal profile fails closed without a confirmed network adapter", async 
   });
 });
 
+test("Seasonal snapshot-only requests neither fetch nor repair stored profiles", async () => {
+  const profile = { aid: 730001, cycleId: "season-2026-01", snapshotCount: 0, pvpStatsParserVersion: 0 };
+  const store = {
+    getProfile: async ({ aid }) => aid === profile.aid ? profile : null,
+    captureSnapshot: async () => assert.fail("snapshot-only must not write"),
+  };
+  const dependencies = {
+    ...cycleDependencies,
+    getStore: async () => store,
+    fetchPayload: async () => assert.fail("snapshot-only must not fetch"),
+  };
+  const input = { aid: profile.aid, cycleId: profile.cycleId, force: true, snapshotOnly: true };
+  assert.deepEqual(await resolveSeasonalProfile(input, dependencies), {
+    ok: true, profile, capture: { inserted: false, status: "stored" },
+  });
+  assert.equal((await resolveSeasonalProfile({ ...input, aid: 730002 }, dependencies)).status, 429);
+});
+
 test("JSON collector may use a valid disabled cycle without exposing public Seasonal", async () => {
   const disabledDependencies = {
     ...cycleDependencies,

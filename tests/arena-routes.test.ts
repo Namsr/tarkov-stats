@@ -560,6 +560,35 @@ test("Arena profile returns a legacy snapshot without waiting for upstream", asy
   assert.equal(fetches, 0);
 });
 
+test("anonymous profile requests can read stored Arena data without triggering refresh or fetching misses", async () => {
+  const aid = 40_011;
+  await storeArenaProfile(upstreamArenaProfile(aid, 1_800_000_040_011, "Snapshot only"));
+  let fetches = 0;
+  await withFetch(async () => {
+    fetches += 1;
+    throw new Error("snapshot-only requests must stay offline");
+  }, async () => {
+    for (const [query, status] of [
+      [`aid=${aid}&mode=arena&refresh=1`, 200],
+      [`aid=${aid}&mode=arena&refresh=1&wait=1`, 429],
+      ["aid=990011&mode=arena", 429],
+      ["aid=990011&mode=pve", 429],
+      ["aid=990011&mode=regular", 429],
+    ]) {
+      const request = new NextRequest(`http://tarkovstats.online/api/player/profile?${query}`, {
+        headers: { "x-profile-access": "snapshot-only", "x-forwarded-for": "198.51.100.91" },
+      });
+      const response = await getProfile(request);
+      assert.equal(response.status, status, query);
+      assert.equal(response.headers.get("cache-control"), "no-store");
+      const body = await response.json();
+      if (status === 200) assert.equal(body.arena.nickname, "Snapshot only");
+      else assert.equal(body.error, "Rate limit exceeded");
+    }
+  });
+  assert.equal(fetches, 0);
+});
+
 test("forced Arena refresh answers from the store instead of blocking on upstream", async () => {
   const aid = 40_003;
   await storeArenaProfile(upstreamArenaProfile(aid, 1_800_000_040_003, "Saved Arena"));
