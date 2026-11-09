@@ -1838,7 +1838,7 @@ test("the runtime Arena rollout changes only population ingress to document navi
     "@/lib/favorites/context": { FavoritesProvider: passthrough },
     "@/lib/native-routes-context": bridge,
     "@/lib/i18n/server": { resolveLang: async () => "en" },
-    "@/lib/i18n/dictionary": { dict: {} },
+    "@/lib/i18n/dictionary": { messagesFor: () => ({}) },
   });
   const previousEnv = process.env.ARENA_UI_UPSTREAM;
   const previousWindow = Object.getOwnPropertyDescriptor(globalThis, "window");
