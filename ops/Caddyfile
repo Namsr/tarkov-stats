@@ -53,12 +53,18 @@
 			response_header_timeout 5s
 		}
 	}
-	forward_auth @profileAdmission {$PROFILE_CHALLENGE_UPSTREAM:profile-challenge:3119} {
-		uri /internal/profile-admission
-		header_up X-Profile-Client-IP {client_ip}
-		transport http {
-			dial_timeout 250ms
-			response_header_timeout 750ms
+	route {
+		# Strip client input before forward_auth copies the service's decision.
+		request_header -X-Profile-Access
+		forward_auth @profileAdmission {$PROFILE_CHALLENGE_UPSTREAM:profile-challenge:3119} {
+			uri /internal/profile-admission
+			header_up X-Profile-Client-IP {client_ip}
+			header_up X-Profile-Admission-Version 1
+			copy_headers X-Profile-Access
+			transport http {
+				dial_timeout 250ms
+				response_header_timeout 750ms
+			}
 		}
 	}
 }
@@ -246,6 +252,16 @@
 	reverse_proxy @homeShowcase {$HOME_SHOWCASE_API_UPSTREAM:web:3000} {
 		import web_upstream 32
 	}
+	# Keep anonymous profile API traffic below the shared web ceiling so a
+	# burst leaves slots for verified clients as well as other routes.
+	@onlineAnonymousProfileApi {
+		host tarkovstats.online www.tarkovstats.online
+		path /api/player/profile
+		header_regexp X-Profile-Access ^(anonymous|snapshot-only)$
+	}
+	reverse_proxy @onlineAnonymousProfileApi web:3000 {
+		import web_upstream 16
+	}
 	# Speculative Next.js prefetch shares the real upstream counter, but stops
 	# at 8 in-flight requests so it cannot fill all 32 navigation/API slots.
 	@nextPrefetch {
@@ -273,6 +289,18 @@
 	# Ordinary overload (503), read resets and timeouts never enter this retry pool.
 	handle_errors {
 		import response_headers
+		@onlineAnonymousProfileLimit {
+			expression `{err.status_code} == 503 && {err.message} == "no upstreams available"`
+			host tarkovstats.online www.tarkovstats.online
+			path /api/player/profile
+			header_regexp X-Profile-Access ^(anonymous|snapshot-only)$
+		}
+		handle @onlineAnonymousProfileLimit {
+			header Content-Type application/json
+			header Cache-Control "private, no-store"
+			header Retry-After 10
+			respond `{"error":"Rate limit exceeded"}` 429
+		}
 		@refused expression `{err.status_code} == 502 && {err.message}.matches('^dial tcp .*: (connect: connection refused|connectex: .*actively refused it.*)$')`
 		handle @refused {
 			@retrySeasonal path /api/seasonal/cohort /api/seasonal/cohort/
@@ -330,6 +358,16 @@
 			handle @retryArenaDocument {
 				reverse_proxy {$ARENA_UI_UPSTREAM:web:3000} {
 					import web_upstream 32
+					lb_try_duration 4s
+					lb_try_interval 100ms
+					lb_retry_match {
+						expression false
+					}
+				}
+			}
+			handle @onlineAnonymousProfileApi {
+				reverse_proxy web:3000 {
+					import web_upstream 16
 					lb_try_duration 4s
 					lb_try_interval 100ms
 					lb_retry_match {

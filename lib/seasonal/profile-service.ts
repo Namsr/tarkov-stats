@@ -29,7 +29,7 @@ export type SeasonalProfileResult =
       profile: SeasonalProfile;
       capture: { inserted: boolean; status: string };
     }
-  | { ok: false; status: 404 | 409 | 502 | 503; error: string };
+  | { ok: false; status: 404 | 409 | 429 | 502 | 503; error: string };
 
 /**
  * Canonical Seasonal profile pipeline. The network adapter is deliberately
@@ -37,7 +37,7 @@ export type SeasonalProfileResult =
  * confirmed alongside its payload fixture.
  */
 export async function resolveSeasonalProfile(
-  input: { aid: number; cycleId: string; force: boolean; expectedUpdatedAt?: number },
+  input: { aid: number; cycleId: string; force: boolean; expectedUpdatedAt?: number; snapshotOnly?: boolean },
   dependencies: SeasonalProfileDependencies
 ): Promise<SeasonalProfileResult> {
   const cycle = dependencies.loadCycle();
@@ -45,10 +45,6 @@ export async function resolveSeasonalProfile(
       cycle.cycleId !== input.cycleId || !cycle.upstreamContract) {
     return { ok: false, status: 503, error: "Seasonal profile unavailable" };
   }
-  if (!dependencies.fetchPayload) {
-    return { ok: false, status: 503, error: "Seasonal upstream endpoint is not configured" };
-  }
-
   let store: SeasonalStore | null | undefined;
   type StoredProfile = Awaited<ReturnType<SeasonalStore["getProfile"]>>;
   let storedProfile: StoredProfile = null;
@@ -75,7 +71,7 @@ export async function resolveSeasonalProfile(
     const loaded = await loadStore();
     const profile = loaded.profile;
     if (!profile || input.expectedUpdatedAt !== undefined) return null;
-    if (profile.snapshotCount === 0 && loaded.store) {
+    if (!input.snapshotOnly && profile.snapshotCount === 0 && loaded.store) {
       try {
         const observedAt = dependencies.now?.() ?? Date.now();
         const capture = await loaded.store.captureSnapshot(profile, observedAt);
@@ -96,6 +92,13 @@ export async function resolveSeasonalProfile(
       capture: { inserted: false, status: "stored" },
     };
   };
+
+  if (input.snapshotOnly) {
+    return await storedResult() ?? { ok: false, status: 429, error: "Rate limit exceeded" };
+  }
+  if (!dependencies.fetchPayload) {
+    return { ok: false, status: 503, error: "Seasonal upstream endpoint is not configured" };
+  }
 
   if (!input.force && input.expectedUpdatedAt === undefined) {
     const loaded = await loadStore();

@@ -13,7 +13,7 @@ import { getRateLimitHeaders } from "@/lib/rate-limiter";
 import { getClientIp } from "@/lib/client-ip";
 import { parsePlayerId } from "@/lib/player-id";
 import { getStore, type AchievementBaseline } from "@/lib/db";
-import { isGameMode, normalizeCycleId } from "@/types/seasonal";
+import { isGameMode, normalizeCycleId, type GameMode } from "@/types/seasonal";
 import { resolveSeasonalProfile } from "@/lib/seasonal/profile-service";
 import { getSeasonalStore } from "@/lib/seasonal/storage";
 import { getPublishedSeasonalAchievementBaseline } from "@/lib/seasonal/progression-db";
@@ -204,12 +204,13 @@ async function enrichSeasonalViewModel(
   profile: import("@/types/seasonal").SeasonalProfile,
   viewModel: ReturnType<typeof buildSeasonalProfileViewModel>,
   phases?: ProfileEnrichmentPhases,
+  snapshotOnly = false,
 ) {
   const [baseline, metadata, masteryReferences] = await Promise.all([
     timedEnrichmentPhase(phases, "baselineMs", () => getPublishedSeasonalAchievementBaseline(profile.cycleId)),
-    timedEnrichmentPhase(phases, "metadataMs", () => getAchievements("seasonal").catch(() => new Map())),
+    timedEnrichmentPhase(phases, "metadataMs", () => getAchievements("seasonal", { cacheOnly: snapshotOnly }).catch(() => new Map())),
     viewModel.mastering.items.length > 0
-      ? timedEnrichmentPhase(phases, "masteryMs", () => getWeaponMastery({ staleOnly: true }))
+      ? timedEnrichmentPhase(phases, "masteryMs", () => getWeaponMastery({ staleOnly: true, cacheOnly: snapshotOnly }))
       : Promise.resolve([]),
   ]);
   const baselineById = new Map((baseline?.achievements ?? []).map((entry) => [entry.id, entry]));
@@ -246,13 +247,14 @@ async function enrichPersistentViewModel(
   mode: PersistentMode,
   viewModel: ReturnType<typeof buildPersistentProfileViewModel>,
   phases?: ProfileEnrichmentPhases,
+  snapshotOnly = false,
 ) {
   const [baseline, metadata, masteryReferences] = await Promise.all([
     timedEnrichmentPhase(phases, "baselineMs", () => loadPersistentAchievementBaseline(mode)),
     // Achievement definitions are shared. Ownership stays in the mode store.
-    timedEnrichmentPhase(phases, "metadataMs", () => getAchievements("regular").catch(() => new Map())),
+    timedEnrichmentPhase(phases, "metadataMs", () => getAchievements("regular", { cacheOnly: snapshotOnly }).catch(() => new Map())),
     viewModel.mastering.items.length > 0
-      ? timedEnrichmentPhase(phases, "masteryMs", () => getWeaponMastery({ staleOnly: true }))
+      ? timedEnrichmentPhase(phases, "masteryMs", () => getWeaponMastery({ staleOnly: true, cacheOnly: snapshotOnly }))
       : Promise.resolve([]),
   ]);
   const baselineById = new Map((baseline?.achievements ?? []).map((entry) => [entry.ach_id, entry]));
@@ -291,16 +293,28 @@ async function enrichRegularViewModel(
   return enrichPersistentViewModel("regular", viewModel, phases);
 }
 
+function snapshotRateLimited(
+  identity: { aid: number; mode: GameMode; cycleId: string },
+  timing: ReturnType<typeof createRequestTiming>,
+  noStore: HeadersInit,
+) {
+  timing.finish({ operation: "player_profile", mode: identity.mode, outcome: "rate_limited", status: 429 });
+  const headers = new Headers(noStore);
+  headers.set("Retry-After", "10");
+  return NextResponse.json({ error: "Rate limit exceeded", identity }, { status: 429, headers });
+}
+
 async function arenaProfileResponse(input: {
   aid: number;
   cycleId: string;
   force: boolean;
   waitForUpstream: boolean;
+  snapshotOnly: boolean;
   profileHeaders: HeadersInit;
   noStore: HeadersInit;
   timing: ReturnType<typeof createRequestTiming>;
 }) {
-  const { aid, cycleId, force, waitForUpstream, profileHeaders, noStore, timing } = input;
+  const { aid, cycleId, force, waitForUpstream, snapshotOnly, profileHeaders, noStore, timing } = input;
   let source: "stored" | "upstream" | "cache" = "stored";
   let profile: PlayerProfile | null = null;
   let capture = { inserted: false, status: "stored" };
@@ -355,6 +369,7 @@ async function arenaProfileResponse(input: {
       // useful display snapshot until the collector (or an explicit refresh)
       // reparses it. Never make this non-forced read wait on upstream.
       if (legacy && !force) return legacyResponse(legacy);
+      if (snapshotOnly) return snapshotRateLimited({ aid, mode: "arena", cycleId }, timing, noStore);
     }
     if (force && stored && !waitForUpstream) {
       // A stored snapshot is already a complete display payload, so a forced
@@ -402,7 +417,7 @@ async function arenaProfileResponse(input: {
       }
       if (!isArenaProfileRiskFresh(risk, stored.profileUpdatedAt)) {
         risk = null;
-        scheduleArenaRiskRefresh();
+        if (!snapshotOnly) scheduleArenaRiskRefresh();
       }
     } else {
       const riskStarted = timing.now();
@@ -530,14 +545,19 @@ async function handleGet(request: NextRequest, timing: ReturnType<typeof createR
   timing.setRequestContext({ cycleId });
 
   // ?refresh=1 (кнопка «Обновить» / перезагрузка) обходит наш 5-мин in-process кэш.
-  const force = request.nextUrl.searchParams.get("refresh") === "1";
+  const snapshotOnly = request.headers.get("x-profile-access") === "snapshot-only";
+  const refreshRequested = request.nextUrl.searchParams.get("refresh") === "1";
+  const force = refreshRequested && !snapshotOnly;
   // A forced refresh normally answers from the stored snapshot and re-fetches
   // after the response, so F5 never waits on tarkov.dev. The explicit
   // «Обновить» button adds wait=1: the user asked for fresh data and is already
   // showing «Проверяем свежие данные…», so it has to wait for the answer.
   const waitForUpstream = request.nextUrl.searchParams.get("wait") === "1";
   const allowStaleRisk = request.nextUrl.searchParams.get("allowStaleRisk") === "1";
-  const profileHeaders = force
+  if (snapshotOnly && refreshRequested && waitForUpstream) {
+    return snapshotRateLimited({ aid, mode, cycleId }, timing, noStore);
+  }
+  const profileHeaders = force || snapshotOnly
     ? noStore
     : {
         ...headers,
@@ -555,7 +575,7 @@ async function handleGet(request: NextRequest, timing: ReturnType<typeof createR
     const seasonalStarted = timing.now();
     const enrichmentPhases: ProfileEnrichmentPhases = {};
     const result = await resolveSeasonalProfile(
-      { aid, cycleId, force },
+      { aid, cycleId, force, snapshotOnly },
       {
         loadCycle: loadSeasonalCycleConfig,
         validatePayload: (payload, cycle) =>
@@ -578,6 +598,9 @@ async function handleGet(request: NextRequest, timing: ReturnType<typeof createR
         },
       }
     );
+    if (!result.ok && result.status === 429) {
+      return snapshotRateLimited({ aid, mode, cycleId }, timing, noStore);
+    }
     const storedRisk = result.ok
       ? await getRiskEvaluation({ aid, mode: "seasonal", cycleId }).catch(() => null)
       : null;
@@ -589,7 +612,7 @@ async function handleGet(request: NextRequest, timing: ReturnType<typeof createR
       currentStoredRisk.scoreVersion === riskScoreVersion("seasonal", cycleId) &&
       currentStoredRisk.profileUpdatedAt >= result.profile.profileUpdatedAt &&
       Date.now() - currentStoredRisk.evaluatedAt < 5 * 60 * 60 * 1000;
-    if (result.ok && !seasonalRiskIsFresh) {
+    if (result.ok && !seasonalRiskIsFresh && !snapshotOnly) {
       after(async () => {
         // Let the immediate mode switch finish before scheduling the worker.
         await new Promise((resolve) => setTimeout(resolve, 1_000));
@@ -607,6 +630,7 @@ async function handleGet(request: NextRequest, timing: ReturnType<typeof createR
           result.profile,
           buildSeasonalProfileViewModel({ profile: result.profile }, publicRisk),
           enrichmentPhases,
+          snapshotOnly,
         )
       : null;
     const response = NextResponse.json(
@@ -639,7 +663,7 @@ async function handleGet(request: NextRequest, timing: ReturnType<typeof createR
     return response;
   }
   if (mode === "arena") {
-    return arenaProfileResponse({ aid, cycleId, force, waitForUpstream, profileHeaders, noStore, timing });
+    return arenaProfileResponse({ aid, cycleId, force, waitForUpstream, snapshotOnly, profileHeaders, noStore, timing });
   }
   if (mode === "pve") {
     let storeOpenMs: number | undefined;
@@ -674,7 +698,7 @@ async function handleGet(request: NextRequest, timing: ReturnType<typeof createR
           storedRisk.scoreVersion === riskScoreVersion("pve", cycleId) &&
           storedRisk.profileUpdatedAt >= Number(input.stats.profileUpdatedAt) &&
           Date.now() - storedRisk.evaluatedAt < 5 * 60 * 60 * 1000;
-        if (!riskIsFresh) {
+        if (!riskIsFresh && !snapshotOnly) {
           after(() => evaluateAndStoreRisk({
             aid,
             mode: "pve",
@@ -696,7 +720,7 @@ async function handleGet(request: NextRequest, timing: ReturnType<typeof createR
           stats: input.stats,
           achievementIds: input.achievementIds,
           capturedAt: input.capturedAt,
-        }, publicRisk), enrichmentPhases);
+        }, publicRisk), enrichmentPhases, snapshotOnly);
         return NextResponse.json({
           profile: input.profile ?? null,
           stats: input.stats,
@@ -739,11 +763,12 @@ async function handleGet(request: NextRequest, timing: ReturnType<typeof createR
       if (stored && !(force && waitForUpstream)) {
         if (force) {
           scheduleForcedProfileRefresh("pve", aid);
-        } else if (needsPvpStatsParserRefresh(stored.stats)) {
+        } else if (!snapshotOnly && needsPvpStatsParserRefresh(stored.stats)) {
           after(() => refreshStoredPveProfile(aid));
         }
         return await storedResponse(stored);
       }
+      if (snapshotOnly) return snapshotRateLimited({ aid, mode, cycleId }, timing, noStore);
 
       let profile: PlayerProfile | null;
       profileStarted = timing.now();
@@ -893,7 +918,7 @@ async function handleGet(request: NextRequest, timing: ReturnType<typeof createR
       Number(storedRisk.profileParserVersion ?? 0) >= Number(snapshot.stats.pvpStatsParserVersion ?? 0) &&
       storedRisk.profileUpdatedAt >= Number(snapshot.stats.profileUpdatedAt) &&
       Date.now() - storedRisk.evaluatedAt < 5 * 60 * 60 * 1000;
-    if (!riskIsFresh) {
+    if (!riskIsFresh && !snapshotOnly) {
       after(async () => {
         await evaluateRegularRiskInBackground({
           aid, mode: "regular", cycleId,
@@ -913,9 +938,9 @@ async function handleGet(request: NextRequest, timing: ReturnType<typeof createR
       stats: snapshot.stats,
       achievementIds: snapshot.achievementIds,
       capturedAt: snapshot.capturedAt,
-    }, publicRisk), storedEnrichmentPhases);
-    if (needsPvpStatsParserRefresh(snapshot.stats) ||
-        Date.now() - snapshot.capturedAt >= STORED_PROFILE_REFRESH_MS) {
+    }, publicRisk), storedEnrichmentPhases, snapshotOnly);
+    if (!snapshotOnly && (needsPvpStatsParserRefresh(snapshot.stats) ||
+        Date.now() - snapshot.capturedAt >= STORED_PROFILE_REFRESH_MS)) {
       after(() => refreshStoredRegularProfile(aid));
     }
     timing.setRequestContext({ nickname: snapshot.stats.nickname });
@@ -953,6 +978,7 @@ async function handleGet(request: NextRequest, timing: ReturnType<typeof createR
     if (force) scheduleForcedProfileRefresh("regular", aid);
     return await storedResponse(stored);
   }
+  if (snapshotOnly) return snapshotRateLimited({ aid, mode, cycleId }, timing, noStore);
 
   // Scoped to the upstream call, like the pve branch above. A throw from the
   // enrichment below has to surface as a failure, not be reported to the request

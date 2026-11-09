@@ -12,10 +12,11 @@ const HOSTS = new Set([
   'tarkovstats.online', 'www.tarkovstats.online',
   'tarkovstats.ru', 'www.tarkovstats.ru',
 ]);
+const ONLINE_HOSTS = new Set(['tarkovstats.online', 'www.tarkovstats.online']);
 // Turnstile tokens are bound to a hostname configured in the widget. Keep the
 // challenge on the hostname already verified there; .ru still gets the token
 // bucket (429) and can join this set once its names are added to the widget.
-const CHALLENGE_HOSTS = new Set(['tarkovstats.online', 'www.tarkovstats.online']);
+const CHALLENGE_HOSTS = ONLINE_HOSTS;
 // Verification attempts need their own bucket: without it, token spam holds all
 // four siteverify slots and locks real visitors out of the challenge.
 const VERIFY_RATE_PER_SECOND = 0.5;
@@ -53,8 +54,7 @@ function profilePath(input) {
   return url.pathname + url.search;
 }
 
-// Profile pages may be challenged; API calls are only rate limited because an
-// XHR cannot complete a Turnstile form.
+// Profile pages can show a challenge. API calls must keep their JSON contract.
 function admissionTarget(input) {
   if (typeof input !== 'string' || input.length > 2048 || /[\x00-\x20\x7f\\]/.test(input)) return null;
   const url = new URL(input, 'https://tarkovstats.online');
@@ -176,11 +176,17 @@ export function createProfileChallenge({
   holdMs = HOLD_MS,
 }) {
   const buckets = new Map();
+  const verifiedBuckets = new Map();
   const verifyBuckets = new Map();
   let recent = [];
   let activeUntil = 0;
   let apiRecent = [];
   let apiActiveUntil = 0;
+  let onlineAnonymousRecent = [];
+  let onlineVerifiedRecent = [];
+  let onlineApiActiveUntil = 0;
+  const anonymousLimit = Math.ceil(apiLimit / 2);
+  const verifiedLimit = apiLimit - anonymousLimit;
   let inFlight = 0;
   let checks = 0;
 
@@ -211,8 +217,9 @@ export function createProfileChallenge({
 
   function sweep(now) {
     if (++checks % 1024 !== 0) return;
-    for (const [key, value] of buckets) if (now - value.at >= IP_IDLE_MS) buckets.delete(key);
-    for (const [key, value] of verifyBuckets) if (now - value.at >= IP_IDLE_MS) verifyBuckets.delete(key);
+    for (const map of [buckets, verifiedBuckets, verifyBuckets]) {
+      for (const [key, value] of map) if (now - value.at >= IP_IDLE_MS) map.delete(key);
+    }
   }
 
   function registerPage(now) {
@@ -233,6 +240,13 @@ export function createProfileChallenge({
     }
   }
 
+  function limitApi(res) {
+    return res.writeHead(429, {
+      'Content-Type': 'application/json',
+      'Retry-After': '10',
+    }).end('{"error":"Rate limit exceeded"}');
+  }
+
   return createServer({ requestTimeout: 8000, headersTimeout: 4000, maxHeaderSize: 16384 }, async (req, res) => {
     res.setHeader('Cache-Control', 'private, no-store');
     // Container health checks use the loopback address, which is not a site host.
@@ -250,17 +264,38 @@ export function createProfileChallenge({
       const target = admissionTarget(req.headers['x-forwarded-uri']);
       if (!target) return res.writeHead(400).end();
       const now = clock();
-      if (!takeToken(buckets, ip, now, ipRatePerSecond, ipBurst)) return res.writeHead(429, { 'Retry-After': '10' }).end();
+      // Older gateway configs do not copy the admission policy into Next.
+      const onlinePolicy = ONLINE_HOSTS.has(host) && req.headers['x-profile-admission-version'] === '1';
+      const verified = onlinePolicy && hasPass(req, host, ip);
+      if (!takeToken(verified ? verifiedBuckets : buckets, ip, now, ipRatePerSecond, ipBurst)) {
+        if (onlinePolicy && target.kind === 'api') return limitApi(res);
+        return res.writeHead(429, { 'Retry-After': '10' }).end();
+      }
       sweep(now);
       if (target.kind === 'api') {
+        if (verified) {
+          onlineVerifiedRecent = onlineVerifiedRecent.filter((at) => at > now - apiWindowMs);
+          if (onlineVerifiedRecent.length >= verifiedLimit) return limitApi(res);
+          onlineVerifiedRecent.push(now);
+          return res.writeHead(204).end();
+        }
+        if (onlinePolicy) {
+          onlineAnonymousRecent = onlineAnonymousRecent.filter((at) => at > now - apiWindowMs);
+          if (onlineAnonymousRecent.length + 1 >= anonymousLimit) onlineApiActiveUntil = now + holdMs;
+          if (onlineAnonymousRecent.length >= anonymousLimit) return limitApi(res);
+          onlineAnonymousRecent.push(now);
+          return res.writeHead(204, {
+            'X-Profile-Access': now < onlineApiActiveUntil || now < activeUntil ? 'snapshot-only' : 'anonymous',
+          }).end();
+        }
         if (now < apiActiveUntil) return res.writeHead(429, { 'Retry-After': '10' }).end();
         registerApi(now);
         return res.writeHead(204).end();
       }
       if (!challengeHosts.has(host)) return res.writeHead(204).end();
       registerPage(now);
-      if (hasPass(req, host, ip)) return res.writeHead(204).end();
-      if (now < activeUntil) {
+      if (verified || (!onlinePolicy && hasPass(req, host, ip))) return res.writeHead(204).end();
+      if (now < activeUntil || (onlinePolicy && now < onlineApiActiveUntil)) {
         // Any RSC request is handled by the app router; an HTML challenge body
         // would be parsed as a flight response, so answer 429 and let Next fall
         // back to a full navigation that can render the challenge page.
