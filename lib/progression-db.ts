@@ -137,8 +137,7 @@ function latestSnapshot(
   // the identity index so a partial schema cannot make it sort raw history.
   const indexedBy = requireIdentityIndex ? " INDEXED BY idx_progression_snapshots_identity_time" : "";
   const rows = db.prepare(
-    `SELECT * FROM progression_snapshots${indexedBy}
-      WHERE mode = ? AND cycle_id = ? AND aid = ? ORDER BY profile_updated_at DESC`,
+    `SELECT * FROM progression_snapshots${indexedBy} WHERE mode = ? AND cycle_id = ? AND aid = ? ORDER BY profile_updated_at DESC`,
   ).iterate(mode, PERSISTENT_CYCLE_ID, aid) as Iterable<SnapshotRow>;
   for (const row of rows) {
     const snapshot = toSnapshot(row);
