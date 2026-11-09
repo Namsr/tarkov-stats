@@ -13,6 +13,7 @@ import ProfileHeader from "@/components/ProfileHeader";
 import AxisIcon from "@/components/AxisIcon";
 import { ProfileErrorNotice } from "@/components/ProfileShell";
 import ProfileSectionNav from "@/components/ProfileSectionNav";
+import { ProfileCollapseToggle } from "@/components/ProfileCollapsible";
 import StatCard from "@/components/StatCard";
 import RefreshButton, { type RefreshCheckResult } from "@/components/RefreshButton";
 import { useFavorites } from "@/lib/favorites/context";
@@ -397,6 +398,7 @@ export default function ArenaPlayer({ aid, axisIdentity = null, axisHours = null
     [favorites, numericAid],
   );
   const [selectedFavoriteAid, setSelectedFavoriteAid] = useState<number | null>(null);
+  const [comparisonOpen, setComparisonOpen] = useState(false);
   const [showFavorite, setShowFavorite] = useState(false);
   const defaultFavoriteAid = eligibleFavorites.find((favorite) => favorite.isMain)?.aid ?? eligibleFavorites[0]?.aid ?? null;
   const effectiveFavoriteAid = eligibleFavorites.some((favorite) => favorite.aid === selectedFavoriteAid) ? selectedFavoriteAid : defaultFavoriteAid;
@@ -406,7 +408,7 @@ export default function ArenaPlayer({ aid, axisIdentity = null, axisHours = null
   const [favoriteError, setFavoriteError] = useState(false);
 
   useEffect(() => {
-    if (axisSelected || !showFavorite || authStatus !== "authenticated" || effectiveFavoriteAid == null) {
+    if (axisSelected || !comparisonOpen || !showFavorite || authStatus !== "authenticated" || effectiveFavoriteAid == null) {
       setFavoriteProfile(null);
       setFavoriteError(false);
       return;
@@ -439,7 +441,7 @@ export default function ArenaPlayer({ aid, axisIdentity = null, axisHours = null
       active = false;
       controller.abort();
     };
-  }, [authStatus, effectiveFavoriteAid, showFavorite, axisSelected]);
+  }, [authStatus, effectiveFavoriteAid, comparisonOpen, showFavorite, axisSelected]);
 
   const changeMode = (mode: ArenaStoredMode) => {
     setAxisSelected(false); setSelectedMode(mode);
@@ -525,27 +527,32 @@ export default function ArenaPlayer({ aid, axisIdentity = null, axisHours = null
     {error && <ProfileErrorNotice>{error}</ProfileErrorNotice>}
     <div className="profile-content">
       <ArenaCombatSummary profile={profile} risk={risk} rating={tsRating} scope={selectedMode} onModeChange={changeMode} />
-        <section id="arena-comparison" tabIndex={-1} className="profile-anchor-section profile-comparison">
-          <h2 className="section-heading">{t("profile.section.statistics")}</h2>
-          <div className="profile-comparison-controls">
-            <div className="profile-segments" role="group" aria-label={t("home.compareWith")}><button type="button" aria-pressed={!showFavorite || !canCompareFavorite} onClick={() => setShowFavorite(false)}>{t(selectedMode === "overall" ? "home.averagePlayer" : "arena.combat.similar")}</button>
-              <span className={canCompareFavorite ? undefined : "disabled-control-hint"} tabIndex={canCompareFavorite ? undefined : 0} role={canCompareFavorite ? undefined : "group"} aria-label={canCompareFavorite ? undefined : t("arena.combat.favorite")} aria-describedby={canCompareFavorite ? undefined : "arena-favorite-hint"}>
-                <button type="button" aria-pressed={showFavorite && canCompareFavorite} disabled={!canCompareFavorite} aria-describedby={canCompareFavorite ? undefined : "arena-favorite-hint"} onClick={() => setShowFavorite(true)}>{t("arena.combat.favorite")}</button>
-                {!canCompareFavorite && <span id="arena-favorite-hint" role="tooltip" className="disabled-control-tooltip">{t(authStatus === "authenticated" ? "arena.favorite.empty" : "arena.favorite.authRequired")}</span>}
-              </span>
+      <section id="arena-comparison" tabIndex={-1} className="profile-anchor-section profile-comparison">
+        <h2 className="section-heading">{t("profile.section.statistics")}</h2>
+        <ProfileCollapseToggle controls="arena-comparison-content" expanded={comparisonOpen} label={t(comparisonOpen ? "profile.comparison.hide" : "profile.comparison.show")} onToggle={() => setComparisonOpen((value) => !value)} />
+        <div id="arena-comparison-content" hidden={!comparisonOpen}>
+          {comparisonOpen && <>
+            <div className="profile-comparison-controls">
+              <div className="profile-segments" role="group" aria-label={t("home.compareWith")}><button type="button" aria-pressed={!showFavorite || !canCompareFavorite} onClick={() => setShowFavorite(false)}>{t(selectedMode === "overall" ? "home.averagePlayer" : "arena.combat.similar")}</button>
+                <span className={canCompareFavorite ? undefined : "disabled-control-hint"} tabIndex={canCompareFavorite ? undefined : 0} role={canCompareFavorite ? undefined : "group"} aria-label={canCompareFavorite ? undefined : t("arena.combat.favorite")} aria-describedby={canCompareFavorite ? undefined : "arena-favorite-hint"}>
+                  <button type="button" aria-pressed={showFavorite && canCompareFavorite} disabled={!canCompareFavorite} aria-describedby={canCompareFavorite ? undefined : "arena-favorite-hint"} onClick={() => setShowFavorite(true)}>{t("arena.combat.favorite")}</button>
+                  {!canCompareFavorite && <span id="arena-favorite-hint" role="tooltip" className="disabled-control-tooltip">{t(authStatus === "authenticated" ? "arena.favorite.empty" : "arena.favorite.authRequired")}</span>}
+                </span>
+              </div>
+              {showFavorite && canCompareFavorite && <label className="profile-select"><span className="sr-only">{t("arena.favorite.label")}</span><select value={effectiveFavoriteAid ?? ""} onChange={(event) => setSelectedFavoriteAid(Number(event.target.value))}>{eligibleFavorites.map((favorite) => <option key={favorite.aid} value={favorite.aid}>{favorite.nickname || `#${favorite.aid}`}</option>)}</select></label>}
             </div>
-            {showFavorite && canCompareFavorite && <label className="profile-select"><span className="sr-only">{t("arena.favorite.label")}</span><select value={effectiveFavoriteAid ?? ""} onChange={(event) => setSelectedFavoriteAid(Number(event.target.value))}>{eligibleFavorites.map((favorite) => <option key={favorite.aid} value={favorite.aid}>{favorite.nickname || `#${favorite.aid}`}</option>)}</select></label>}
-          </div>
-          <div className="profile-comparison-method"><label className="profile-select"><span className="sr-only">{t("arena.statistic.label")}</span><select value={statistic} onChange={(event) => {
-            const next = event.target.value === "median" ? "median" : "trimmed_mean";
-            setStatistic(next);
-            const params = new URLSearchParams(window.location.search);
-            if (next === "median") params.set("arenaStatistic", next); else params.delete("arenaStatistic");
-            window.history.replaceState(null, "", `${window.location.pathname}${params.toString() ? `?${params}` : ""}${window.location.hash}`);
-          }}><option value="trimmed_mean">{t("arena.statistic.trimmedMean")}</option><option value="median">{t("arena.statistic.median")}</option></select></label><span className="profile-scope-name">{scopeName}</span></div>
-          {showFavorite && (favoriteLoading || favoriteError) && <p className="profile-chart-notice" role="status">{t(favoriteError ? "arena.favorite.error" : "arena.favorite.loading")}</p>}
-          <ArenaOverallComparison key={`${numericAid}:${selectedMode}:${statistic}:${profile.profileUpdatedAt}:${profile.fetchedAt}`} aid={numericAid} mode={selectedMode} player={scopeStats} playerName={profile.nickname} statistic={statistic} favorite={favoriteStats} favoriteName={favoriteName} compareFavorite={showFavorite && canCompareFavorite} />
-        </section>
+            <div className="profile-comparison-method"><label className="profile-select"><span className="sr-only">{t("arena.statistic.label")}</span><select value={statistic} onChange={(event) => {
+              const next = event.target.value === "median" ? "median" : "trimmed_mean";
+              setStatistic(next);
+              const params = new URLSearchParams(window.location.search);
+              if (next === "median") params.set("arenaStatistic", next); else params.delete("arenaStatistic");
+              window.history.replaceState(null, "", `${window.location.pathname}${params.toString() ? `?${params}` : ""}${window.location.hash}`);
+            }}><option value="trimmed_mean">{t("arena.statistic.trimmedMean")}</option><option value="median">{t("arena.statistic.median")}</option></select></label><span className="profile-scope-name">{scopeName}</span></div>
+            {showFavorite && (favoriteLoading || favoriteError) && <p className="profile-chart-notice" role="status">{t(favoriteError ? "arena.favorite.error" : "arena.favorite.loading")}</p>}
+            <ArenaOverallComparison key={`${numericAid}:${selectedMode}:${statistic}:${profile.profileUpdatedAt}:${profile.fetchedAt}`} aid={numericAid} mode={selectedMode} player={scopeStats} playerName={profile.nickname} statistic={statistic} favorite={favoriteStats} favoriteName={favoriteName} compareFavorite={showFavorite && canCompareFavorite} />
+          </>}
+        </div>
+      </section>
       <ArenaDetailedStatistics profile={profile} scope={selectedMode} />
       <ArenaModeBars profile={profile} selected={selectedMode} onSelect={changeMode} aid={numericAid} statistic={statistic} />
     </div>
