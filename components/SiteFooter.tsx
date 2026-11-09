@@ -12,12 +12,12 @@ export default function SiteFooter() {
       <div className="site-footer__inner">
         <p>
           Tarkov Stats — {t("footer.independent")}{" "}
-          <Link href="/about">Namsr</Link>
+          <Link prefetch={false} href="/about">Namsr</Link>
         </p>
         <nav aria-label={t("footer.navigation")}>
-          <Link href="/about">{t("nav.about")}</Link>
-          <Link href="/support">{t("nav.support")}</Link>
-          <Link href="/community">{t("nav.community")}</Link>
+          <Link prefetch={false} href="/about">{t("nav.about")}</Link>
+          <Link prefetch={false} href="/support">{t("nav.support")}</Link>
+          <Link prefetch={false} href="/community">{t("nav.community")}</Link>
           <a href={PROJECT_LINKS.github} target="_blank" rel="noopener noreferrer">
             GitHub
           </a>

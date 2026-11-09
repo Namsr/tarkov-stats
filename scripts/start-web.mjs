@@ -14,6 +14,7 @@ let stopping = false;
 let progressionMaterializer;
 let averageMaterializer;
 let axisLeagueSync;
+let homeCounterSampler;
 
 function stop(signal = "SIGTERM", code = 0, exitSignal) {
   if (stopping) return;
@@ -21,6 +22,7 @@ function stop(signal = "SIGTERM", code = 0, exitSignal) {
   progressionMaterializer?.stop(signal);
   averageMaterializer?.stop(signal);
   axisLeagueSync?.stop(signal);
+  homeCounterSampler?.stop(signal);
   const running = [...critical].filter((record) => !record.closed);
   for (const { child } of running) child.kill(signal);
   const timer = setTimeout(() => {
@@ -113,6 +115,12 @@ try {
     ]) : undefined;
     axisLeagueSync = backgroundEnabled ? superviseWorker("axis-league", [
       "--experimental-strip-types", "--experimental-sqlite", "scripts/sync-axis-league.mjs",
+    ]) : undefined;
+    // The public total must not freeze when the deployment compose predates the
+    // dedicated sampler service. This one is small (one SQLite read per minute)
+    // and stays inside the web cgroup; the dedicated service remains optional.
+    homeCounterSampler = process.env.HOME_COUNTER_SAMPLER === "true" ? superviseWorker("home-counter", [
+      "--experimental-strip-types", "--experimental-sqlite", "scripts/sample-home-coverage.mjs",
     ]) : undefined;
   }
 } catch (error) {

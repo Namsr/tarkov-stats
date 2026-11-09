@@ -725,6 +725,8 @@ const suitesThatCloseTheHandleOrTheProcessFirst = [
   // All SQLite handles belong to synchronously waited subprocesses; file I/O is awaited.
   "tests/background-isolation.test.mjs",
   "tests/caddy-overload.test.mjs",
+  // Scope fixtures contain text only; writes are awaited and Bash exits synchronously before cleanup.
+  "tests/rust-arena-browser-lifecycle.test.mjs",
   // Benchmark fixtures contain JSON only; no SQLite handles are opened.
   "tests/rust-http-benchmark.test.mjs",
   // These API benchmark summaries use bounded JSON fixtures and wait for children.

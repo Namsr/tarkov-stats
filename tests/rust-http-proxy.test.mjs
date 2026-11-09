@@ -9,8 +9,8 @@ import { setTimeout as delay } from "node:timers/promises";
 import test from "node:test";
 
 const caddy = process.env.CADDY_BIN;
-const request = (port, path, host = "tarkovstats.ru") => new Promise((resolve, reject) => {
-  const req = http.get({ host: "127.0.0.1", port, path, headers: { Host: host }, timeout: 10000 }, (res) => {
+const request = (port, path, host = "tarkovstats.ru", extraHeaders = {}) => new Promise((resolve, reject) => {
+  const req = http.get({ host: "127.0.0.1", port, path, headers: { Host: host, ...extraHeaders }, timeout: 10000 }, (res) => {
     let body = ""; res.setEncoding("utf8"); res.on("data", (chunk) => { body += chunk; });
     res.on("end", () => resolve({ status: res.statusCode, headers: res.headers, body }));
   });
@@ -91,18 +91,25 @@ test("production proxy selects the Rust endpoint, bounds each upstream and never
   assert.equal((await request(port, "/api/home/showcase")).status, 502);
   assert.equal(nextCount, before); reset = false;
 
+  for (const path of ["/population/arena", "/api/seasonal/cohort", "/api/home/showcase", "/api/average?mode=arena"]) {
+    const result = await request(port, path, "tarkovstats.online", { RSC: "1", "Next-Router-Prefetch": "1" });
+    assert.equal(result.status, 200);
+    assert.equal(JSON.parse(result.body).backend, "rust", "prefetch admission must not reroute native paths to Next");
+  }
+
   // The two real upstream addresses have separate 32-request bounds. Confirm
   // the mixed limit instead of retaining the former one-address global claim.
   hold = true;
   const heldPaths = ["/api/seasonal/cohort", "/api/home/showcase", "/api/average?mode=arena", "/population/arena", "/_rust/arena/hash/tarkov_ui.js"];
   const heldRequests = Array.from({ length: 32 }, (_, i) => request(port, heldPaths[i % heldPaths.length], i % 2 ? "tarkovstats.online" : "tarkovstats.ru"));
-  const nextRequests = Array.from({ length: 32 }, (_, i) => request(port, "/api/seasonal/profile", i % 2 ? "tarkovstats.online" : "tarkovstats.ru"));
+  const nextRequests = Array.from({ length: 32 }, (_, i) => request(port, i % 2 ? "/api/average?mode=pve" : "/api/seasonal/profile", i % 2 ? "tarkovstats.online" : "tarkovstats.ru"));
   while (heldRust.length !== 32 || heldNext.length !== 32) {
     assert.ok(Date.now() < deadline + 10000, `mixed admission did not fill both pools: ${heldRust.length}/${heldNext.length} ${logs}`);
     await delay(10);
   }
   assert.equal((await request(port, "/api/seasonal/cohort")).status, 503);
   assert.equal((await request(port, "/api/seasonal/profile")).status, 503);
+  assert.equal((await request(port, "/api/average?mode=pve")).status, 503);
   hold = false;
   for (const res of [...heldNext, ...heldRust]) { res.writeHead(200); res.end("released"); }
   for (const result of await Promise.all([...heldRequests, ...nextRequests])) assert.equal(result.status, 200);

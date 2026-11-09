@@ -12,6 +12,9 @@ services:
       - .env.private
     environment:
       WEB_BACKGROUND_WORKERS: "false"
+      # The dedicated home-counter-sampler service owns the counter here; the
+      # image default only covers deployments that lack it.
+      HOME_COUNTER_SAMPLER: "false"
       # TLS 1.3 handshakes to Cloudflare-hosted NeatQueue stall from this VPS.
       NODE_OPTIONS: "--tls-max-v1.2"
       SEASONAL_API_UPSTREAM: ${SEASONAL_API_UPSTREAM:-web:3000}
@@ -56,6 +59,47 @@ services:
       options:
         tag: tarkovstats-web
         labels: org.opencontainers.image.revision
+        mode: non-blocking
+        max-buffer-size: "1m"
+
+  # Profile admission: a per-client token bucket and a Turnstile challenge keep
+  # profile bursts from consuming the shared web request budget. The script is
+  # bind-mounted, so a policy change does not need a new image.
+  profile-challenge:
+    image: tarkovstats-web:latest
+    pull_policy: never
+    command: ["node", "/opt/profile-challenge.mjs"]
+    env_file:
+      # Holds TURNSTILE_SITE_KEY, TURNSTILE_SECRET_KEY and the signing key.
+      # Missing secrets must fail before Caddy starts, not at request time.
+      - /opt/tarkovstats-profile-challenge/runtime.env
+    restart: unless-stopped
+    expose:
+      - "3119"
+    healthcheck:
+      # /__health answers on loopback, where the site Host header is absent.
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3119/__health').then((r) => process.exit(r.ok ? 0 : 1), () => process.exit(1))"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 10s
+    # --- hardening ---
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    read_only: true
+    tmpfs:
+      - /tmp:size=8m
+    mem_limit: 96m
+    memswap_limit: 128m
+    pids_limit: 64
+    volumes:
+      - ./ops/profile-challenge.mjs:/opt/profile-challenge.mjs:ro
+    logging:
+      driver: journald
+      options:
+        tag: tarkovstats-profile-challenge
         mode: non-blocking
         max-buffer-size: "1m"
 
@@ -176,7 +220,12 @@ services:
       - caddy_data:/data
       - caddy_config:/config
     depends_on:
-      - web
+      web:
+        condition: service_started
+      # Caddy routes profile reads through this service; starting it before the
+      # proxy avoids 502s on the first requests after a cold start.
+      profile-challenge:
+        condition: service_healthy
     logging:
       driver: journald
       options:

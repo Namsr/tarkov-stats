@@ -5,6 +5,22 @@ APP=/opt/tarkovstats-auto
 cd "$APP"
 compose() { docker compose -p tarkovstats -f "$APP/docker-compose.vps.yml" "$@"; }
 container() { compose ps -q web; }
+admission_container() { compose ps -q profile-challenge; }
+admission_healthy() {
+  admission_cid=$(admission_container)
+  [ -n "$admission_cid" ] || return 1
+  admission_status=$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{end}}' "$admission_cid" 2>/dev/null) || return 1
+  [ "$admission_status" = healthy ]
+}
+wait_admission() {
+  admission_attempt=0
+  while [ "$admission_attempt" -lt 15 ]; do
+    if admission_healthy; then return 0; fi
+    admission_attempt=$((admission_attempt + 1))
+    sleep 2
+  done
+  return 1
+}
 healthy() {
   health_cid=$(container)
   [ -n "$health_cid" ] || return 1
@@ -31,6 +47,12 @@ git diff --cached --quiet || { logger -t tarkovstats-deploy "deploy deferred: in
 if ! git fetch --prune origin; then logger -t tarkovstats-deploy "git fetch failed, deferred"; exit 0; fi
 previous=$(git rev-parse HEAD)
 remote=$(git rev-parse origin/main)
+# Older checkouts have no admission service. When the compose file defines it,
+# it must be running before the Caddyfile that routes profile reads is loaded.
+admission_service=
+if compose config --services 2>/dev/null | grep -qx profile-challenge; then
+  admission_service=profile-challenge
+fi
 cid=$(container)
 deployed=
 previous_image=
@@ -47,13 +69,9 @@ desired_native=false
 desired_showcase=false
 desired_ui=false
 desired_population=false
-for selector in SEASONAL_API_UPSTREAM HOME_SHOWCASE_API_UPSTREAM ARENA_UI_UPSTREAM PERSISTENT_POPULATION_API_UPSTREAM AXIS_STATISTICS_API_UPSTREAM; do
+for selector in SEASONAL_API_UPSTREAM HOME_SHOWCASE_API_UPSTREAM ARENA_UI_UPSTREAM PERSISTENT_POPULATION_API_UPSTREAM; do
   desired_api=$(printf '%s\n' "$interpolation" | sed -n "s/^$selector=//p")
-  if [ "$selector" = AXIS_STATISTICS_API_UPSTREAM ]; then
-    desired_api=${desired_api:-web:3001}
-  else
-    desired_api=${desired_api:-web:3000}
-  fi
+  desired_api=${desired_api:-web:3000}
   case "$desired_api" in
     web:3000|web:3001) ;;
     *) logger -t tarkovstats-deploy "deploy deferred: invalid $selector selector"; exit 75 ;;
@@ -224,17 +242,36 @@ image_revision=$(docker image inspect --format '{{index .Config.Labels "org.open
 [ "$image_revision" = "$remote" ]
 image_supports_routing "$candidate"
 docker image tag "$candidate" tarkovstats-web:latest
+# Download staging needs umask 077, but a checkout written under it gets 0600.
+# The admission script is bind-mounted and must stay readable for the container
+# user, so restore a normal umask before git writes the checkout. The rollback
+# reset later in this script writes under the same umask.
+umask 022
 git merge --ff-only origin/main
+# The merge only rewrites changed paths. Heal a file that still carries a
+# private mode from an earlier deploy, so a restart does not loop on EACCES.
+if [ -f "$APP/ops/profile-challenge.mjs" ]; then
+  chmod 0644 "$APP/ops/profile-challenge.mjs"
+fi
 starting=1
 compose up -d --no-build web
+if [ -n "$admission_service" ]; then
+  # The admission container runs the bind-mounted script, so a new web image
+  # does not require recreating it. Create it only when it is missing.
+  compose up -d --no-recreate "$admission_service"
+fi
 attempt=0
 while [ "$attempt" -lt 30 ]; do
   cid=$(container)
   actual=$(docker inspect --format '{{index .Config.Labels "org.opencontainers.image.revision"}}' "$cid" 2>/dev/null || true)
   if [ "$actual" = "$remote" ] && healthy; then
     # Bind-mounted Caddyfile changes are not applied by recreating web alone.
-    # Reload only after the new Rust listener is healthy.
+    # Reload only after the new Rust listener and the admission service are healthy.
     if ! git diff --quiet "$previous" "$remote" -- ops/Caddyfile; then
+      if [ -n "$admission_service" ] && ! wait_admission; then
+        logger -t tarkovstats-deploy "deploy deferred: profile admission service is not healthy"
+        exit 1
+      fi
       compose exec -T caddy caddy reload --config /etc/caddy/Caddyfile
     fi
     success=1

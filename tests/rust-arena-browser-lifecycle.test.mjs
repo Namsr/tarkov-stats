@@ -1,11 +1,13 @@
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
-import { readFile } from "node:fs/promises";
-import { basename } from "node:path";
+import { spawn, spawnSync } from "node:child_process";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { basename, dirname, join, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { runInNewContext } from "node:vm";
 import test from "node:test";
 import ts from "typescript";
+import { selectCiScope } from "../scripts/ci-scope.mjs";
 
 const source = await readFile(new URL("../scripts/benchmark-rust-arena-browser.mjs", import.meta.url), "utf8");
 const tree = ts.createSourceFile("benchmark.mjs", source, ts.ScriptTarget.Latest, true, ts.ScriptKind.JS);
@@ -148,4 +150,91 @@ test("CDP evaluation keeps exception description and stack with a text-only fall
   await assert.rejects(tab.evaluate("expression"), /Execution failed/);
   exceptionDetails = null;
   assert.equal(await tab.evaluate("expression"), 42);
+});
+
+
+test("browser fixture Caddy configuration adapts with the shared admission limit", {
+  skip: !process.env.CADDY_BIN && "Set CADDY_BIN to validate the real fixture configuration",
+}, async () => {
+  const fixtureSource = await readFile(new URL("../scripts/serve-rust-arena-benchmark.mjs", import.meta.url), "utf8");
+  const fixtureTree = ts.createSourceFile("fixture.mjs", fixtureSource, ts.ScriptTarget.Latest, true, ts.ScriptKind.JS);
+  let expression;
+  function visit(node) {
+    if (ts.isVariableDeclaration(node) && node.name.getText(fixtureTree) === "source" &&
+        node.initializer?.getText(fixtureTree).startsWith("canonicalSource.replace(")) {
+      expression = node.initializer.getText(fixtureTree);
+    }
+    ts.forEachChild(node, visit);
+  }
+  visit(fixtureTree);
+  assert.ok(expression, "execute the fixture's actual Caddy configuration builder");
+  const config = runInNewContext(expression, {
+    canonicalSource: await readFile(new URL("../ops/Caddyfile", import.meta.url), "utf8"),
+    syntheticPaths: ["/api/auth/me"], gatewayPort: 19091,
+  });
+  const result = spawnSync(process.env.CADDY_BIN, ["adapt", "--config", "-", "--adapter", "caddyfile"], {
+    input: config, encoding: "utf8", windowsHide: true, timeout: 10000,
+  });
+  assert.equal(result.status, 0, result.stderr || result.error?.message);
+  let syntheticProxy;
+  function findProxy(value) {
+    if (!value || typeof value !== "object") return;
+    if (value.handler === "reverse_proxy" && value.upstreams?.some(upstream => upstream.dial === "127.0.0.1:19091")) syntheticProxy = value;
+    for (const child of Object.values(value)) findProxy(child);
+  }
+  findProxy(JSON.parse(result.stdout));
+  assert.ok(syntheticProxy, "the fixture gateway stays in the adapted config");
+  assert.equal(syntheticProxy.health_checks?.passive?.unhealthy_request_count, 32);
+});
+
+
+test("CI workflow executes the current selector for scoped, mixed and unknown changes", async (t) => {
+  const workflow = (await readFile(new URL("../.github/workflows/vps-image.yml", import.meta.url), "utf8")).replaceAll("\r\n", "\n");
+  const step = workflow.indexOf("      - name: Select checks for the changed files\n");
+  const marker = "        run: |\n";
+  const from = workflow.indexOf(marker, step);
+  const to = workflow.indexOf("\n      - uses: actions/setup-node@", from);
+  assert.ok(step >= 0 && from > step && to > from, "execute the actual workflow scope step");
+  const script = workflow.slice(from + marker.length, to).split("\n").map(line => {
+    assert.ok(!line || line.startsWith("          "));
+    return line.slice(10);
+  }).join("\n");
+  const shell = process.platform === "win32"
+    ? resolve(spawnSync("git", ["--exec-path"], { encoding: "utf8", windowsHide: true }).stdout.trim(), "../../../bin/bash.exe")
+    : "/bin/bash";
+  const dir = await mkdtemp(join(tmpdir(), "ci-scope-"));
+  // The workflow now invokes a separate module from the checkout. The fixture
+  // must carry that real module alongside its mocked Git diff.
+  await mkdir(join(dir, "scripts"));
+  await writeFile(join(dir, "scripts/ci-scope.mjs"), await readFile(new URL("../scripts/ci-scope.mjs", import.meta.url)));
+  t.after(async () => {
+    assert.equal(dirname(resolve(dir)), resolve(tmpdir()));
+    assert.ok(basename(dir).startsWith("ci-scope-"));
+    await rm(dir, { recursive: true, force: true });
+  });
+  const cases = [
+    [".github/workflows/vps-image.yml", "components/SiteHeader.tsx"],
+    ["scripts/serve-rust-arena-benchmark.mjs", ".github/workflows/vps-image.yml"],
+    [".github/workflows/vps-image.yml"],
+    ["components/SiteHeader.tsx"],
+    ["scripts/serve-rust-arena-benchmark.mjs"],
+    ["tests/rust-arena-browser-lifecycle.test.mjs"],
+    ["components/SiteHeader.tsx", "rust/backend/src/main.rs"],
+    ["lib/axis-seasons.ts", "lib/admin/axis-league-db.ts", "tests/axis-league.test.mjs"],
+    ["lib/axis-seasons.ts", "rust/backend/src/axis_stats.rs"],
+  ];
+  for (const event of ["pull_request", "push"]) for (const paths of cases) {
+    await writeFile(join(dir, "paths"), paths.join("\0") + "\0");
+    await writeFile(join(dir, "output"), "");
+    const result = spawnSync(shell, ["-e", "-c", `git() {
+      case "$1" in fetch) return 0;; diff) cat paths;; *) return 1;; esac
+    }
+${script}`], {
+      cwd: dir, encoding: "utf8", windowsHide: true, timeout: 10000,
+      env: { ...process.env, GITHUB_EVENT_NAME: event, DIFF_BASE: "a".repeat(40), RUNNER_TEMP: ".", GITHUB_OUTPUT: "output" },
+    });
+    assert.equal(result.status, 0, result.stderr || result.error?.message);
+    const output = Object.fromEntries((await readFile(join(dir, "output"), "utf8")).trim().split("\n").map(line => line.split("=")));
+    assert.deepEqual(output, Object.fromEntries(Object.entries(selectCiScope(paths, event)).map(([key, value]) => [key, String(value)])), `${event}: ${paths.join(", ")}`);
+  }
 });

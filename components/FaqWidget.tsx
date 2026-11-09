@@ -98,7 +98,7 @@ export default function FaqWidget() {
       a: (
         <>
           {t("faq.a5.short")}{" "}
-          <Link className={LINK} href="/about" onClick={closeFaqAndNavigate}>
+          <Link prefetch={false} className={LINK} href="/about" onClick={closeFaqAndNavigate}>
             {t("nav.about")}
           </Link>
           .
@@ -112,7 +112,7 @@ export default function FaqWidget() {
       a: (
         <>
           {t("faq.a8.short")}{" "}
-          <Link className={LINK} href="/support" onClick={closeFaqAndNavigate}>
+          <Link prefetch={false} className={LINK} href="/support" onClick={closeFaqAndNavigate}>
             {t("nav.support")}
           </Link>
           .
@@ -124,7 +124,7 @@ export default function FaqWidget() {
       a: (
         <>
           {t("faq.a9.short")}{" "}
-          <Link className={LINK} href="/community" onClick={closeFaqAndNavigate}>
+          <Link prefetch={false} className={LINK} href="/community" onClick={closeFaqAndNavigate}>
             {t("nav.community")}
           </Link>
           .

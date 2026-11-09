@@ -17,7 +17,7 @@
 (web_upstream) {
 	# Shared across both sites because they use the same upstream address.
 	# Reject excess requests with 503 instead of retaining an unbounded queue.
-	unhealthy_request_count 32
+	unhealthy_request_count {args[0]}
 	# One upstream: do not quarantine both sites after one failed request.
 	fail_duration 0
 	transport http {
@@ -31,6 +31,38 @@
 	header_up X-Request-ID {http.request.uuid}
 }
 
+(profile_challenge) {
+	# Adaptive admission for profile reads. A per-client token bucket answers
+	# 429 before Next, and a Turnstile challenge replaces the old blanket 503
+	# once the global page rate crosses its limit.
+	@profileCheckEndpoint path /__profile-check
+	@profileAdmission {
+		method GET HEAD
+		path /player /player/* /api/player/profile
+		not {
+			expression {profile_fetch_state} == "missing"
+		}
+	}
+	request_body @profileCheckEndpoint {
+		max_size 8KB
+	}
+	reverse_proxy @profileCheckEndpoint {$PROFILE_CHALLENGE_UPSTREAM:profile-challenge:3119} {
+		header_up X-Profile-Client-IP {client_ip}
+		transport http {
+			dial_timeout 500ms
+			response_header_timeout 5s
+		}
+	}
+	forward_auth @profileAdmission {$PROFILE_CHALLENGE_UPSTREAM:profile-challenge:3119} {
+		uri /internal/profile-admission
+		header_up X-Profile-Client-IP {client_ip}
+		transport http {
+			dial_timeout 250ms
+			response_header_timeout 750ms
+		}
+	}
+}
+
 (response_headers) {
 	header {
 		Strict-Transport-Security "max-age=31536000; includeSubDomains"
@@ -40,6 +72,34 @@
 }
 
 (hardening) {
+	# Incident 2026-11-05/06: scraper ranges that ignore robots.txt and keep
+	# opening profiles from rotating addresses inside the same allocation.
+	@observedScrapers client_ip 57.141.20.0/24 43.172.194.0/24 43.172.195.0/24 43.172.196.0/24 43.172.197.0/24 43.172.198.0/24 43.173.173.0/24 43.173.174.0/24 43.173.175.0/24 43.173.176.0/24 43.173.177.0/24 43.173.178.0/24 43.173.179.0/24 43.173.180.0/24 43.173.181.0/24 43.173.182.0/24
+	# Desktop Chrome, Chromium, Edge, Opera and Firefox always send all three
+	# Fetch Metadata headers. A copy of their User-Agent without those headers
+	# is a scraper. Mobile WebViews stay exempt: older versions omit them.
+	map {header.User-Agent} {profile_client_family} {
+		~(?i)(bot|crawler|spider|slurp|facebookexternalhit) bot
+		~(?i)(headless|playwright|puppeteer|selenium) headless
+		~(?i)(android|iphone|ipad|mobile) mobile
+		~(?i)(edg(?:e|a|ios)?/|opr/|opera|chromium/|chrome/|firefox/) browser
+		default other
+	}
+	map "{profile_client_family}|{header.Sec-Fetch-Site}|{header.Sec-Fetch-Mode}|{header.Sec-Fetch-User}" {profile_fetch_state} {
+		~^(browser|headless)[|][|][|]$ missing
+		default present
+	}
+	# This route runs before the generic redirects and proxies below, so denied
+	# requests never reach Next.
+	route {
+		respond @observedScrapers 403
+		@profileScraper {
+			method GET HEAD
+			path /player /player/* /api/player/profile
+			expression {profile_fetch_state} == "missing"
+		}
+		respond @profileScraper 403
+	}
 	# Profile access logs include proxy failures and early rejections. Keep only
 	# allowlisted identity fields; never log cookies, arbitrary queries or URLs.
 	log {
@@ -53,8 +113,28 @@
 			}
 		}
 	}
-	@notProfile not path /api/player/profile
-	log_skip @notProfile
+	# Opt-in observation on .online only. Keep existing profile API logs on both sites.
+	@skipAccess `!path('/api/player/profile') && !('{$PROFILE_BOT_SHADOW:false}' == 'true' && host('tarkovstats.online', 'www.tarkovstats.online') && method('GET') && path('/player', '/player/*') && !header({'RSC':'1', 'Next-Router-Prefetch':'1'}))`
+	log_skip @skipAccess
+	@profileBotShadow `'{$PROFILE_BOT_SHADOW:false}' == 'true' && host('tarkovstats.online', 'www.tarkovstats.online') && method('GET') && path('/player', '/player/*', '/api/player/profile') && !header({'RSC':'1', 'Next-Router-Prefetch':'1'})`
+	map {header.User-Agent} {profile_shadow_agent} {
+		~(?i)(bot|crawler|spider|slurp|facebookexternalhit) other
+		~(?i)(headless|playwright|puppeteer|selenium) headless
+		~(?i)(android|iphone|ipad) other
+		~Chrome/(10[3-9]|1[12][0-9]|13[0-3])[.] sampled_chrome
+		default other
+	}
+	map "{profile_shadow_agent}|{header.Sec-Fetch-Site}|{header.Sec-Fetch-Mode}|{header.Sec-Fetch-User}" {profile_shadow_result} {
+		~^headless[|] headless
+		"sampled_chrome|||" missing_fetch_metadata
+		default no_match
+	}
+	map {path} {profile_shadow_route} {
+		~(?i)^/api/player/profile$ profile_api
+		default player_page
+	}
+	log_append @profileBotShadow profile_bot_shadow_v1 {profile_shadow_result}
+	log_append @profileBotShadow profile_bot_shadow_route {profile_shadow_route}
 	# Query placeholders JOIN repeated values. Capture the first raw value for
 	# rejection, so aid=123&aid= stays valid and aid=&aid=123 is rejected.
 	map {http.request.uri.query} {profile_first_aid} {
@@ -137,11 +217,11 @@
 		expression `{average_first_mode}.matches('^(a|%61)(r|%72)(e|%65)(n|%6[eE])(a|%61)$')`
 	}
 	reverse_proxy @arenaAverage {$ARENA_UI_UPSTREAM:web:3000} {
-		import web_upstream
+		import web_upstream 32
 	}
 	@arenaDocument path /population/arena /population/arena/ /average/arena /average/arena/ /_rust/arena/*
 	reverse_proxy @arenaDocument {$ARENA_UI_UPSTREAM:web:3000} {
-		import web_upstream
+		import web_upstream 32
 	}
 	# The population API selector is independent of all page/UI selectors.
 	@persistentPopulation {
@@ -149,25 +229,45 @@
 		expression `{average_mode_state} == 'missing' || {average_first_mode}.matches('^(p|%70)(v|%76)(e|%65)$') || {average_first_mode}.matches('^(r|%72)(e|%65)(g|%67)(u|%75)(l|%6[cC])(a|%61)(r|%72)$')`
 	}
 	reverse_proxy @persistentPopulation {$PERSISTENT_POPULATION_API_UPSTREAM:web:3000} {
-		import web_upstream
+		import web_upstream 32
 	}
 	# AXIS aggregate metrics are calculated and served by the Rust HTTP backend.
 	@axisStatistics path /api/axis-league/statistics /api/axis-league/statistics/
 	reverse_proxy @axisStatistics {$AXIS_STATISTICS_API_UPSTREAM:web:3001} {
-		import web_upstream
+		import web_upstream 32
 	}
 	# Select the complete Seasonal endpoint explicitly. The default still uses Next.
 	@seasonalCohort path /api/seasonal/cohort /api/seasonal/cohort/
 	reverse_proxy @seasonalCohort {$SEASONAL_API_UPSTREAM:web:3000} {
-		import web_upstream
+		import web_upstream 32
 	}
 	# The public home configuration can move independently of Seasonal.
 	@homeShowcase path /api/home/showcase /api/home/showcase/
 	reverse_proxy @homeShowcase {$HOME_SHOWCASE_API_UPSTREAM:web:3000} {
-		import web_upstream
+		import web_upstream 32
+	}
+	# Speculative Next.js prefetch shares the real upstream counter, but stops
+	# at 8 in-flight requests so it cannot fill all 32 navigation/API slots.
+	@nextPrefetch {
+		method GET
+		header RSC 1
+		header Next-Router-Prefetch 1
+	}
+	reverse_proxy @nextPrefetch web:3000 {
+		import web_upstream 8
+	}
+	# Profile documents and RSC navigation share the same upstream counter.
+	# Stop admitting them at 16 so a profile burst leaves half of the 32 slots
+	# available for the home page, health checks and API requests.
+	@playerPages {
+		method GET HEAD
+		path /player /player/*
+	}
+	reverse_proxy @playerPages web:3000 {
+		import web_upstream 16
 	}
 	reverse_proxy web:3000 {
-		import web_upstream
+		import web_upstream 32
 	}
 	# Only a refused TCP dial proves the application has not accepted the request.
 	# Ordinary overload (503), read resets and timeouts never enter this retry pool.
@@ -179,7 +279,7 @@
 			handle @retrySeasonal {
 				# A refused Rust dial retries Rust; it never falls back to Next.
 				reverse_proxy {$SEASONAL_API_UPSTREAM:web:3000} {
-					import web_upstream
+					import web_upstream 32
 					lb_try_duration 4s
 					lb_try_interval 100ms
 					lb_retry_match {
@@ -190,7 +290,7 @@
 			@retryHomeShowcase path /api/home/showcase /api/home/showcase/
 			handle @retryHomeShowcase {
 				reverse_proxy {$HOME_SHOWCASE_API_UPSTREAM:web:3000} {
-					import web_upstream
+					import web_upstream 32
 					lb_try_duration 4s
 					lb_try_interval 100ms
 					lb_retry_match {
@@ -204,7 +304,7 @@
 			}
 			handle @retryArenaAverage {
 				reverse_proxy {$ARENA_UI_UPSTREAM:web:3000} {
-					import web_upstream
+					import web_upstream 32
 					lb_try_duration 4s
 					lb_try_interval 100ms
 					lb_retry_match {
@@ -218,7 +318,7 @@
 			}
 			handle @retryPersistentPopulation {
 				reverse_proxy {$PERSISTENT_POPULATION_API_UPSTREAM:web:3000} {
-					import web_upstream
+					import web_upstream 32
 					lb_try_duration 4s
 					lb_try_interval 100ms
 					lb_retry_match {
@@ -229,7 +329,27 @@
 			@retryArenaDocument path /population/arena /population/arena/ /average/arena /average/arena/ /_rust/arena/*
 			handle @retryArenaDocument {
 				reverse_proxy {$ARENA_UI_UPSTREAM:web:3000} {
-					import web_upstream
+					import web_upstream 32
+					lb_try_duration 4s
+					lb_try_interval 100ms
+					lb_retry_match {
+						expression false
+					}
+				}
+			}
+			handle @nextPrefetch {
+				reverse_proxy web:3000 {
+					import web_upstream 8
+					lb_try_duration 4s
+					lb_try_interval 100ms
+					lb_retry_match {
+						expression false
+					}
+				}
+			}
+			handle @playerPages {
+				reverse_proxy web:3000 {
+					import web_upstream 16
 					lb_try_duration 4s
 					lb_try_interval 100ms
 					lb_retry_match {
@@ -239,7 +359,7 @@
 			}
 			handle {
 				reverse_proxy web:3000 {
-					import web_upstream
+					import web_upstream 32
 					lb_try_duration 4s
 					lb_try_interval 100ms
 					# Never replay a request after a successful connection, including GET.
@@ -258,9 +378,11 @@
 tarkovstats.ru, www.tarkovstats.ru {
 	encode gzip
 	import hardening
+	import profile_challenge
 }
 
 tarkovstats.online, www.tarkovstats.online {
 	encode gzip
 	import hardening
+	import profile_challenge
 }

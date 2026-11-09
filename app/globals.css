@@ -184,9 +184,11 @@ select:focus-visible {
 }
 
 .site-mark {
-  display: grid;
+  display: flex;
+  align-items: center;
+  flex-shrink: 0;
   line-height: .83;
-  gap: 4px;
+  gap: 10px;
   color: var(--foreground);
   font-family: var(--heading-font);
   font-size: 1rem;
@@ -196,7 +198,16 @@ select:focus-visible {
   transition: color 160ms ease;
 }
 
-.site-mark span:last-child { color: var(--foreground); }
+.site-mark__icon {
+  width: 32px;
+  height: 40px;
+  flex-shrink: 0;
+  background: currentColor;
+  mask: url("/tarkovstats-logo.svg") center / contain no-repeat;
+}
+
+.site-mark__text { display: grid; gap: 4px; }
+.site-mark__text span:last-child { color: var(--foreground); }
 .site-mark:hover { color: var(--muted); }
 
 .site-header__controls {

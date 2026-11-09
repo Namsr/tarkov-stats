@@ -131,6 +131,9 @@ ENV PROGRESSION_SQLITE_PATH="/data/progression.db"
 ENV ADMIN_ANALYTICS_SQLITE_PATH="/data/admin-analytics.db"
 ENV AVERAGE_PUBLICATION_SQLITE_PATH="/data/average-publications.db"
 ENV LEADERBOARD_SQLITE_PATH="/data/leaderboards.db"
+# The web container keeps the public homepage counters moving even when the
+# deployment compose has no dedicated home-counter-sampler service.
+ENV HOME_COUNTER_SAMPLER=true
 # Process exclusion must not outlive the container; checkpoints remain in /data.
 ENV LEADERBOARD_WARMUP_LOCK="/dev/shm/leaderboard-warmup.lock"
 

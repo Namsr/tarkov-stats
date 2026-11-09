@@ -31,9 +31,12 @@ export default function SiteHeader() {
   return (
     <header className="site-header">
       <div className="site-header__inner">
-        <Link href="/" className="site-mark" onClick={() => setOpen(false)}>
-          <span>TARKOV</span>
-          <span>STATS</span>
+        <Link prefetch={false} href="/" className="site-mark" onClick={() => setOpen(false)}>
+          <span className="site-mark__icon" aria-hidden="true" />
+          <span className="site-mark__text">
+            <span>TARKOV</span>
+            <span>STATS</span>
+          </span>
         </Link>
 
         <button
@@ -58,7 +61,7 @@ export default function SiteHeader() {
             ].map((item) => {
               const active = pathname === item.href || (item.prefix && pathname.startsWith(`${item.href}/`));
               return (
-                <Link
+                <Link prefetch={false}
                   key={item.href}
                   href={item.href}
                   aria-current={active ? "page" : undefined}

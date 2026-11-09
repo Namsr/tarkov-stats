@@ -4,6 +4,109 @@ import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import test from "node:test";
+import { selectCiScope } from "../scripts/ci-scope.mjs";
+
+test("CI selects the union of affected groups and keeps unknown changes on the full gate", () => {
+  const counter = selectCiScope(["lib/home-counter-sampler.ts", "tests/public-index-coverage.test.ts"], "pull_request");
+  assert.equal(counter.home_counter, true);
+  assert.equal(counter.full, false);
+  assert.equal(counter.benchmarks, false);
+  const mixed = selectCiScope(["lib/home-counter.ts", "scripts/start-web.mjs", "components/SiteHeader.tsx", "ops/Caddyfile"], "pull_request");
+  for (const key of ["home_counter", "ops", "proxy", "navigation", "arena_browser", "runtime_contract", "image"]) assert.equal(mixed[key], true, key);
+  assert.equal(mixed.full, false);
+  for (const path of ["package.json", "package-lock.json", "lib/db.ts", "rust/backend/src/main.rs", "tests/new.test.mjs", "new\nfile.ts"]) {
+    const scope = selectCiScope(["lib/home-counter.ts", path], "pull_request");
+    for (const key of ["full", "benchmarks", "runtime_contract", "arena_browser", "image"]) assert.equal(scope[key], true, path + ":" + key);
+  }
+});
+
+test("CI scopes AXIS seasons with shared store callers and composes mixed changes", () => {
+  const axisPaths = ["lib/axis-seasons.ts", "lib/admin/axis-league-db.ts", "tests/axis-league.test.mjs"];
+  for (const event of ["pull_request", "push"]) {
+    for (const paths of axisPaths.map(path => [path]).concat([axisPaths])) {
+      const scope = selectCiScope(paths, event);
+      assert.equal(scope.axis_seasons, true);
+      assert.equal(scope.image, true);
+      for (const key of ["full", "benchmarks", "runtime_contract", "arena_browser"]) assert.equal(scope[key], false, key);
+    }
+    const mixed = selectCiScope([...axisPaths, "scripts/ci-scope.mjs", ".github/workflows/vps-image.yml", "tests/background-isolation.test.mjs"], event);
+    assert.equal(mixed.full, false);
+    assert.equal(mixed.axis_seasons, true);
+    assert.equal(mixed.ops, true);
+    assert.equal(mixed.runtime_contract, true);
+    assert.equal(mixed.benchmarks, false);
+    assert.equal(mixed.arena_browser, false);
+    for (const path of ["package.json", "lib/axis-history.ts", "lib/axis-win-probability.ts", "rust/backend/src/axis_stats.rs"]) {
+      const scope = selectCiScope([...axisPaths, path], event);
+      assert.equal(scope.full, true, path);
+      assert.equal(scope.benchmarks, true, path);
+    }
+  }
+});
+
+test("CI retains full manual and missing-diff runs, and builds every deployed main revision", () => {
+  for (const paths of [null, []]) assert.equal(selectCiScope(paths, "pull_request").full, true);
+  assert.equal(selectCiScope(["lib/home-counter.ts"], "workflow_dispatch").full, true);
+  const docs = selectCiScope(["docs/architecture.md", "README.md"], "pull_request");
+  assert.equal(docs.full, false);
+  assert.equal(docs.image, false);
+  assert.equal(selectCiScope(["README.md"], "push").image, true);
+  const ci = selectCiScope([".github/workflows/vps-image.yml", "scripts/ci-scope.mjs", "tests/background-isolation.test.mjs"], "pull_request");
+  assert.equal(ci.ops, true);
+  assert.equal(ci.runtime_contract, true);
+  assert.equal(ci.full, false);
+  const fixtureTests = selectCiScope(["tests/rust-arena-browser-lifecycle.test.mjs"], "pull_request");
+  assert.equal(fixtureTests.proxy, true);
+  assert.equal(fixtureTests.arena_browser, false);
+  for (const path of ["ops/Caddyfile", "scripts/serve-rust-arena-benchmark.mjs"]) {
+    assert.equal(selectCiScope([path], "pull_request").arena_browser, true);
+  }
+});
+
+test("CI selector consumes NUL-delimited paths and writes only boolean step outputs", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "ci-scope-"));
+  try {
+    const paths = join(dir, "paths");
+    const output = join(dir, "output");
+    await writeFile(paths, "lib/home-counter-sampler.ts\0scripts/start-web.mjs\0");
+    execFileSync(process.execPath, ["scripts/ci-scope.mjs", paths], {
+      env: { ...process.env, GITHUB_EVENT_NAME: "pull_request", GITHUB_OUTPUT: output },
+      timeout: 10_000,
+    });
+    const values = Object.fromEntries((await readFile(output, "utf8")).trim().split("\n").map(line => line.split("=")));
+    assert.equal(values.home_counter, "true");
+    assert.equal(values.ops, "true");
+    assert.equal(values.full, "false");
+    assert.equal(values.benchmarks, "false");
+    assert.ok(Object.values(values).every(value => value === "true" || value === "false"));
+  } finally { await rm(dir, { recursive: true, force: true }); }
+});
+
+test("workflow keeps scoped tests, full fallback and cached image validation wired to the selector", async () => {
+  const workflow = (await readFile(".github/workflows/vps-image.yml", "utf8")).replaceAll("\r\n", "\n");
+  assert.doesNotMatch(workflow, /ui_proxy_only/);
+  assert.match(workflow, /node scripts\/ci-scope\.mjs "\$RUNNER_TEMP\/check-paths"/);
+  assert.match(workflow, /else\s+node scripts\/ci-scope\.mjs/);
+  assert.match(workflow, /if: steps\.scope\.outputs\.full == 'true'\s+run: npm test/);
+  assert.match(workflow, /home_counter == 'true'\s+run: node .*tests\/public-index-coverage\.test\.ts tests\/home-showcase-mode\.test\.mjs/);
+  assert.match(workflow, /ops == 'true'\s+run: node .*tests\/background-isolation\.test\.mjs tests\/deploy-wrapper\.test\.mjs/);
+  const axisStep = workflow.match(/- name: Run the affected AXIS season and shared store tests\n([\s\S]*?)(?=\n      - )/);
+  assert.ok(axisStep);
+  assert.match(axisStep[1], /full != 'true' && steps\.scope\.outputs\.axis_seasons == 'true'/);
+  // Every existing test that imports the shared store or season detector belongs
+  // in this group, including auth, access and submission callers outside history.
+  for (const file of ["axis-league", "axis-player-profile", "axis-league-routes", "axis-win-probability", "axis-access", "axis-history-access", "axis-match-submission", "axis-submission-storage", "axis-discord-submission", "axis-ocr-context", "client-axis-league", "auth-session"]) {
+    assert.ok(axisStep[1].includes(`tests/${file}.test.mjs`), file);
+  }
+  assert.match(workflow, /if: needs\.checks\.outputs\.image == 'true'/);
+  for (const name of ["Benchmark isolated TypeScript and Rust API workloads", "Benchmark production Next and Rust HTTP endpoints", "Compare isolated production Regular and PvE population APIs"]) {
+    assert.ok(workflow.includes(`name: ${name}\n        if: needs.checks.outputs.benchmarks == 'true'`));
+  }
+  assert.ok(workflow.includes("name: Save persistent API comparison evidence\n        if: always() && needs.checks.outputs.benchmarks == 'true'"));
+  assert.match(workflow, /cache-from: type=gha,scope=vps-image/);
+  assert.match(workflow, /load: true/);
+  assert.match(workflow, /name: Verify the runtime image\s+run:/);
+});
 
 const shell = process.platform === "win32"
   ? resolve(execFileSync("git", ["--exec-path"], { encoding: "utf8" }).trim(), "../../../bin/bash.exe") : "/bin/sh";
@@ -14,6 +117,9 @@ test("VPS containers leave host headroom and all offline jobs use the shared bud
   const web = compose.slice(compose.indexOf("  web:"), compose.indexOf("  worker:"));
   const worker = compose.slice(compose.indexOf("  worker:"), compose.indexOf("  caddy:"));
   assert.match(web, /WEB_BACKGROUND_WORKERS: "false"/);
+  // The dedicated service owns the sampler in this deployment; the web child is
+  // only the fallback for composes that predate that service.
+  assert.match(web, /HOME_COUNTER_SAMPLER: "false"/);
   assert.match(web, /mem_limit: 896m/);
   assert.match(web, /memswap_limit: 1152m/);
   assert.match(web, /^\s+- \/tmp:size=64m$/m);
@@ -31,6 +137,12 @@ test("VPS containers leave host headroom and all offline jobs use the shared bud
   assert.match(compose, /command: \["node", "--experimental-strip-types", "--experimental-sqlite", "scripts\/sample-home-coverage\.mjs"\]/);
   const dockerfile = await readFile("Dockerfile", "utf8");
   assert.match(dockerfile, /COPY .*scripts\/sample-home-coverage\.mjs/);
+  // The web container also samples the counter, so an outdated compose file
+  // cannot leave the public total frozen until the next index swap.
+  assert.match(dockerfile, /ENV HOME_COUNTER_SAMPLER=true/);
+  const startup = await readFile("scripts/start-web.mjs", "utf8");
+  assert.match(startup, /HOME_COUNTER_SAMPLER === "true"/);
+  assert.match(startup, /"scripts\/sample-home-coverage\.mjs"/);
   const slice = await readFile("ops/systemd/tarkovstats-background.slice", "utf8");
   assert.match(slice, /^MemoryMax=512M$/m);
   assert.match(slice, /^MemorySwapMax=256M$/m);
