@@ -31,6 +31,12 @@ function assertDocument(response, lang) {
   assert.ok(html.includes(messages[lang]["arena.average.applyFilters"]));
   const title = html.match(/<title>([\s\S]*?)<\/title>/); assert.ok(title);
   assert.equal(text(title[1]), messages[lang]["meta.title"]);
+  const dictionary = html.match(/<script[^>]*\bid="rust-ui-messages"[^>]*>([^<]*)<\/script>/);
+  assert.ok(dictionary, "hydration must receive the selected locale in the SSR response");
+  assert.deepEqual(JSON.parse(dictionary[1]), messages[lang]);
+  for (const target of ["en", "ru"]) {
+    assert.match(html, new RegExp('<a[^>]+href="/api/language\\?lang=' + target + '&amp;returnTo=%2Fpopulation%2Farena'));
+  }
   for (const field of ["arenaStatistic", "_dimension", "_metric", "_minMatches", "_maxMatches"]) assert.ok(html.includes(field), field);
   assert.ok(html.includes('type="number"')); assert.ok(html.includes('type="range"')); assert.ok(html.includes('method="get"'));
   const props = initialProps(html); assert.equal(props.lang, lang);
@@ -59,10 +65,14 @@ test("real Rust Arena SSR and built assets preserve useful HTML, locale, queries
     assert.ok(html.includes(`/_rust/arena/${assets.manifest.hash}/tarkov_ui_bg.wasm`));
     assert.ok(html.includes(`/_rust/arena/${assets.manifest.hash}/tarkov_ui.css`));
   });
-  await t.test("language cookie precedence and real Accept-Language behavior reach HTML and island props", async () => {
+  await t.test("language cookie, domain defaults and Accept-Language reach HTML and island props", async () => {
     for (const [headers, lang] of [[{ "accept-language": "ru-RU,en;q=0.9" }, "ru"], [{ cookie: "lang=en", "accept-language": "ru" }, "en"],
       [{ cookie: "lang=%72u", "accept-language": "en" }, "ru"], [{ cookie: "lang=en;lang=%invalid", "accept-language": "ru" }, "en"],
-      [{ cookie: "lang=en;lang=bad", "accept-language": "en-US,ru;q=0" }, "ru"]]) {
+      [{ cookie: "lang=en;lang=bad", "accept-language": "en-US,ru;q=0" }, "ru"],
+      [{ host: "tarkovstats.online", "accept-language": "ru-RU" }, "en"],
+      [{ host: "www.tarkovstats.ru:443", "accept-language": "en-US" }, "ru"],
+      [{ host: "tarkovstats.online", cookie: "lang=ru" }, "ru"],
+      [{ host: "tarkovstats.ru", cookie: "lang=en" }, "en"]]) {
       assertDocument(await raw(server.base, "/population/arena", { headers }), lang);
     }
   });

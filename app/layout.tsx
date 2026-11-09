@@ -11,7 +11,7 @@ import PerformanceBeacon from "@/components/PerformanceBeacon";
 import { LanguageProvider } from "@/lib/i18n/context";
 import { FavoritesProvider } from "@/lib/favorites/context";
 import { NativeRoutesProvider } from "@/lib/native-routes-context";
-import { dict } from "@/lib/i18n/dictionary";
+import { messagesFor } from "@/lib/i18n/dictionary";
 import { resolveLang } from "@/lib/i18n/server";
 import "./globals.css";
 
@@ -23,10 +23,10 @@ const analyticsTokens: Record<string, string> = {
 };
 
 export async function generateMetadata(): Promise<Metadata> {
-  const lang = await resolveLang();
+  const messages = messagesFor(await resolveLang());
   return {
-    title: dict[lang]["meta.title"],
-    description: dict[lang]["meta.description"],
+    title: messages["meta.title"],
+    description: messages["meta.description"],
   };
 }
 
@@ -52,7 +52,7 @@ export default async function RootLayout({
         className="min-h-full flex flex-col bg-[var(--background)] text-[var(--foreground)]"
         suppressHydrationWarning
       >
-        <LanguageProvider initialLang={lang}>
+        <LanguageProvider initialLang={lang} messages={messagesFor(lang)}>
           <NativeRoutesProvider arena={nativeArena}>
             <FavoritesProvider>
               <SkipLink />
