@@ -300,7 +300,6 @@ export default function LeaderboardPage() {
         {t("common.back")}
       </Link>
       <h1 className="page-title mt-7">{t("leaderboard.title")}</h1>
-      <div className="axis-leaderboard-link"><Link prefetch={false} href="/axis-league" className="ghost-button">{t("axis.title")} <span aria-hidden>↗</span></Link></div>
 
       <section className="leaderboard-controls data-panel" aria-label={t("leaderboard.settings") }>
         <div className="leaderboard-mode-switch" role="group" aria-label={t("leaderboard.mode") }>
