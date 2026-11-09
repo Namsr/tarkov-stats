@@ -47,7 +47,8 @@ test('deploy consumes verified CI images and preserves recovery and rollback', a
     'native-candidate-incompatible', 'native-upgrade', 'current-rust', 'current-rust-sick'];
   const routingCases = [...scenarios.map((scenario) => ({ scenario, selector: 'SEASONAL_API_UPSTREAM' })),
     ...showcaseScenarios.map((scenario) => ({ scenario, selector: 'HOME_SHOWCASE_API_UPSTREAM' })),
-    ...showcaseScenarios.map((scenario) => ({ scenario, selector: 'ARENA_UI_UPSTREAM' }))];
+    ...showcaseScenarios.map((scenario) => ({ scenario, selector: 'ARENA_UI_UPSTREAM' })),
+    ...showcaseScenarios.map((scenario) => ({ scenario, selector: 'PERSISTENT_POPULATION_API_UPSTREAM' }))];
   for (const { scenario, selector } of routingCases) {
     const dir = await mkdtemp(join(tmpdir(), 'deploy-behavior-'));
     try {
@@ -68,14 +69,15 @@ test('deploy consumes verified CI images and preserves recovery and rollback', a
           *'config --services') case "$SCENARIO" in admission-healthy|admission-missing) echo profile-challenge;; esac;;
           *'config --environment')
             case "$SCENARIO" in
+              current) echo "$SELECTOR=web:3000";;
               routing-invalid) echo "$SELECTOR=invalid";;
               routing-to-rust|unsupported-rollback|native-*|current-rust*) echo "$SELECTOR=web:3001";;
             esac;;
           'image inspect '*)
             case "$*" in
-              *org.tarkovstats.rust-http*|*org.tarkovstats.rust-home-showcase*|*org.tarkovstats.rust-arena-ui*)
+              *org.tarkovstats.rust-http*|*org.tarkovstats.rust-home-showcase*|*org.tarkovstats.rust-arena-ui*|*org.tarkovstats.rust-population-api*)
                 if [ "$SCENARIO" != unsupported-rollback ]; then
-                  case "$SCENARIO:$*" in native-candidate-incompatible:*tarkovstats-web:remote) ;; *) case "$*" in *org.tarkovstats.rust-home-showcase*|*org.tarkovstats.rust-arena-ui*) echo v1;; *) echo seasonal-v1;; esac;; esac
+                  case "$SCENARIO:$*" in native-candidate-incompatible:*tarkovstats-web:remote) ;; *) case "$*" in *org.tarkovstats.rust-home-showcase*|*org.tarkovstats.rust-arena-ui*|*org.tarkovstats.rust-population-api*) echo v1;; *) echo seasonal-v1;; esac;; esac
                 fi;;
               *) if [ "$SCENARIO" = revision-mismatch ]; then echo wrong; else echo remote; fi;;
             esac;;
