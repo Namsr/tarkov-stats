@@ -9,6 +9,7 @@ import { spawnSync } from "node:child_process";
 import test from "node:test";
 import { pathToFileURL } from "node:url";
 import { DatabaseSync } from "node:sqlite";
+import { encodeStorageJson } from "../lib/storage-json.ts";
 
 import {
   materializePersistentProgression,
@@ -39,6 +40,7 @@ registerHooks({
 
 const {
   createSqliteProgressionStore,
+  readLatestRegularSnapshot,
   seedPveProgressionBaselines,
 } = await import("../lib/progression-db.ts");
 
@@ -138,6 +140,58 @@ function stats(experience: number, pmcRaids: number) {
     pmcSurvived: pmcRaids, pmcDeaths: 0, pmcKills: pmcRaids, killedPmc: pmcRaids,
   });
 }
+
+test("first-render snapshots only read existing indexed data and fall back while SQLite is unavailable", async (t) => {
+  t.mock.method(console, "warn", () => {});
+  const directory = mkdtempSync(join(tmpdir(), "progression-first-render-"));
+  const file = join(directory, "progression.db");
+  const previousPath = process.env.PROGRESSION_SQLITE_PATH;
+  process.env.PROGRESSION_SQLITE_PATH = file;
+  t.after(() => {
+    if (previousPath === undefined) delete process.env.PROGRESSION_SQLITE_PATH;
+    else process.env.PROGRESSION_SQLITE_PATH = previousPath;
+    rmSync(directory, { recursive: true, force: true });
+  });
+
+  assert.equal(await readLatestRegularSnapshot(42), null);
+  assert.equal(existsSync(file), false, "a page read must not create the database");
+
+  const db = new DatabaseSync(file);
+  try {
+    db.exec("CREATE TABLE progression_snapshots (aid INTEGER, stats_json TEXT)");
+    assert.equal(await readLatestRegularSnapshot(42), null);
+    assert.deepEqual(db.prepare("SELECT name FROM sqlite_schema").all().map(({ name }) => name), ["progression_snapshots"]);
+    assert.deepEqual(db.prepare("PRAGMA table_info(progression_snapshots)").all().map(({ name }) => name), ["aid", "stats_json"]);
+
+    db.exec("DROP TABLE progression_snapshots");
+    const store = createSqliteProgressionStore(db);
+    const first = { aid: 42, upstreamUpdatedAt: day, capturedAt: day + 1,
+      achievementIds: [], stats: JSON.parse(stats(100, 0)) };
+    await store.recordSnapshot(first);
+    await store.recordSnapshot({ ...first, upstreamUpdatedAt: 2 * day, capturedAt: 2 * day + 1 });
+    db.prepare("UPDATE progression_snapshots SET stats_json = ? WHERE profile_updated_at = ?").run("{broken", 2 * day);
+    assert.equal((await readLatestRegularSnapshot(42))?.stats.pmcRaids, 0);
+
+    const compressedStats = { ...first.stats, extra: "data".repeat(4096) };
+    const compressed = encodeStorageJson(compressedStats);
+    assert.notEqual(compressed, JSON.stringify(compressedStats));
+    db.prepare("UPDATE progression_snapshots SET stats_json = ? WHERE profile_updated_at = ?").run(compressed, day);
+    assert.deepEqual((await readLatestRegularSnapshot(42))?.stats, compressedStats);
+
+    db.exec("BEGIN EXCLUSIVE");
+    try {
+      assert.equal(await readLatestRegularSnapshot(42), null);
+    } finally {
+      db.exec("ROLLBACK");
+    }
+    assert.deepEqual((await readLatestRegularSnapshot(42))?.stats, compressedStats);
+    db.exec("DROP INDEX idx_progression_snapshots_identity_time");
+    assert.equal(await readLatestRegularSnapshot(42), null);
+    assert.deepEqual((await store.latest(42))?.stats, compressedStats);
+  } finally {
+    db.close();
+  }
+});
 
 test("foreground capture yields while SQLite is locked, then persists exactly once", async () => {
   const directory = mkdtempSync(join(tmpdir(), "progression-busy-"));

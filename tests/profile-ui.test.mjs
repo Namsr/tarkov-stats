@@ -3,6 +3,27 @@ import { access, readFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import test from "node:test";
 
+test("the Regular profile overview retains known zeroes and safely omits missing snapshot values", async () => {
+  const { regularProfileCards, regularProfileOverview } = await import("../lib/regular-profile-overview.ts");
+  const overview = regularProfileOverview({
+    nickname: "StoredPlayer",
+    pvpStatsKnown: false,
+    pmcKdRatio: 12,
+    regularRiskInputs: { survived: null },
+    pmcSurvivalRate: 55,
+    pmcRaids: 0,
+    hoursPlayed: 1234,
+  });
+  assert.deepEqual(overview, { nickname: "StoredPlayer", pmcKdRatio: null, pmcSurvivalRate: null, pmcRaids: 0, hoursPlayed: 1234 });
+  assert.deepEqual(regularProfileCards(overview, (key) => key, "en").map(({ value, suffix }) => [value, suffix]), [
+    ["common.notAvailable", undefined], ["common.notAvailable", undefined], [0, undefined], ["1,234", undefined],
+  ]);
+  const legacy = regularProfileOverview({ nickname: "Legacy", pmcKdRatio: 0, pmcSurvivalRate: 0 });
+  assert.deepEqual(regularProfileCards(legacy, (key) => key, "ru").map(({ value, suffix }) => [value, suffix]), [
+    [0, undefined], [0, "%"], ["common.notAvailable", undefined], ["common.notAvailable", undefined],
+  ]);
+});
+
 // Cut one declaration out of a source file so an assertion about it cannot be
 // satisfied by unrelated code further down. An unbounded gap between an anchor
 // and the claim only proves the two tokens co-occur somewhere in the file in
@@ -784,8 +805,12 @@ test("profile mode switching is available during loading and capture is post-res
 });
 
 test("profile navigation exposes the shell immediately and overlaps regular API work", async () => {
+  const route = await readFile("app/player/[[...segments]]/page.tsx", "utf8");
   const loading = await readFile("app/player/loading.tsx", "utf8");
   const search = await readFile("components/SearchBar.tsx", "utf8");
+
+  assert.doesNotMatch(route, /getProgressionStore/);
+  assert.match(route, /mode === "regular"\s*\? await readLatestRegularSnapshot\(parsedAid\)/);
 
   assert.match(loading, /usePathname/);
   assert.match(loading, /useSearchParams/);
@@ -1167,19 +1192,8 @@ test("unknown regular PvP stats are not rendered or scored as zero", async () =>
   assert.match(profile, /const pvpStatsKnown = stats\.pvpStatsKnown !== false/);
   assert.match(profile, /pvpStatsKnown \? stats\.pmcKdRatio : t\("common\.notAvailable"\)/);
   assert.match(profile, /pvpStatsKnown \? stats\.killedPmc\.toLocaleString\(\) : t\("common\.notAvailable"\)/);
-  // The overview card is the one place a placeholder is shown next to a unit, so
-  // the "%" has to be part of the same guard: an unconditional suffix rendered
-  // "Н/Д%" / "N/A%", i.e. a percentage on a value that does not exist.
-  assert.match(
-    profile,
-    /\{ label: t\("player\.survivalRate"\), value: stats\.regularRiskInputs\?\.survived === null \? t\("common\.notAvailable"\) : stats\.pmcSurvivalRate, suffix: stats\.regularRiskInputs\?\.survived === null \? undefined : "%" \}/,
-  );
-  assert.doesNotMatch(
-    profile,
-    /pvpStatsKnown \? stats\.pmcSurvivalRate : t\("common\.notAvailable"\), suffix: "%"/,
-  );
-  // The fix belongs to the card, not to the shared shell: it renders whatever
-  // suffix the caller passes, so the caller has to withhold it.
+  assert.match(profile, /regularProfileCards\(regularProfileOverview\(stats\), t, lang\)/);
+  // The overview formatter decides whether to include a unit.
   const shell = await readFile("components/ProfileShell.tsx", "utf8");
   assert.match(shell, /\{item\.value\}\{item\.suffix && <span>\{item\.suffix\}<\/span>\}/);
   assert.doesNotMatch(shell, /common\.notAvailable/);
