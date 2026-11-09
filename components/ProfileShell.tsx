@@ -21,7 +21,12 @@ export function ProfileSlotPlaceholder({ className = "min-h-44" }: { className?:
   return <div className={`data-panel ${className} skeleton rounded-xl`} aria-hidden="true" />;
 }
 
-export function ProfileShellLoading({ mode, aid, title }: { mode: GameMode; aid?: number; title?: string }) {
+export function ProfileShellLoading({ mode, aid, title, overviewCards }: {
+  mode: GameMode;
+  aid?: number;
+  title?: string;
+  overviewCards?: readonly ProfileViewMetric[];
+}) {
   const { t } = useI18n();
   const sectionIds = mode === "regular" || mode === "pve" || mode === "seasonal"
     ? SECTION_IDS
@@ -55,11 +60,11 @@ export function ProfileShellLoading({ mode, aid, title }: { mode: GameMode; aid?
             </div>
           </div>
         </div>
-        <div className="detail-grid mt-7">
+        {overviewCards ? <ProfileMetrics items={overviewCards} /> : <div className="detail-grid mt-7">
           {Array.from({ length: 4 }).map((_, index) => (
             <div key={index} className="metric-card h-24 skeleton rounded-lg" />
           ))}
-        </div>
+        </div>}
       </section>
       <div className="mt-5 space-y-5">
         <ProfileShellLoadingSection id="progression" height="min-h-[320px]" />
@@ -166,14 +171,7 @@ export default function ProfileShell({
         activity={activity}
       >
         <ProfileSectionNav label={t("profile.sectionNav")} items={sectionLinks.filter((item) => item.id !== "overview")} />
-        <div className="profile-metrics">
-          {overviewCards.map((item) => (
-            <dl key={item.label} className="profile-metric">
-              <dt>{item.label}</dt>
-              <dd>{item.value}{item.suffix && <span>{item.suffix}</span>}</dd>
-            </dl>
-          ))}
-        </div>
+        <ProfileMetrics items={overviewCards} />
       </ProfileHeader>
 
       {statusNotice}
@@ -192,6 +190,19 @@ export default function ProfileShell({
         <ProfileShellSection id="skills">{skills}</ProfileShellSection>
       </div>
     </main>
+  );
+}
+
+function ProfileMetrics({ items }: { items: readonly ProfileViewMetric[] }) {
+  return (
+    <div className="profile-metrics">
+      {items.map((item) => (
+        <dl key={item.label} className="profile-metric">
+          <dt>{item.label}</dt>
+          <dd>{item.value}{item.suffix && <span>{item.suffix}</span>}</dd>
+        </dl>
+      ))}
+    </div>
   );
 }
 
