@@ -148,6 +148,46 @@ impl Cache {
         args: Value,
         now: i64,
     ) -> Result<Loaded, Failure> {
+        let worker = self.worker.clone();
+        let input = args.clone();
+        self.load_factory(
+            key,
+            fallback,
+            args,
+            now,
+            async move { worker.compute(input).await },
+            false,
+        )
+        .await
+    }
+    /// Share the same cache and durable protocol for bounded asynchronous data
+    /// loaders which must not occupy the CPU computation child's FIFO.
+    pub async fn load_with<F>(
+        &self,
+        key: String,
+        fallback: String,
+        args: Value,
+        now: i64,
+        factory: F,
+    ) -> Result<Loaded, Failure>
+    where
+        F: std::future::Future<Output = Result<Computed, Failure>> + Send + 'static,
+    {
+        self.load_factory(key, fallback, args, now, factory, true)
+            .await
+    }
+    async fn load_factory<F>(
+        &self,
+        key: String,
+        fallback: String,
+        args: Value,
+        now: i64,
+        factory: F,
+        validate: bool,
+    ) -> Result<Loaded, Failure>
+    where
+        F: std::future::Future<Output = Result<Computed, Failure>> + Send + 'static,
+    {
         let kind = Kind::from_job(&args).ok_or_else(|| Failure {
             reason: "protocol",
             message: "Unsupported cache job".into(),
@@ -228,7 +268,16 @@ impl Cache {
             let started = Instant::now();
             let job_key = key.clone();
             tokio::spawn(async move {
-                let result = cache.worker.compute(args).await;
+                let result = factory.await.and_then(|computed| {
+                    if !validate || kind.valid(&computed.value, &args) {
+                        Ok(computed)
+                    } else {
+                        Err(Failure {
+                            reason: "protocol",
+                            message: "Invalid asynchronous cache result".into(),
+                        })
+                    }
+                });
                 match &result {
                     Ok(result) => {
                         let accepted = kind.accepted(&result.value);
@@ -405,6 +454,42 @@ mod tests {
                 ..saved
             }
         ));
+        worker.stop().await;
+    }
+    #[tokio::test]
+    async fn async_factory_shares_pending_and_fresh_data_without_computation_child() {
+        let worker = Worker::start().unwrap();
+        let cache = Cache::new(Storage::start(), worker.clone());
+        let calls = Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let job = serde_json::json!({"kind":"achievement_baseline","mode":"pve","args":["pve"]});
+        let factory = || {
+            let calls = calls.clone();
+            async move {
+                calls.fetch_add(1, Ordering::SeqCst);
+                tokio::time::sleep(Duration::from_millis(5)).await;
+                Ok(Computed {
+                    value: serde_json::json!({"total":0,"rows":[],"ts":1000,"storage":"sqlite"}),
+                    queue_ms: 0,
+                    worker_ms: 0,
+                })
+            }
+        };
+        let key = "achievement-baseline:pve".to_string();
+        let (one, two) = tokio::join!(
+            cache.load_with(key.clone(), key.clone(), job.clone(), 1000, factory()),
+            cache.load_with(key.clone(), key.clone(), job.clone(), 1000, factory())
+        );
+        assert_eq!(one.unwrap().value, two.unwrap().value);
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            cache
+                .load_with(key.clone(), key, job, 1001, factory())
+                .await
+                .unwrap()
+                .cache,
+            "hit"
+        );
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
         worker.stop().await;
     }
 }

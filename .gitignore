@@ -76,6 +76,7 @@ GEMINI.md
 /ops/*
 !/ops/Caddyfile
 !/ops/deploy.sh
+!/ops/profile-challenge.mjs
 !/ops/backup-db.sh
 !/ops/tarkovstats-backup.cron
 !/ops/docker-compose.vps.yml

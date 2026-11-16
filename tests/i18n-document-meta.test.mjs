@@ -1,32 +1,36 @@
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
-import test from "node:test";
-import { registerHooks } from "node:module";
 import { readFileSync, realpathSync } from "node:fs";
+import { registerHooks } from "node:module";
 import { resolve } from "node:path";
+import test from "node:test";
 import { pathToFileURL } from "node:url";
-import ts from "typescript";
+import { NextRequest } from "next/server.js";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
+import ts from "typescript";
 
-// Exercise the actual client boundary during SSR, including the layout-less
-// fallback Next uses. Transpile only these TSX modules with the installed compiler.
+const clientModules = ["/lib/i18n/context.tsx", "/components/NotFoundPage.tsx", "/components/LanguageToggle.tsx"];
+const requestModule = "data:text/javascript,let state;export const setRequest=(value)=>{state=value};export const headers=async()=>state.headers;export const cookies=async()=>new Map([['lang',{value:state.lang}]])";
 registerHooks({
   resolve(specifier, context, nextResolve) {
     if (specifier === "next/link" && context.parentURL?.endsWith("/components/NotFoundPage.tsx")) {
       return { shortCircuit: true, url: "data:text/javascript,import {createElement} from 'react'; export default function Link(props){return createElement('a',props)}" };
     }
+    if (specifier === "next/navigation" && context.parentURL?.endsWith("/components/LanguageToggle.tsx")) {
+      return { shortCircuit: true, url: "data:text/javascript,export const usePathname=()=>'/compare';export const useSearchParams=()=>new URLSearchParams('a=42')" };
+    }
     if (specifier === "@/lib/i18n/context") {
       return { shortCircuit: true, url: pathToFileURL(realpathSync(resolve("lib/i18n/context.tsx"))).href };
     }
-    if (specifier === "./dictionary" && context.parentURL?.endsWith("/lib/i18n/context.tsx")) {
-      return { shortCircuit: true, url: pathToFileURL(realpathSync(resolve("lib/i18n/dictionary.ts"))).href };
+    if (specifier === "next/server") return nextResolve("next/server.js", context);
+    if (specifier === "next/headers" && context.parentURL?.endsWith("/lib/i18n/server.ts")) {
+      return { shortCircuit: true, url: requestModule };
     }
     if (specifier === "react" && context.parentURL?.startsWith("data:")) return nextResolve(specifier, { ...context, parentURL: import.meta.url });
     return nextResolve(specifier, context);
   },
   load(url, context, nextLoad) {
-    if (url.endsWith("/lib/i18n/context.tsx") || url.endsWith("/components/NotFoundPage.tsx")) {
+    if (clientModules.some((name) => url.endsWith(name))) {
       const source = ts.transpileModule(readFileSync(new URL(url), "utf8"), {
         compilerOptions: { module: ts.ModuleKind.ESNext, jsx: ts.JsxEmit.ReactJSX },
       }).outputText;
@@ -36,70 +40,72 @@ registerHooks({
   },
 });
 
-test("404 renders in either language without a layout and inherits an existing language provider", async () => {
+test("404 uses the requested language without a layout and inherits an existing provider", async () => {
   const { default: NotFoundPage } = await import("../components/NotFoundPage.tsx");
   const { LanguageProvider, useI18n } = await import("../lib/i18n/context.tsx");
-  const { dict } = await import("../lib/i18n/dictionary.ts");
+  const { dict, messagesFor } = await import("../lib/i18n/dictionary.ts");
   for (const lang of ["ru", "en"]) {
-    const html = renderToStaticMarkup(createElement(NotFoundPage, { initialLang: lang }));
+    const html = renderToStaticMarkup(createElement(NotFoundPage, { initialLang: lang, messages: messagesFor(lang) }));
     assert.ok(html.includes(dict[lang]["notFound.title"]));
     assert.ok(html.includes(dict[lang]["notFound.description"]));
     assert.ok(html.includes('href="/"'));
   }
-  const html = renderToStaticMarkup(createElement(LanguageProvider, { initialLang: "ru" },
-    createElement(NotFoundPage, { initialLang: "en" })));
-  assert.ok(html.includes(dict.ru["notFound.title"]), "the header's language stays authoritative");
+  const html = renderToStaticMarkup(createElement(LanguageProvider, { initialLang: "ru", messages: messagesFor("ru") },
+    createElement(NotFoundPage, { initialLang: "en", messages: messagesFor("en") })));
+  assert.ok(html.includes(dict.ru["notFound.title"]));
   assert.throws(() => renderToStaticMarkup(createElement(function MissingProvider() { useI18n(); return null; })), /LanguageProvider/);
 });
 
-/** Line comments in the provider explain why, and one of them names the rejected
- *  alternative, so every assertion below reads the code rather than the prose. */
-const withoutComments = (source) => source.replace(/^[ \t]*\/\/[^\r\n]*\r?\n/gm, "");
+test("both language options are document links and only the current locale supplies the messages", async () => {
+  const { default: LanguageToggle } = await import("../components/LanguageToggle.tsx");
+  const { LanguageProvider } = await import("../lib/i18n/context.tsx");
+  const { dict, messagesFor } = await import("../lib/i18n/dictionary.ts");
+  for (const lang of ["en", "ru"]) {
+    const messages = messagesFor(lang);
+    const other = lang === "en" ? "ru" : "en";
+    assert.equal(messages["meta.title"], dict[lang]["meta.title"]);
+    assert.equal(messages["meta.description"], dict[lang]["meta.description"]);
+    assert.ok(!JSON.stringify(messages).includes(dict[other]["meta.title"]));
+    const html = renderToStaticMarkup(createElement(LanguageProvider, { initialLang: lang, messages }, createElement(LanguageToggle)));
+    assert.ok(html.includes('href="/api/language?lang=en&amp;returnTo=%2Fcompare%3Fa%3D42"'));
+    assert.ok(html.includes('href="/api/language?lang=ru&amp;returnTo=%2Fcompare%3Fa%3D42"'));
+    assert.match(html, new RegExp(`hrefLang="${lang}" aria-current="true"`, "i"));
+  }
+});
 
-test("a language switch rewrites the tab title and description, using the keys the root layout renders", async () => {
-  const provider = withoutComments(await readFile("lib/i18n/context.tsx", "utf8"));
-  const layout = withoutComments(await readFile("app/layout.tsx", "utf8"));
-  const dictionary = await readFile("lib/i18n/messages.json", "utf8");
+test("language link persists the locale and redirects only to a local document", async () => {
+  const { GET } = await import("../app/api/language/route.ts");
+  const host = "tarkov.example";
+  const target = "/population/arena?mode=teamfight#arena-filters";
+  function request(query, referer) {
+    return new NextRequest(`https://${host}/api/language?${new URLSearchParams(query)}`, {
+      headers: { host, ...(referer ? { referer } : {}) },
+    });
+  }
 
-  // Anchored on the setLang body. The provider is the only place that applies the
-  // language to the document, and an effect keyed on [lang] would leave the write
-  // somewhere an unanchored match would also accept.
-  const setLang = provider.slice(
-    provider.indexOf("const setLang = useCallback("),
-    provider.indexOf("const value = useMemo"),
-  );
-  assert.ok(setLang.length > 0, "the setLang callback must be locatable in the provider");
+  const result = GET(request({ lang: "ru", returnTo: target }));
+  assert.equal(result.status, 303);
+  assert.equal(result.headers.get("location"), target);
+  assert.equal(result.headers.get("cache-control"), "private, no-store");
+  assert.match(result.headers.get("set-cookie"), /^lang=ru; Path=\/;.*SameSite=lax/i);
+  assert.equal(GET(request({ lang: "en" }, `https://${host}/compare?a=123`)).headers.get("location"), "/compare?a=123");
+  for (const returnTo of ["//evil.example", "/\\evil.example", "/a/..//evil.example", "https://evil.example", "/api/language?lang=en"]) {
+    assert.equal(GET(request({ lang: "en", returnTo }, "https://evil.example/path")).headers.get("location"), "/");
+  }
+  assert.equal(GET(request({ lang: "invalid" })).status, 400);
+});
 
-  // The two head writes. Naming `dict[l]` is the point: the value has to come from
-  // the dictionary entry for the language being switched to, not from the one
-  // currently rendered.
-  assert.match(setLang, /document\.title = dict\[l\]\["meta\.title"\];/);
-  assert.match(
-    setLang,
-    /document\.querySelector\('meta\[name="description"\]'\)\?\.setAttribute\(\s*"content",\s*dict\[l\]\["meta\.description"\],?\s*\);/,
-  );
-
-  // The behaviour that was already here, unchanged.
-  assert.match(setLang, /document\.cookie = `lang=\$\{l\}; path=\/; max-age=31536000; SameSite=Lax`;/);
-  assert.match(setLang, /document\.documentElement\.lang = l;/);
-
-  // router.refresh() would make the layout re-render the metadata, but it re-fetches
-  // the whole RSC payload too, which is the refetch family #205 and #225 removed. An
-  // effect here would carry a dependency array that `t`, memoized on `lang`, changes
-  // identity on; neither belongs in a file that must not re-request anything.
-  assert.doesNotMatch(provider, /router\.refresh\(/);
-  assert.doesNotMatch(provider, /useEffect/);
-
-  // Drift guard. The only thing this duplicates is the two key names, so they are
-  // pinned against the keys the layout reads rather than against a literal string:
-  // renaming either side on its own fails here.
-  const layoutKeys = [...layout.matchAll(/dict\[lang\]\["([^"]+)"\]/g)].map((match) => match[1]);
-  const providerKeys = [...provider.matchAll(/dict\[l\]\["([^"]+)"\]/g)].map((match) => match[1]);
-  assert.deepEqual(providerKeys, ["meta.title", "meta.description"]);
-  assert.deepEqual([...layoutKeys].sort(), [...providerKeys].sort());
-
-  // Without this the two writes would be no-ops on every dictionary edit, and the
-  // dictionary is the one file no test reads for a value.
-  assert.match(dictionary, /"meta\.title": "Tarkov Stats Comparator"/);
-  assert.match(dictionary, /"meta\.title": "Tarkov Stats — сравнение игроков"/);
+test("public domains supply their language default until the visitor picks a language", async () => {
+  const { setRequest } = await import(requestModule);
+  const { resolveLang } = await import("../lib/i18n/server.ts");
+  for (const [host, accept, lang, expected] of [
+    ["tarkovstats.online", "ru-RU", undefined, "en"],
+    ["WWW.TARKOVSTATS.RU:443", "en-US", undefined, "ru"],
+    ["tarkovstats.online", "en-US", "ru", "ru"],
+    ["tarkovstats.ru", "ru-RU", "en", "en"],
+    ["localhost", "ru-RU", undefined, "ru"],
+  ]) {
+    setRequest({ headers: new Headers({ host, "accept-language": accept }), lang });
+    assert.equal(await resolveLang(), expected, host);
+  }
 });

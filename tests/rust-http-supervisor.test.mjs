@@ -8,7 +8,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import test from "node:test";
 
 const entry = resolve("scripts/start-web.mjs");
-const binary = resolve("rust/backend/target/release", `tarkov-backend${process.platform === "win32" ? ".exe" : ""}`);
+const binary = process.env.RUST_BACKEND_BIN || resolve("rust/backend/target/release", `tarkov-backend${process.platform === "win32" ? ".exe" : ""}`);
 
 async function fixture(t, env = {}) {
   const directory = await mkdtemp(join(tmpdir(), "rust-http-supervisor-"));
@@ -23,7 +23,7 @@ async function fixture(t, env = {}) {
   `);
   const child = spawn(process.execPath, [entry], { cwd: directory, windowsHide: true,
     env: { ...process.env, WEB_BACKGROUND_WORKERS: "false", RUNTIME_HEALTH_ENABLED: "false",
-      SEASONAL_API_UPSTREAM: "web:3000", HOME_SHOWCASE_API_UPSTREAM: "web:3000", ARENA_UI_UPSTREAM: "web:3000", AXIS_STATISTICS_API_UPSTREAM: "web:3000", RUST_API_BIND: "127.0.0.1:0", RUST_API_BIN: binary, ...env },
+      SEASONAL_API_UPSTREAM: "web:3000", HOME_SHOWCASE_API_UPSTREAM: "web:3000", ARENA_UI_UPSTREAM: "web:3000", PERSISTENT_POPULATION_API_UPSTREAM: "web:3000", AXIS_STATISTICS_API_UPSTREAM: "web:3000", RUST_API_BIND: "127.0.0.1:0", RUST_API_BIN: binary, ...env },
     stdio: ["pipe", "pipe", "pipe"] });
   let stdout = "", stderr = "";
   const done = new Promise((resolve) => { child.once("close", (code, signal) => resolve({ code, signal })); });
@@ -66,6 +66,19 @@ test("web startup rejects unknown routing and does not require Rust for the defa
   assert.equal((await original.done).code, 0);
   assert.equal(original.events().filter((event) => event.name === "Rust API").length, 0);
   assert.ok(original.events().some((event) => event.event === "next_fixture_ready"));
+});
+
+test("population API selection is independent and requires a ready Rust process", { timeout: 20000 }, async t => {
+  const invalid = await fixture(t, { PERSISTENT_POPULATION_API_UPSTREAM: "other:3001" });
+  assert.equal((await invalid.done).code, 1);
+  assert.match(invalid.stderr(), /PERSISTENT_POPULATION_API_UPSTREAM must be/);
+  const missing = await fixture(t, { PERSISTENT_POPULATION_API_UPSTREAM: "web:3001", RUST_API_BIN: resolve("missing-rust-http-server") });
+  assert.equal((await missing.done).code, 1);
+  assert.equal(missing.events().some(event => event.event === "next_fixture_ready"), false);
+  const run = await fixture(t, { PERSISTENT_POPULATION_API_UPSTREAM: "web:3001" });
+  await run.waitEvent(event => event.event === "next_fixture_ready");
+  assert.equal(run.events().filter(event => event.event === "web_critical_process_v1" && event.name === "Rust API").length, 1);
+  run.child.stdin.write("exit:0\n"); assert.equal((await run.done).code, 0);
 });
 
 test("AXIS statistics alone requires the Rust API", { timeout: 20000 }, async (t) => {

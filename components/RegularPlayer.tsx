@@ -30,6 +30,7 @@ import {
 } from "@/lib/client-profile-request";
 import ArenaPlayer from "@/components/ArenaPlayer";
 import type { AxisIdentity } from "@/lib/axis-player-profile";
+import { regularProfileCards, regularProfileOverview, type RegularProfileOverview } from "@/lib/regular-profile-overview";
 import ProfilePrimaryActions, { ProfileActivity } from "@/components/ProfileActions";
 
 async function pollRegularRisk(input: {
@@ -63,6 +64,7 @@ interface Props {
   axisHours?: number | null;
   axisHoursFetchedAt?: number | null;
   initialAxis?: boolean;
+  initialOverview?: RegularProfileOverview;
 }
 
 interface ProfileSummary {
@@ -151,8 +153,9 @@ function LegacyPlayer({
   aid,
   radarDemo: radarDemoValue,
   mode = "regular",
+  initialOverview,
 }: Props & { mode?: CrossSectionMode }) {
-  const { t } = useI18n();
+  const { lang, t } = useI18n();
   const radarDemoParam = Array.isArray(radarDemoValue) ? radarDemoValue[0] : radarDemoValue;
   const radarDemo = process.env.NODE_ENV === "development" && radarDemoParam === "1";
   const profileRequestUrl = `/api/player/profile?${new URLSearchParams({ aid, mode })}`;
@@ -362,8 +365,9 @@ function LegacyPlayer({
     return request;
   }, [aid, mode, profileUpdatedAt, stats, t]);
 
+  const initialCards = initialOverview && regularProfileCards(initialOverview, t, lang);
   if (loading) {
-    return <ProfileShellLoading mode={mode} aid={Number(aid)} title={stats?.nickname} />;
+    return <ProfileShellLoading mode={mode} aid={Number(aid)} title={stats?.nickname ?? initialOverview?.nickname} overviewCards={initialCards} />;
   }
 
   if (modeUnavailable) {
@@ -462,10 +466,10 @@ function LegacyPlayer({
           mode={mode}
           cycleId="persistent"
           kicker={`#${aid}`}
-          title={mode === "regular" ? profileSummary?.nickname : undefined}
+          title={mode === "regular" ? (initialOverview?.nickname ?? profileSummary?.nickname) : undefined}
           prestige={mode === "regular" ? profileSummary?.prestige : undefined}
           actions={<ProfileActions aid={Number(aid)} mode={mode} nickname={mode === "regular" ? profileSummary?.nickname : undefined} onCheck={refreshProfile} />}
-          overviewCards={[
+          overviewCards={initialCards ?? [
             t("player.hoursPlayed"),
             mode === "pve" ? t("player.kdAll") : t("player.pmcKd"),
             t("player.survivalRate"),
@@ -586,12 +590,7 @@ function LegacyPlayer({
           { label: t("player.totalRaids"), value: stats.totalRaids },
           { label: t("metric.hours"), value: stats.hoursPlayed.toLocaleString(undefined, { maximumFractionDigits: 0 }) },
         ]
-      : [
-          { label: t("player.pmcKd"), value: pvpStatsKnown ? stats.pmcKdRatio : t("common.notAvailable") },
-          { label: t("player.survivalRate"), value: stats.regularRiskInputs?.survived === null ? t("common.notAvailable") : stats.pmcSurvivalRate, suffix: stats.regularRiskInputs?.survived === null ? undefined : "%" },
-          { label: t("player.pmcRaids"), value: stats.pmcRaids },
-          { label: t("metric.hours"), value: stats.hoursPlayed.toLocaleString(undefined, { maximumFractionDigits: 0 }) },
-        ];
+      : regularProfileCards(regularProfileOverview(stats), t, lang);
     const regularStatistics = (
       <div><h2 className="section-heading mb-7">{t("profile.section.statistics")}</h2><div className="profile-statistics">
         <section>

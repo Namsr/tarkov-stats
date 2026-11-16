@@ -4,7 +4,13 @@ use leptos::prelude::*;
 #[island]
 pub fn ArenaApp(initial: ArenaInitial, lang: Lang) -> impl IntoView {
     let language = RwSignal::new(lang);
-    view! {<SiteShell lang=language><ArenaDashboard initial lang=language/></SiteShell>}
+    let query = initial.state.params.query();
+    let return_to = if query.is_empty() {
+        "/population/arena".into()
+    } else {
+        format!("/population/arena?{query}")
+    };
+    view! {<SiteShell lang=language return_to><ArenaDashboard initial lang=language/></SiteShell>}
 }
 
 #[cfg(feature = "ssr")]
@@ -28,6 +34,7 @@ pub fn document(initial: ArenaInitial, lang: Lang, package: String) -> impl Into
             </head>
             <body class="min-h-full flex flex-col bg-[var(--background)] text-[var(--foreground)]">
                 <ArenaApp initial lang/>
+                <script id="rust-ui-messages" type="application/json" inner_html=crate::i18n::document_messages(lang)></script>
             </body>
         </html>
     }

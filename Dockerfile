@@ -59,6 +59,8 @@ LABEL org.opencontainers.image.revision=$SOURCE_REVISION
 LABEL org.tarkovstats.rust-http="seasonal-v1"
 LABEL org.tarkovstats.rust-home-showcase="v1"
 LABEL org.tarkovstats.rust-arena-ui="v1"
+LABEL org.tarkovstats.rust-population-api="v1"
+RUN apk add --no-cache ca-certificates
 WORKDIR /app
 ENV NODE_ENV=production
 ENV NEXT_TELEMETRY_DISABLED=1

@@ -2,6 +2,10 @@
 import messages from "./messages.json" with { type: "json" };
 
 export type Lang = "en" | "ru";
-export const LANGS: Lang[] = ["en", "ru"];
-type Dict = Record<string, string>;
+export type Dict = Record<string, string>;
 export const dict: Record<Lang, Dict> = messages;
+const russian = { ...dict.en, ...dict.ru };
+
+export function messagesFor(lang: Lang): Dict {
+  return lang === "en" ? dict.en : russian;
+}

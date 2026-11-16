@@ -154,3 +154,10 @@ per-repetition p50/p95, all errors, actual worker backends and the incremental
 Next+Rust-worker versus Rust-HTTP comparison. CI artifacts retain raw reports,
 inspection metadata and summaries for 14 days. No relative speed threshold is
 used to turn a correctness check into a claim of universal performance gain.
+
+
+## Regular and PvE population APIs
+
+`PERSISTENT_POPULATION_API_UPSTREAM` independently selects the Regular/PvE average, metric-series, progression-average and achievement-average API routes. The default `web:3000` keeps them on Next; `web:3001` selects Rust. A missing mode defaults to Regular; explicit empty, unknown, Arena and Seasonal modes retain their existing routing and validation. The first mode parameter determines the upstream. This selector does not change page rendering.
+
+Change the web and Caddy settings together. The deploy guard checks the running rollback image and candidate image for `org.tarkovstats.rust-population-api=v1`, and checks native health when selected. API differential tests and the Linux image comparison exercise the existing response, cache, publication and error contracts; they are not proof of production latency.

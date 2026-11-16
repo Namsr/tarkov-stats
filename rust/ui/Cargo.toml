@@ -24,6 +24,6 @@ js-sys = { version = "0.3", optional = true }
 web-sys = { version = "0.3", optional = true, features = ["Window", "Document", "HtmlElement", "HtmlInputElement", "HtmlSelectElement", "HtmlDialogElement", "Response", "Request", "RequestInit", "Headers", "AbortController", "AbortSignal", "History", "Location", "Storage", "KeyboardEvent", "PointerEvent", "ResizeObserver", "ResizeObserverEntry", "DomRectReadOnly", "Element", "Navigator", "EventTarget", "HtmlAnchorElement", "HtmlCollection", "Node", "NodeList", "Event", "MouseEvent", "FocusEvent", "Performance", "PerformanceEntry", "PerformanceNavigationTiming", "PerformanceResourceTiming", "PerformanceServerTiming", "PerformanceObserver", "PerformanceObserverEntryList", "PerformanceObserverInit", "Blob", "BlobPropertyBag", "Crypto", "RequestCredentials", "RequestCache", "VisibilityState", "HtmlDocument", "AnimationEvent", "HtmlScriptElement", "DomRect"] }
 
 [profile.release]
-opt-level = "s"
+opt-level = "z"
 lto = "thin"
 strip = true

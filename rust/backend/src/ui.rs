@@ -155,6 +155,17 @@ pub fn language(headers: &HeaderMap) -> Lang {
         Some("en") => return Lang::En,
         _ => {}
     }
+    if let Some(host) = headers
+        .get("host")
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.split(':').next())
+    {
+        match host.to_ascii_lowercase().as_str() {
+            "tarkovstats.online" | "www.tarkovstats.online" => return Lang::En,
+            "tarkovstats.ru" | "www.tarkovstats.ru" => return Lang::Ru,
+            _ => {}
+        }
+    }
     let accept = headers
         .get("accept-language")
         .and_then(|v| v.to_str().ok())
@@ -342,5 +353,22 @@ mod tests {
         assert_eq!(language(&h), Lang::En);
         h.insert("cookie", HeaderValue::from_static("lang=en;lang=bad"));
         assert_eq!(language(&h), Lang::Ru);
+    }
+
+    #[test]
+    fn public_hosts_supply_the_default_locale_until_the_visitor_picks_one() {
+        let mut h = HeaderMap::new();
+        h.insert("host", HeaderValue::from_static("tarkovstats.online"));
+        h.insert("accept-language", HeaderValue::from_static("ru-RU"));
+        assert_eq!(language(&h), Lang::En);
+        h.insert("cookie", HeaderValue::from_static("lang=ru"));
+        assert_eq!(language(&h), Lang::Ru);
+
+        h.remove("cookie");
+        h.insert("host", HeaderValue::from_static("WWW.TARKOVSTATS.RU:443"));
+        h.insert("accept-language", HeaderValue::from_static("en-US"));
+        assert_eq!(language(&h), Lang::Ru);
+        h.insert("cookie", HeaderValue::from_static("lang=en"));
+        assert_eq!(language(&h), Lang::En);
     }
 }
