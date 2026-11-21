@@ -26,7 +26,6 @@
 # misc
 .DS_Store
 *.pem
-/.claude/settings.local.json
 
 # debug
 npm-debug.log*
@@ -40,14 +39,12 @@ yarn-error.log*
 
 # local agent/operator material and deployment runbooks
 /.agents/
-/.claude/
 /.codex/
 /.codex-local/
 /.cursor/
 /.windsurf/
 /skills-lock.json
 AGENTS.md
-CLAUDE.md
 GEMINI.md
 *.instructions.md
 /.cursorrules
