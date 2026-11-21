@@ -66,7 +66,6 @@ const persistentAchievementBaselineInFlight = new Map<
 >();
 const regularBackgroundRefreshes = new Map<string, Promise<void>>();
 const arenaRiskRefreshes = new Map<number, Promise<void>>();
-const STORED_PROFILE_REFRESH_MS = 5 * 60_000;
 
 async function refreshStoredArenaRisk(aid: number): Promise<void> {
   return singleFlight(arenaRiskRefreshes, aid, async () => {
@@ -914,8 +913,7 @@ async function handleGet(request: NextRequest, timing: ReturnType<typeof createR
       achievementIds: snapshot.achievementIds,
       capturedAt: snapshot.capturedAt,
     }, publicRisk), storedEnrichmentPhases);
-    if (needsPvpStatsParserRefresh(snapshot.stats) ||
-        Date.now() - snapshot.capturedAt >= STORED_PROFILE_REFRESH_MS) {
+    if (!force && needsPvpStatsParserRefresh(snapshot.stats)) {
       after(() => refreshStoredRegularProfile(aid));
     }
     timing.setRequestContext({ nickname: snapshot.stats.nickname });

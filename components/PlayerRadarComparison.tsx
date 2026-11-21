@@ -9,6 +9,7 @@ import { loadPlayerProfileResponse, PlayerProfileResponseError } from "@/lib/cli
 import ProfileRadar from "@/components/ProfileRadar";
 import StatCard from "@/components/StatCard";
 import AverageComparison from "@/components/AverageComparison";
+import { ProfileCollapseToggle } from "@/components/ProfileCollapsible";
 import { killedPmcPerRaid } from "@/lib/killed-pmc-per-raid";
 import type { ParsedPlayerStats } from "@/types/tarkov";
 import type { ProfileComparisonStats } from "@/types/profile-view";
@@ -283,7 +284,22 @@ function valuesFromStats(stats: ComparisonStats): Record<MetricKey, number | nul
   ) as Record<MetricKey, number | null>;
 }
 
-export default function PlayerRadarComparison({ aid, stats, mode = "regular", cycleId = "persistent", demo = false, nickname }: Props) {
+export default function PlayerRadarComparison(props: Props) {
+  const { t } = useI18n();
+  const id = useId();
+  const [open, setOpen] = useState(false);
+
+  if (props.demo) return <RadarComparison {...props} />;
+
+  return (
+    <div>
+      <ProfileCollapseToggle controls={id} expanded={open} label={t(open ? "profile.comparison.hide" : "profile.comparison.show")} onToggle={() => setOpen((value) => !value)} />
+      <div id={id} hidden={!open}>{open && <RadarComparison {...props} />}</div>
+    </div>
+  );
+}
+
+function RadarComparison({ aid, stats, mode = "regular", cycleId = "persistent", demo = false, nickname }: Props) {
   const { t, lang } = useI18n();
   const favoriteHintId = useId();
   const pathname = usePathname();

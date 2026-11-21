@@ -21,35 +21,17 @@ export default function ArenaModeBars({ profile, selected, onSelect, aid, statis
   const [active, setActive] = useState<{ mode: ArenaModeKey; outcome: Outcome; x: number; y: number } | null>(null);
   const [cohorts, setCohorts] = useState<Partial<Record<ArenaModeKey, ArenaCohortResult | null>>>({});
   const [unavailable, setUnavailable] = useState<ArenaModeKey[]>([]);
-  const [visible, setVisible] = useState(false);
+  const [showAverage, setShowAverage] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const cacheRef = useRef(new Map<string, { cohorts: Partial<Record<ArenaModeKey, ArenaCohortResult | null>>; unavailable: ArenaModeKey[] }>());
-  const sectionRef = useRef<HTMLElement | null>(null);
   const rootRef = useRef<HTMLDivElement>(null), tipRef = useRef<HTMLDivElement>(null);
   const value = (mode: ArenaModeKey) => metric === "matches" ? profile.modes[mode].counters.matches : profile.modes[mode].metrics[metric];
   const max = metric === "win_rate" ? 100 : Math.max(1, ...ARENA_MODE_KEYS.map((mode) => value(mode) ?? 0));
   const number = (v: number | null, digits = 0) => v == null || !Number.isFinite(v) ? "—" : v.toLocaleString(lang, { maximumFractionDigits: digits });
 
-  // Секция ниже сгиба: не дергаем API, пока пользователь не доскроллил.
   useEffect(() => {
-    const node = sectionRef.current;
-    if (!node || typeof IntersectionObserver === "undefined") {
-      setVisible(true);
-      return;
-    }
-    const observer = new IntersectionObserver((entries) => {
-      if (entries.some((entry) => entry.isIntersecting)) {
-        setVisible(true);
-        observer.disconnect();
-      }
-    }, { rootMargin: "200px" });
-    observer.observe(node);
-    return () => observer.disconnect();
-  }, []);
-
-  useEffect(() => {
-    if (!visible) return;
+    if (!showAverage) return;
     const controller = new AbortController();
     let activeRequest = true;
     const purpose = purposeFor(metric);
@@ -86,9 +68,10 @@ export default function ArenaModeBars({ profile, selected, onSelect, aid, statis
       activeRequest = false;
       controller.abort();
     };
-  }, [aid, statistic, metric, visible, t]);
+  }, [aid, statistic, metric, showAverage, t]);
 
   const baselineFor = (mode: ArenaModeKey): number | null => {
+    if (!showAverage) return null;
     const cohort = cohorts[mode] ?? null;
     if (metric === "matches") return arenaCohortMatchesBaseline(cohort);
     return arenaMetricBaseline(cohort, metric);
@@ -115,12 +98,13 @@ export default function ArenaModeBars({ profile, selected, onSelect, aid, statis
     tip.style.top = `${Math.max(8, Math.min(top, height - h - 8))}px`;
   }, [active]);
 
-  return <section id="arena-modes" ref={sectionRef} tabIndex={-1} className="profile-anchor-section">
+  return <section id="arena-modes" tabIndex={-1} className="profile-anchor-section">
     <div className="profile-collection__heading"><h2 className="section-heading">{t("arena.byMode")}</h2>
       <div className="profile-segments" role="group" aria-label={t("home.chartMetric")}>{(["matches", "kd_ratio", "win_rate"] as const).map((key) => <button key={key} type="button" aria-pressed={metric === key} onClick={() => { setMetric(key); setActive(null); }}>{t(key === "matches" ? "arena.counter.matches" : "arena.metric." + key)}</button>)}</div>
+      <div className="profile-segments"><button type="button" aria-pressed={showAverage} onClick={() => setShowAverage((value) => !value)}>{t("arena.byMode.average")}</button></div>
     </div>
-    {(loading || error) && <p className="profile-chart-notice" role="status">{error || t("arena.radar.loading")}</p>}
-    {!loading && !error && unavailable.length > 0 && <p className="profile-chart-notice" role="status">{t("profile.averageUnavailable")}</p>}
+    {showAverage && (loading || error) && <p className="profile-chart-notice" role="status">{error || t("arena.radar.loading")}</p>}
+    {showAverage && !loading && !error && unavailable.length > 0 && <p className="profile-chart-notice" role="status">{t("profile.averageUnavailable")}</p>}
     {!loading && !error && hasAnyBaseline && <div className="arena-bars-legend" aria-hidden="true"><span><i className="arena-bars-average-key" />{t("arena.combat.averageMarker")}</span></div>}
     <div ref={rootRef} className="profile-arena-bars" onPointerLeave={() => setActive(null)}>
       {ARENA_MODE_KEYS.map((mode) => {
@@ -131,7 +115,7 @@ export default function ArenaModeBars({ profile, selected, onSelect, aid, statis
         const fallbackWidth = v != null && Number.isFinite(v) ? Math.max(0, Math.min(100, v / max * 100)) : 0;
         const width = pos ?? fallbackWidth;
         return <button key={mode} type="button" className="profile-arena-bar" data-mode={mode} aria-pressed={selected === mode}
-          aria-label={`${t("arena.mode." + mode)}: ${number(v, metric === "kd_ratio" ? 2 : 1)}${metric === "win_rate" ? "%" : ""}${metric === "matches" ? `, ${t("arena.counter.wins")} ${number(counters.wins)}, ${t("arena.counter.losses")} ${number(counters.losses)}` : ""}; ${t("radar.series.average")}: ${baselineText(mode)}`}
+          aria-label={`${t("arena.mode." + mode)}: ${number(v, metric === "kd_ratio" ? 2 : 1)}${metric === "win_rate" ? "%" : ""}${metric === "matches" ? `, ${t("arena.counter.wins")} ${number(counters.wins)}, ${t("arena.counter.losses")} ${number(counters.losses)}` : ""}${showAverage ? `; ${t("radar.series.average")}: ${baselineText(mode)}` : ""}`}
           aria-keyshortcuts={metric === "matches" ? "ArrowLeft ArrowRight Escape" : undefined}
           onClick={() => onSelect(mode)} onFocus={(event) => { if (metric === "matches") show(mode, "wins", event); }} onBlur={() => setActive(null)}
           onKeyDown={(event) => { if (event.key === "Escape") setActive(null); if (metric === "matches" && (event.key === "ArrowLeft" || event.key === "ArrowRight")) { event.preventDefault(); show(mode, event.key === "ArrowLeft" ? "wins" : "losses", event); } }}>
