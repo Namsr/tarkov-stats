@@ -559,6 +559,11 @@ impl Databases {
                 self.population_ready = [false; 2];
                 return Err("Population storage schema is unavailable".into());
             }
+            if !self.population_ready.iter().any(|ready| *ready) {
+                // Optional eponymous array virtual table, scoped to this connection.
+                // Failure leaves the existing SQLite population path available.
+                let _ = rusqlite::vtab::array::load_module(self.players()?);
+            }
             self.population_ready[index] = true;
         }
         self.players()
