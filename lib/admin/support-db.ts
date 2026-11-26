@@ -6,6 +6,12 @@ export type NotificationLevel = (typeof NOTIFICATION_LEVELS)[number];
 function isNotificationLevel(value: unknown): value is NotificationLevel {
   return typeof value === "string" && (NOTIFICATION_LEVELS as readonly string[]).includes(value);
 }
+const NOTIFICATION_LANGUAGES = ["ru", "en", "both"] as const;
+export type NotificationLanguage = (typeof NOTIFICATION_LANGUAGES)[number];
+export type SupportSiteLanguage = "ru" | "en";
+function isNotificationLanguage(value: unknown): value is NotificationLanguage {
+  return typeof value === "string" && (NOTIFICATION_LANGUAGES as readonly string[]).includes(value);
+}
 
 export interface SupportNotification {
   id: number;
@@ -13,6 +19,7 @@ export interface SupportNotification {
   body: string;
   href: string | null;
   level: NotificationLevel;
+  language: NotificationLanguage;
   isActive: boolean;
   createdAt: number;
   updatedAt: number;
@@ -39,6 +46,7 @@ CREATE TABLE IF NOT EXISTS support_notifications (
   body TEXT NOT NULL,
   href TEXT,
   level TEXT NOT NULL DEFAULT 'info' CHECK (level IN ('info','warn','danger')),
+  language TEXT NOT NULL DEFAULT 'ru' CHECK (language IN ('ru','en','both')),
   is_active INTEGER NOT NULL DEFAULT 0,
   created_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL
@@ -66,6 +74,21 @@ export const SUPPORT_MAX_HREF = 300;
 
 function supportPath(): string {
   return process.env.ADMIN_ANALYTICS_SQLITE_PATH || "/data/admin-analytics.db";
+}
+
+/** Keep notices created before audience targeting visible to both site languages. */
+function migrateNotificationLanguage(db: SqliteDatabase): void {
+  db.exec("BEGIN IMMEDIATE");
+  try {
+    const columns = db.prepare("PRAGMA table_info(support_notifications)").all() as { name: string }[];
+    if (!columns.some((column) => column.name === "language")) {
+      db.exec("ALTER TABLE support_notifications ADD COLUMN language TEXT NOT NULL DEFAULT 'both' CHECK (language IN ('ru','en','both'))");
+    }
+    db.exec("COMMIT");
+  } catch (error) {
+    db.exec("ROLLBACK");
+    throw error;
+  }
 }
 
 function validateId(id: number): void {
@@ -100,6 +123,11 @@ function validateLevel(value: unknown): NotificationLevel {
   return value;
 }
 
+function validateNotificationLanguage(value: unknown): NotificationLanguage {
+  if (!isNotificationLanguage(value)) throw new TypeError("invalid notification language");
+  return value;
+}
+
 function validateAmount(value: unknown, field: string): number {
   if (typeof value !== "number" || !Number.isFinite(value) || value < 0) throw new TypeError(`invalid ${field}`);
   return Math.round(value);
@@ -117,6 +145,7 @@ function rowNotification(row: Record<string, unknown>): SupportNotification {
     body: String(row.body),
     href: row.href == null ? null : String(row.href),
     level: isNotificationLevel(row.level) ? row.level : "info",
+    language: isNotificationLanguage(row.language) ? row.language : "both",
     isActive: Number(row.is_active) === 1,
     createdAt: Number(row.created_at),
     updatedAt: Number(row.updated_at),
@@ -136,8 +165,8 @@ function rowGoal(row: Record<string, unknown>): FundraisingGoal {
 
 export interface SupportStore {
   listNotifications(): SupportNotification[];
-  createNotification(input: { title: string; body: string; href?: string | null; level?: NotificationLevel }): SupportNotification;
-  updateNotification(id: number, patch: { title?: string; body?: string; href?: string | null; level?: NotificationLevel }): SupportNotification;
+  createNotification(input: { title: string; body: string; href?: string | null; level?: NotificationLevel; language?: NotificationLanguage }): SupportNotification;
+  updateNotification(id: number, patch: { title?: string; body?: string; href?: string | null; level?: NotificationLevel; language?: NotificationLanguage }): SupportNotification;
   setNotificationActive(id: number, active: boolean): SupportNotification[];
   deleteNotification(id: number): SupportNotification[];
   listGoals(): FundraisingGoal[];
@@ -145,11 +174,12 @@ export interface SupportStore {
   updateGoal(id: number, patch: { collectedRub?: number; goalRub?: number; usdRate?: number }): FundraisingGoal;
   setGoalActive(id: number): FundraisingGoal[];
   deleteGoal(id: number): FundraisingGoal[];
-  getActive(): SupportConfig;
+  getActive(language?: SupportSiteLanguage): SupportConfig;
 }
 
 export function createSupportStore(db: SqliteDatabase): SupportStore {
   db.exec(SUPPORT_SCHEMA);
+  migrateNotificationLanguage(db);
   db.exec("PRAGMA foreign_keys = ON");
 
   function write<T>(operation: () => T): T {
@@ -199,12 +229,13 @@ export function createSupportStore(db: SqliteDatabase): SupportStore {
         const body = normalizeText(input.body, SUPPORT_MAX_BODY, "body");
         const href = normalizeHref(input.href);
         const level = input.level === undefined ? "info" : validateLevel(input.level);
+        const language = input.language === undefined ? "ru" : validateNotificationLanguage(input.language);
         const count = (db.prepare("SELECT COUNT(*) AS n FROM support_notifications").get() as { n: number }).n;
         if (count >= SUPPORT_MAX_NOTIFICATIONS) throw new RangeError("too many notifications");
         const now = Date.now();
         const info = db.prepare(
-          "INSERT INTO support_notifications (title, body, href, level, is_active, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)"
-        ).run(title, body, href, level, 1, now, now);
+          "INSERT INTO support_notifications (title, body, href, level, language, is_active, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
+        ).run(title, body, href, level, language, 1, now, now);
         return notificationById(Number(info.lastInsertRowid))!;
       });
     },
@@ -218,8 +249,9 @@ export function createSupportStore(db: SqliteDatabase): SupportStore {
         const body = patch.body === undefined ? current.body : normalizeText(patch.body, SUPPORT_MAX_BODY, "body");
         const href = patch.href === undefined ? current.href : normalizeHref(patch.href);
         const level = patch.level === undefined ? current.level : validateLevel(patch.level);
-        db.prepare("UPDATE support_notifications SET title = ?, body = ?, href = ?, level = ?, updated_at = ? WHERE id = ?").run(
-          title, body, href, level, Date.now(), id
+        const language = patch.language === undefined ? current.language : validateNotificationLanguage(patch.language);
+        db.prepare("UPDATE support_notifications SET title = ?, body = ?, href = ?, level = ?, language = ?, updated_at = ? WHERE id = ?").run(
+          title, body, href, level, language, Date.now(), id
         );
         return notificationById(id)!;
       });
@@ -303,8 +335,10 @@ export function createSupportStore(db: SqliteDatabase): SupportStore {
       });
     },
 
-    getActive() {
-      const rows = db.prepare("SELECT * FROM support_notifications WHERE is_active = 1 ORDER BY id ASC").all() as Record<string, unknown>[];
+    getActive(language) {
+      const rows = (language
+        ? db.prepare("SELECT * FROM support_notifications WHERE is_active = 1 AND (language = ? OR language = 'both') ORDER BY id ASC").all(language)
+        : db.prepare("SELECT * FROM support_notifications WHERE is_active = 1 ORDER BY id ASC").all()) as Record<string, unknown>[];
       const goalRow = db.prepare("SELECT * FROM support_fundraising_goals WHERE is_active = 1 ORDER BY id ASC LIMIT 1").get() as
         | Record<string, unknown>
         | undefined;
