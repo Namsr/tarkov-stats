@@ -76,12 +76,20 @@ function supportPath(): string {
   return process.env.ADMIN_ANALYTICS_SQLITE_PATH || "/data/admin-analytics.db";
 }
 
-/** Keep notices created before audience targeting visible to both site languages. */
+/**
+ * Keep notices created before audience targeting visible to both site languages.
+ * Fresh databases get the column from SUPPORT_SCHEMA with the "ru" default for new
+ * notices; the ALTER path defaults migrated rows to "both" so none disappear.
+ */
 function migrateNotificationLanguage(db: SqliteDatabase): void {
+  // The common path is already migrated. Avoid taking a write lock on every startup.
+  const columns = db.prepare("PRAGMA table_info(support_notifications)").all() as { name: string }[];
+  if (columns.some((column) => column.name === "language")) return;
   db.exec("BEGIN IMMEDIATE");
   try {
-    const columns = db.prepare("PRAGMA table_info(support_notifications)").all() as { name: string }[];
-    if (!columns.some((column) => column.name === "language")) {
+    // Another process may have added the column while this one waited for the lock.
+    const current = db.prepare("PRAGMA table_info(support_notifications)").all() as { name: string }[];
+    if (!current.some((column) => column.name === "language")) {
       db.exec("ALTER TABLE support_notifications ADD COLUMN language TEXT NOT NULL DEFAULT 'both' CHECK (language IN ('ru','en','both'))");
     }
     db.exec("COMMIT");

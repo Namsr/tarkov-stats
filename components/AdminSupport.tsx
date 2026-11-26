@@ -82,7 +82,8 @@ export default function AdminSupport({ notifications, goals, available = true, t
       setDraftBody("");
       setDraftHref("");
       setDraftLevel("info");
-      setDraftLanguage("ru");
+      // Keep the chosen audience for the next notice: operators often publish
+      // several notices for the same language in a row.
     });
   }
 

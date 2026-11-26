@@ -65,7 +65,7 @@
   "dependencies": {
     "discord.js": "14.27.0",
     "jose": "^6.2.12",
-    "next": "^16.4.1",
+    "next": "^16.4.6",
     "onnxruntime-web": "1.30.0",
     "react": "19.3.0",
     "react-dom": "19.3.0",
@@ -83,7 +83,7 @@
     "@types/react": "^19.3.0",
     "@types/react-dom": "^19.3.0",
     "eslint": "^9.39.5",
-    "eslint-config-next": "^16.4.1",
+    "eslint-config-next": "^16.4.6",
     "tailwindcss": "^4.3.3",
     "typescript": "^5"
   }
