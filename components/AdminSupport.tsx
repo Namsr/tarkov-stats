@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import type { FundraisingGoal, NotificationLevel, SupportNotification } from "@/lib/admin/support-db";
+import type { FundraisingGoal, NotificationLanguage, NotificationLevel, SupportNotification } from "@/lib/admin/support-db";
 
 type T = (key: string, vars?: Record<string, string | number>) => string;
 
@@ -43,6 +43,7 @@ export default function AdminSupport({ notifications, goals, available = true, t
   const [draftBody, setDraftBody] = useState("");
   const [draftHref, setDraftHref] = useState("");
   const [draftLevel, setDraftLevel] = useState<NotificationLevel>("info");
+  const [draftLanguage, setDraftLanguage] = useState<NotificationLanguage>("ru");
 
   async function mutate(action: string, extra: Record<string, unknown>) {
     setBusy(true);
@@ -74,12 +75,15 @@ export default function AdminSupport({ notifications, goals, available = true, t
       body: draftBody,
       href: draftHref.trim() ? draftHref.trim() : null,
       level: draftLevel,
+      language: draftLanguage,
     }).then((result) => {
       if (!result) return;
       setDraftTitle("");
       setDraftBody("");
       setDraftHref("");
       setDraftLevel("info");
+      // Keep the chosen audience for the next notice: operators often publish
+      // several notices for the same language in a row.
     });
   }
 
@@ -106,6 +110,12 @@ export default function AdminSupport({ notifications, goals, available = true, t
           <label>
             <span>{t("admin.support.body")}</span>
             <textarea value={draftBody} onChange={(event) => setDraftBody(event.target.value)} maxLength={1000} rows={3} placeholder={t("admin.support.body")} disabled={busy} />
+          </label>
+          <label>
+            <span>{t("admin.support.language")}</span>
+            <select value={draftLanguage} onChange={(event) => setDraftLanguage(event.target.value as NotificationLanguage)} disabled={busy}>
+              {(["ru", "en", "both"] as const).map((language) => <option key={language} value={language}>{t("admin.support.language." + language)}</option>)}
+            </select>
           </label>
           <div className="admin-moderation">
             <label>
@@ -140,11 +150,13 @@ function NotificationRow({ notification, busy, t, onMutate }: {
   const [body, setBody] = useState(notification.body);
   const [href, setHref] = useState(notification.href ?? "");
   const [level, setLevel] = useState<NotificationLevel>(notification.level);
+  const [language, setLanguage] = useState<NotificationLanguage>(notification.language);
 
   const dirty = title !== notification.title
     || body !== notification.body
     || href !== (notification.href ?? "")
-    || level !== notification.level;
+    || level !== notification.level
+    || language !== notification.language;
 
   function handleSave() {
     void onMutate("update_notification", {
@@ -153,6 +165,7 @@ function NotificationRow({ notification, busy, t, onMutate }: {
       body,
       href: href.trim() ? href.trim() : null,
       level,
+      language,
     });
   }
 
@@ -185,6 +198,12 @@ function NotificationRow({ notification, busy, t, onMutate }: {
           <span>{t("admin.support.level")}</span>
           <select value={level} onChange={(event) => setLevel(event.target.value as NotificationLevel)} disabled={busy}>
             {LEVELS.map((item) => <option key={item} value={item}>{t("admin.support.level." + item)}</option>)}
+          </select>
+        </label>
+        <label>
+          <span>{t("admin.support.language")}</span>
+          <select value={language} onChange={(event) => setLanguage(event.target.value as NotificationLanguage)} disabled={busy}>
+            {(["ru", "en", "both"] as const).map((item) => <option key={item} value={item}>{t("admin.support.language." + item)}</option>)}
           </select>
         </label>
       </div>

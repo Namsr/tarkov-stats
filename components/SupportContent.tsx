@@ -28,13 +28,13 @@ export default function SupportContent() {
   useEffect(() => {
     const request = new AbortController();
     let current = true;
-    void fetch("/api/support", { cache: "no-store", signal: request.signal })
+    void fetch("/api/support", { cache: "no-store", headers: { "Accept-Language": lang }, signal: request.signal })
       .then((response) => (response.ok ? (response.json() as Promise<SupportConfig>) : null))
       .then((body) => { if (current && body) setConfig(body); })
       // An unavailable or unreachable route leaves the block absent rather than broken.
       .catch(() => { if (current) setConfig(EMPTY); });
     return () => { current = false; request.abort(); };
-  }, []);
+  }, [lang]);
 
   if (config.notifications.length === 0 && !config.goal) return null;
 

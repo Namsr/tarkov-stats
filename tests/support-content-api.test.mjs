@@ -65,6 +65,7 @@ const PUBLIC_CACHE_POLICY = "public, max-age=30, s-maxage=60";
 function assertPublicCachePolicy(response) {
   assert.equal(response.status, 200);
   assert.equal(response.headers.get("cache-control"), PUBLIC_CACHE_POLICY);
+  assert.equal(response.headers.get("vary"), "Accept-Language");
 }
 
 test("support content returns only live notifications and the active goal", async (t) => {
@@ -85,6 +86,48 @@ test("support content returns only live notifications and the active goal", asyn
   assert.equal(body.goal.goalRub, 10000);
   assert.equal(body.goal.usdRate, 95);
   assertPublicCachePolicy(response);
+});
+
+test("support content filters notices by the site language", async (t) => {
+  const path = tempDb(t, (store) => {
+    store.createNotification({ title: "RU", body: "Russian", language: "ru" });
+    store.createNotification({ title: "EN", body: "English", language: "en" });
+    store.createNotification({ title: "Both", body: "Both", language: "both" });
+  });
+  withEnv(t, { ADMIN_ANALYTICS_SQLITE_PATH: path });
+
+  const en = await GET(new Request("http://localhost/api/support", {
+    headers: { "Accept-Language": "en-US,en;q=0.9" },
+  }));
+  assert.deepEqual((await readJson(en)).notifications.map((item) => item.title), ["EN", "Both"]);
+  assertPublicCachePolicy(en);
+
+  const ru = await GET(new Request("http://localhost/api/support", {
+    headers: { "Accept-Language": "ru-RU,ru;q=0.9,en;q=0.8" },
+  }));
+  assert.deepEqual((await readJson(ru)).notifications.map((item) => item.title), ["RU", "Both"]);
+  assertPublicCachePolicy(ru);
+});
+
+test("support content honors quality values and keeps headerless calls broad", async (t) => {
+  const path = tempDb(t, (store) => {
+    store.createNotification({ title: "RU", body: "Russian", language: "ru" });
+    store.createNotification({ title: "EN", body: "English", language: "en" });
+  });
+  withEnv(t, { ADMIN_ANALYTICS_SQLITE_PATH: path });
+
+  const preferred = await GET(new Request("http://localhost/api/support", {
+    headers: { "Accept-Language": "ru;q=0.4,en;q=0.9" },
+  }));
+  assert.deepEqual((await readJson(preferred)).notifications.map((item) => item.title), ["EN"]);
+
+  const bare = await GET(new Request("http://localhost/api/support", {
+    headers: { "Accept-Language": "en;q=0.9" },
+  }));
+  assert.deepEqual((await readJson(bare)).notifications.map((item) => item.title), ["EN"]);
+
+  const headerless = await GET();
+  assert.deepEqual((await readJson(headerless)).notifications.map((item) => item.title), ["RU", "EN"]);
 });
 
 test("support content is empty when nothing is live, so the block draws nothing", async (t) => {

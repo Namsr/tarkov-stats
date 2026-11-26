@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { useI18n } from "@/lib/i18n/context";
 
 const STORAGE_KEY = "tarkov-stats-support-notifications-seen";
 const MAX_STORED_IDS = 200;
@@ -34,14 +35,16 @@ function writeSeen(ids: number[]): void {
  * page counts as having read them, which is what clears the dot.
  */
 export function useUnseenSupportNotifications(pathname: string): number[] {
+  const { lang } = useI18n();
   // Stays empty until the read resolves, so the dot never renders on the server or
   // in the first paint and cannot flash on a page where nothing is unseen.
   const [ids, setIds] = useState<number[]>([]);
+  const [resolvedLanguage, setResolvedLanguage] = useState<typeof lang | null>(null);
 
   useEffect(() => {
     let current = true;
     const request = new AbortController();
-    void fetch("/api/support", { cache: "no-store", signal: request.signal })
+    void fetch("/api/support", { cache: "no-store", headers: { "Accept-Language": lang }, signal: request.signal })
       .then((response) => (response.ok ? (response.json() as Promise<{ notifications?: { id: number }[] }>) : null))
       .then((body) => {
         if (!current) return;
@@ -50,16 +53,18 @@ export function useUnseenSupportNotifications(pathname: string): number[] {
         if (onSupportPage && active.length > 0) {
           writeSeen(active);
           setIds([]);
+          setResolvedLanguage(lang);
         } else {
           const seen = readSeen();
           setIds(active.filter((id) => !seen.includes(id)));
+          setResolvedLanguage(lang);
         }
       })
       // Without a read there is nothing to flag, so the header stays clean. Swallowing
       // here is deliberate: a failed read must not clear ids already on screen.
       .catch(() => {});
     return () => { current = false; request.abort(); };
-  }, [pathname]);
+  }, [pathname, lang]);
 
-  return ids;
+  return resolvedLanguage === lang ? ids : [];
 }

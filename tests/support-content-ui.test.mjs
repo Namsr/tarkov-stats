@@ -12,6 +12,7 @@ test("the support block fetches the public route and renders nothing when it is 
     readFile("app/globals.css", "utf8"),
   ]);
   assert.match(content, /fetch\("\/api\/support"/);
+  assert.match(content, /headers: \{ "Accept-Language": lang \}/);
   assert.match(content, /if \(config\.notifications\.length === 0 && !config\.goal\) return null;/);
   assert.match(content, /config\.notifications\.length > 0 &&/, "an empty list must not leave an empty container");
   assert.match(styles, /\.support-content:empty \{ display: none; \}/);
@@ -33,6 +34,8 @@ test("the header dot clears by pathname, once per browser, and only in the heade
   assert.match(header, /useUnseenSupportNotifications\(pathname\)/);
   assert.match(header, /item\.support && unseenSupportIds\.length > 0/);
   assert.match(notice, /const SUPPORT_PATH = "\/support";/);
+  assert.match(notice, /headers: \{ "Accept-Language": lang \}/);
+  assert.match(notice, /\[pathname, lang\]/);
   assert.match(notice, /const onSupportPage = pathname === SUPPORT_PATH;/);
   assert.match(notice, /if \(onSupportPage && active\.length > 0\) \{\s*writeSeen\(active\);\s*setIds\(\[\]\);/, "reaching the page is what dismisses the dot");
   assert.match(notice, /tarkov-stats-support-notifications-seen/);
@@ -62,6 +65,12 @@ test("the admin support form guards the mutation route and offers per-row switch
   // Notification links are operator input, so the store must re-check them server-side.
   assert.match(panel, /linkPlaceholder/);
   assert.match(route, /typeof body\.href !== "string"/);
+  // The audience is part of the create/update payload and is re-checked by the store.
+  assert.match(panel, /language: draftLanguage/);
+  assert.match(panel, /notification\.language/);
+  assert.match(panel, /admin\.support\.language/);
+  assert.match(route, /typeof body\.language !== "string"/);
+  assert.match(route, /language: body\.language as NotificationLanguage \| undefined/);
   assert.match(dashboard, /"support"/);
   assert.match(dashboard, /getJson<\{ notifications: SupportNotification\[\]; goals: FundraisingGoal\[\]; available: boolean \}>\("\/api\/admin\/support", \{ signal: request\.signal \}\)/);
   // Mutations must refresh the dashboard state, or the list stays stale until a tab switch.
@@ -71,12 +80,16 @@ test("the admin support form guards the mutation route and offers per-row switch
   assert.match(dashboard, /<AdminSupport/);
   assert.match(dashboard, /onChange=\{\(\{ notifications, goals \}\) => setSupport\(\{ notifications, goals, available: true \}\)\}/);
   // Both languages keep the same key set; the admin form reads computed level keys.
-  for (const key of ["admin.support.notifications", "admin.support.goals", "admin.support.usdRate", "nav.supportUnread", "support.fundraisingCollected", "support.fundraisingReached"]) {
+  for (const key of ["admin.support.notifications", "admin.support.goals", "admin.support.usdRate", "admin.support.language", "nav.supportUnread", "support.fundraisingCollected", "support.fundraisingReached"]) {
     const matches = dictionary.match(new RegExp(`"${key}":`, "g")) ?? [];
     assert.equal(matches.length, 2, `${key} must exist in both dictionaries`);
   }
   for (const level of ["info", "warn", "danger"]) {
     const matches = dictionary.match(new RegExp(`"admin\\.support\\.level\\.${level}":`, "g")) ?? [];
     assert.equal(matches.length, 2, `admin.support.level.${level} must exist in both dictionaries`);
+  }
+  for (const language of ["ru", "en", "both"]) {
+    const matches = dictionary.match(new RegExp(`"admin\\.support\\.language\\.${language}":`, "g")) ?? [];
+    assert.equal(matches.length, 2, `admin.support.language.${language} must exist in both dictionaries`);
   }
 });
