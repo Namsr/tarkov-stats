@@ -38,7 +38,8 @@ export function useUnseenSupportNotifications(pathname: string): number[] {
   const { lang } = useI18n();
   // Stays empty until the read resolves, so the dot never renders on the server or
   // in the first paint and cannot flash on a page where nothing is unseen.
-  const [state, setState] = useState<{ language: typeof lang; ids: number[] }>({ language: lang, ids: [] });
+  const [ids, setIds] = useState<number[]>([]);
+  const [resolvedLanguage, setResolvedLanguage] = useState<typeof lang | null>(null);
 
   useEffect(() => {
     let current = true;
@@ -51,10 +52,12 @@ export function useUnseenSupportNotifications(pathname: string): number[] {
         const onSupportPage = pathname === SUPPORT_PATH;
         if (onSupportPage && active.length > 0) {
           writeSeen(active);
-          setState({ language: lang, ids: [] });
+          setIds([]);
+          setResolvedLanguage(lang);
         } else {
           const seen = readSeen();
-          setState({ language: lang, ids: active.filter((id) => !seen.includes(id)) });
+          setIds(active.filter((id) => !seen.includes(id)));
+          setResolvedLanguage(lang);
         }
       })
       // Without a read there is nothing to flag, so the header stays clean. Swallowing
@@ -63,5 +66,5 @@ export function useUnseenSupportNotifications(pathname: string): number[] {
     return () => { current = false; request.abort(); };
   }, [pathname, lang]);
 
-  return state.language === lang ? state.ids : [];
+  return resolvedLanguage === lang ? ids : [];
 }
