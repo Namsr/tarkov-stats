@@ -29,7 +29,6 @@ import {
   PlayerProfileResponseError,
 } from "@/lib/client-profile-request";
 import ArenaPlayer from "@/components/ArenaPlayer";
-import type { AxisIdentity } from "@/lib/axis-player-profile";
 import { regularProfileCards, regularProfileOverview, type RegularProfileOverview } from "@/lib/regular-profile-overview";
 import ProfilePrimaryActions, { ProfileActivity } from "@/components/ProfileActions";
 
@@ -60,10 +59,6 @@ async function pollRegularRisk(input: {
 interface Props {
   aid: string;
   radarDemo?: string | string[];
-  axisIdentity?: AxisIdentity | null;
-  axisHours?: number | null;
-  axisHoursFetchedAt?: number | null;
-  initialAxis?: boolean;
   initialOverview?: RegularProfileOverview;
 }
 
@@ -848,6 +843,6 @@ function LegacyPlayer({
 }
 
 export default function RegularPlayer(props: Props & { mode?: CrossSectionMode }) {
-  if (props.mode === "arena") return <ArenaPlayer aid={props.aid} radarDemo={props.radarDemo} axisIdentity={props.axisIdentity} axisHours={props.axisHours} axisHoursFetchedAt={props.axisHoursFetchedAt} initialAxis={props.initialAxis} />;
+  if (props.mode === "arena") return <ArenaPlayer aid={props.aid} radarDemo={props.radarDemo} />;
   return <LegacyPlayer {...props} />;
 }

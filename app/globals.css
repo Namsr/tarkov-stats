@@ -1044,7 +1044,6 @@ html[data-theme="light"] .axis-history { --axis-team-a: #286894; }
 .axis-kda-clear:hover { color: var(--foreground); }
 .axis-kda-actions { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 16px; }
 .axis-kda-actions button:disabled { opacity: .5; }
-.axis-admin-history { display: inline-flex; margin-top: 14px; }
 .axis-editor-access { margin-top: 20px; padding: 18px 0; border-top: 1px solid var(--card-border); border-bottom: 1px solid var(--card-border); }
 .axis-editor-access h3 { font-size: .9rem; }
 .axis-editor-access .admin-moderation { margin-top: 14px; }
