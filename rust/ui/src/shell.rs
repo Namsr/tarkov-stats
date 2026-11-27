@@ -52,7 +52,7 @@ pub fn SiteShell(lang: RwSignal<Lang>, return_to: String, children: Children) ->
             })
         });
     }
-    let nav=[("/leaderboard","nav.leaderboard",false),("/axis-league","axis.title",false),("/about","nav.about",false),("/support","nav.support",true),("/community","nav.community",false)].into_iter().map(move |(href,key,support)|view!{
+    let nav=[("/leaderboard","nav.leaderboard",false),("/about","nav.about",false),("/support","nav.support",true),("/community","nav.community",false)].into_iter().map(move |(href,key,support)|view!{
         <a href=href class=if support {"tactical-nav-link tactical-nav-link--support"} else {"tactical-nav-link"} on:click=move |_|menu.set(false)>
             {move || lang.get().t(key)}
             {move || (support&&unseen.get()).then(||view!{<span class="tactical-nav-link__dot" role="img" aria-label=move ||lang.get().t("nav.supportUnread")></span>})}

@@ -1135,33 +1135,24 @@ test("editing loads all ten Arena nicknames in one local roster request and igno
 });
 
 
-test("AXIS tab routes accept direct links, reject unknown paths and preserve legacy match links", async () => {
+test("AXIS League section is hidden from the public site", async () => {
   const require = createRequire(import.meta.url);
   const ts = require("typescript");
   const source = await readFile("app/axis-league/[[...view]]/page.tsx", "utf8");
   const compiled = ts.transpileModule(source, { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS, jsx: ts.JsxEmit.ReactJSX, esModuleInterop: true } }).outputText;
   const routeModule = { exports: {} };
-  const Page = () => null;
   const navigation = {
-    redirect(href) { throw new Error(`redirect:${href}`); },
     notFound() { throw new Error("not-found"); },
   };
   new Function("require", "module", "exports", compiled)((name) =>
-    name === "next/navigation" ? navigation : name === "@/components/AxisLeaguePage" ? Page : require(name), routeModule, routeModule.exports);
+    name === "next/navigation" ? navigation : require(name), routeModule, routeModule.exports);
   const route = (view, query = {}) => routeModule.exports.default({ params: Promise.resolve({ view }), searchParams: Promise.resolve(query) });
-  for (const tab of ["leaderboard", "statistics", "history", "profiles"]) {
-    assert.equal((await route([tab])).type, Page);
-    await assert.rejects(route(undefined, { view: tab }), { message: `redirect:/axis-league/${tab}` });
-  }
-  for (const view of [["unknown"], ["history", "extra"], ["toString"]]) {
+  for (const view of [["leaderboard"], ["statistics"], ["history"], ["profiles"], ["unknown"], ["history", "extra"], ["toString"], undefined]) {
     await assert.rejects(route(view), { message: "not-found" });
   }
-  await assert.rejects(route(undefined), { message: "redirect:/axis-league/leaderboard" });
-  await assert.rejects(route(undefined, { view: "profiles", match: "123", tag: ["a", "b"] }), {
-    message: "redirect:/axis-league/history?match=123&tag=a&tag=b",
-  });
-  await assert.rejects(route(undefined, { view: ["history", "profiles"], match: "0" }), {
-    message: "redirect:/axis-league/leaderboard?match=0",
-  });
+  for (const file of ["components/SiteHeader.tsx", "components/LeaderboardPage.tsx", "app/profile/page.tsx"]) {
+    assert.doesNotMatch(await readFile(file, "utf8"), /href=["']\/axis-league/, `${file} must not link to the hidden section`);
+  }
+  assert.doesNotMatch(await readFile("components/ArenaPlayer.tsx", "utf8"), /axis\.profile\.tab/, "the AXIS profile tab must stay hidden");
   assert.equal(axisMatchHref(123), "/axis-league/history?match=123#axis-match-123");
 });

@@ -16,8 +16,8 @@ export default function AdminAxisLeague({ data, onChange, editorOnly = false }: 
   const linked = players.filter((player) => player.profile);
   const profileEditor = (player: AxisPlayer) => <ProfileEditor key={`${player.id}:${player.profile?.mode ?? ""}:${player.profile?.aid ?? ""}`} player={player} onChange={onChange} endpoint={editorOnly ? "/api/axis-league/profiles" : "/api/admin/axis-league"} />;
   return <section className="data-panel admin-panel" aria-label={t("axis.title")}>
-    <div className="axis-heading"><h2 className="section-heading">{t(editorOnly ? "axis.profiles.title" : "axis.title")}</h2>{!editorOnly && <Link href="/axis-league" className="ghost-button">{t("axis.admin.open")}</Link>}</div>
-    {!editorOnly && <><Link href="/axis-league/history" className="ghost-button axis-admin-history">{t("axis.kda.openHistory")}</Link><AxisLeagueEditors /></>}
+    <div className="axis-heading"><h2 className="section-heading">{t(editorOnly ? "axis.profiles.title" : "axis.title")}</h2></div>
+    {!editorOnly && <AxisLeagueEditors />}
     <p className="admin-chart-description">{t("axis.admin.description")}</p>
     {(data?.stale || !data?.available) && <p className="admin-notice" role="status">{t(data?.available ? "axis.stale" : "axis.error")}</p>}
     <div className="admin-moderation axis-admin-search"><label><span>{t("axis.search")}</span><input type="search" value={search} onChange={(event) => setSearch(event.target.value)} placeholder={t("axis.searchPlaceholder")} /></label></div>
