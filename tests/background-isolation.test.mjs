@@ -99,9 +99,10 @@ test("workflow keeps scoped tests, full fallback and cached image validation wir
     assert.ok(axisStep[1].includes(`tests/${file}.test.mjs`), file);
   }
   assert.match(workflow, /if: needs\.checks\.outputs\.image == 'true'/);
-  for (const name of ["Benchmark isolated TypeScript and Rust API workloads", "Benchmark production Next and Rust HTTP endpoints"]) {
+  for (const name of ["Benchmark isolated TypeScript and Rust API workloads", "Benchmark production Next and Rust HTTP endpoints", "Compare isolated production Regular and PvE population APIs"]) {
     assert.ok(workflow.includes(`name: ${name}\n        if: needs.checks.outputs.benchmarks == 'true'`));
   }
+  assert.ok(workflow.includes("name: Save persistent API comparison evidence\n        if: always() && needs.checks.outputs.benchmarks == 'true'"));
   assert.match(workflow, /cache-from: type=gha,scope=vps-image/);
   assert.match(workflow, /load: true/);
   assert.match(workflow, /name: Verify the runtime image\s+run:/);

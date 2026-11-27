@@ -49,6 +49,50 @@ test("updating a notification keeps its id, so a dismissed notice stays dismisse
   assert.equal(updated.title, "Old text", "fields the patch omits are left alone");
 });
 
+test("active notices are filtered by site language", (t) => {
+  const { store } = setup(t);
+  const ru = store.createNotification({ title: "RU", body: "Russian", language: "ru" });
+  const en = store.createNotification({ title: "EN", body: "English", language: "en" });
+  const both = store.createNotification({ title: "Both", body: "Both", language: "both" });
+  assert.deepEqual(store.getActive("ru").notifications.map((item) => item.id), [ru.id, both.id]);
+  assert.deepEqual(store.getActive("en").notifications.map((item) => item.id), [en.id, both.id]);
+  assert.deepEqual(
+    store.getActive().notifications.map((item) => item.id),
+    [ru.id, en.id, both.id],
+    "no language keeps the old all-audiences view",
+  );
+});
+
+test("a notice created without an audience defaults to Russian", (t) => {
+  const { store } = setup(t);
+  const notification = store.createNotification({ title: "Default", body: "Body" });
+  assert.equal(notification.language, "ru");
+  assert.deepEqual(store.getActive("ru").notifications.map((item) => item.id), [notification.id]);
+  assert.deepEqual(store.getActive("en").notifications, []);
+});
+
+test("updating a notice can change its audience", (t) => {
+  const { store } = setup(t);
+  const notification = store.createNotification({ title: "Move", body: "Body", language: "ru" });
+  const updated = store.updateNotification(notification.id, { language: "en" });
+  assert.equal(updated.language, "en");
+  assert.deepEqual(store.getActive("ru").notifications, []);
+  assert.deepEqual(store.getActive("en").notifications.map((item) => item.id), [notification.id]);
+});
+
+test("invalid audiences are rejected", (t) => {
+  const { store } = setup(t);
+  assert.throws(
+    () => store.createNotification({ title: "Bad", body: "Body", language: "fr" }),
+    /invalid notification language/,
+  );
+  const notification = store.createNotification({ title: "Good", body: "Body" });
+  assert.throws(
+    () => store.updateNotification(notification.id, { language: "fr" }),
+    /invalid notification language/,
+  );
+});
+
 test("notification links accept same-origin paths and https, and reject script schemes", (t) => {
   const { store } = setup(t);
   assert.equal(normalizeHref("/about"), "/about");
@@ -113,6 +157,52 @@ test("the progress bar vanishes when no goal is active", (t) => {
   store.deleteGoal(goal.id);
   assert.equal(store.getActive().goal, null);
   assert.equal(store.getActive().notifications.length, 1, "notices are independent of the goal");
+});
+
+test("notices from a database without the language column stay visible to both audiences", (t) => {
+  const db = new DatabaseSync(":memory:");
+  t.after(() => db.close());
+  db.exec(`
+    CREATE TABLE support_notifications (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      title TEXT NOT NULL,
+      body TEXT NOT NULL,
+      href TEXT,
+      level TEXT NOT NULL DEFAULT 'info' CHECK (level IN ('info','warn','danger')),
+      is_active INTEGER NOT NULL DEFAULT 0,
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL
+    );
+    CREATE TABLE support_fundraising_goals (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      collected_rub INTEGER NOT NULL DEFAULT 0,
+      goal_rub INTEGER NOT NULL,
+      usd_rate REAL NOT NULL DEFAULT 1,
+      is_active INTEGER NOT NULL DEFAULT 0,
+      updated_at INTEGER NOT NULL
+    );
+    INSERT INTO support_notifications (title, body, level, is_active, created_at, updated_at)
+    VALUES ('Legacy', 'Legacy body', 'info', 1, 1, 1);
+  `);
+  const store = createSupportStore(db);
+  const [legacy] = store.listNotifications();
+  assert.equal(legacy.language, "both");
+  assert.deepEqual(store.getActive("ru").notifications.map((item) => item.id), [legacy.id]);
+  assert.deepEqual(store.getActive("en").notifications.map((item) => item.id), [legacy.id]);
+});
+
+test("opening a migrated database does not take a write lock", (t) => {
+  const db = new DatabaseSync(":memory:");
+  t.after(() => db.close());
+  createSupportStore(db);
+  let begins = 0;
+  const exec = db.exec.bind(db);
+  db.exec = (sql) => {
+    if (sql === "BEGIN IMMEDIATE") begins += 1;
+    return exec(sql);
+  };
+  createSupportStore(db);
+  assert.equal(begins, 0);
 });
 
 test("opening the schema on an existing database is safe and repeatable", (t) => {

@@ -294,6 +294,9 @@ pub async fn security(request: axum::extract::Request, next: axum::middleware::N
         "/api/seasonal/cohort/"
             | "/api/home/showcase/"
             | "/api/average/"
+            | "/api/average/metrics/"
+            | "/api/progression/average/"
+            | "/api/average/achievements/"
             | "/population/arena/"
             | "/average/arena/"
     );

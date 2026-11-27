@@ -16,7 +16,7 @@ struct User {
 }
 
 #[component]
-pub fn SiteShell(lang: RwSignal<Lang>, children: Children) -> impl IntoView {
+pub fn SiteShell(lang: RwSignal<Lang>, return_to: String, children: Children) -> impl IntoView {
     let menu = RwSignal::new(false);
     let light = RwSignal::new(false);
     let user = RwSignal::new(None::<User>);
@@ -59,13 +59,13 @@ pub fn SiteShell(lang: RwSignal<Lang>, children: Children) -> impl IntoView {
         </a>
     }).collect_view();
     let languages=[Lang::En,Lang::Ru].into_iter().map(move |target|view!{
-        <button type="button" on:click=move |_|{
-            lang.set(target);
-            #[cfg(feature="hydrate")] browser::language(target);
-        } aria-pressed=move ||(lang.get()==target).to_string()
-            class=move ||format!("h-11 min-w-11 px-2 font-semibold uppercase transition-colors {}",if lang.get()==target {"bg-[var(--accent)] text-[var(--background)]"} else {"text-[var(--muted)] hover:text-[var(--foreground)]"})>
+        <a href=language_href(target, &return_to) hreflang=target.as_str()
+            on:click=move |_event| {
+                #[cfg(feature="hydrate")] browser::language_link(_event, target);
+            } aria-current=move ||(lang.get()==target).then_some("true")
+            class=move ||format!("inline-flex h-11 min-w-11 items-center justify-center px-2 font-semibold uppercase transition-colors focus-visible:-outline-offset-2 {}",if lang.get()==target {"bg-[var(--accent)] text-[var(--background)]"} else {"text-[var(--muted)] hover:text-[var(--foreground)]"})>
             {target.as_str()}
-        </button>
+        </a>
     }).collect_view();
     view! {
         <a class="skip-link" href="#main-content">{move ||lang.get().t("nav.skip")}</a>
@@ -263,6 +263,14 @@ fn endpoint(path: &str) -> Option<&'static str> {
         .map(|_| "profile")
 }
 
+fn language_href(lang: Lang, path: &str) -> String {
+    let query = url::form_urlencoded::Serializer::new(String::new())
+        .append_pair("lang", lang.as_str())
+        .append_pair("returnTo", path)
+        .finish();
+    format!("/api/language?{query}")
+}
+
 #[cfg(feature = "hydrate")]
 mod browser {
     use super::*;
@@ -299,19 +307,16 @@ mod browser {
             let _ = element.focus();
         }
     }
-    pub fn language(lang: Lang) {
-        if let Some(root) = document().document_element() {
-            let _ = root.set_attribute("lang", lang.as_str());
-        }
-        if let Ok(doc) = document().dyn_into::<HtmlDocument>() {
-            let _ = doc.set_cookie(&format!(
-                "lang={}; path=/; max-age=31536000; SameSite=Lax",
-                lang.as_str()
-            ));
-        }
-        document().set_title(&lang.t("meta.title"));
-        if let Ok(Some(meta)) = document().query_selector("meta[name=description]") {
-            let _ = meta.set_attribute("content", &lang.t("meta.description"));
+    pub fn language_link(event: MouseEvent, lang: Lang) {
+        if let Some(link) = event
+            .current_target()
+            .and_then(|target| target.dyn_into::<HtmlAnchorElement>().ok())
+        {
+            let location = window().location();
+            let path = location.pathname().unwrap_or_default()
+                + &location.search().unwrap_or_default()
+                + &location.hash().unwrap_or_default();
+            link.set_href(&language_href(lang, &path));
         }
     }
     pub fn theme(light: bool, save: bool) {
@@ -1150,7 +1155,7 @@ mod tests {
             owner.with(|| {
                 let lang = RwSignal::new(selected);
                 let html =
-                    view! {<SiteShell lang><main><h1>"Arena 42"</h1></main></SiteShell>}.to_html();
+                    view! {<SiteShell lang return_to="/population/arena".to_owned()><main><h1>"Arena 42"</h1></main></SiteShell>}.to_html();
                 for marker in [
                     "site-header",
                     "site-header__menu",

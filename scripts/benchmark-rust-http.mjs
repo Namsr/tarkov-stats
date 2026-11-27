@@ -15,6 +15,18 @@ export const BACKENDS = ["typescript", "next-rust", "rust"];
 export const MEMORY_BYTES = 896 * 1024 ** 2;
 export const METRICS = ["kd_ratio", "pmc_kd_ratio", "kills_per_raid", "killed_pmc_per_raid",
   "pmc_survival_rate", "longest_win_streak", "level"];
+// The fixture reads analytics/cache concurrently with production writers.
+// Keep this bounded observer-only wait outside measured HTTP request timers.
+export function openBenchmarkObserver(DatabaseSync, path) {
+  const db = new DatabaseSync(path, { readOnly: true });
+  try { db.exec("PRAGMA busy_timeout = 1000"); return db; }
+  catch (error) { try { db.close(); } catch { /* Preserve the configuration error. */ } throw error; }
+}
+export function openBenchmarkObservers(DatabaseSync, analyticsPath, cachePath) {
+  const analytics = openBenchmarkObserver(DatabaseSync, analyticsPath);
+  try { return { analytics, cache: openBenchmarkObserver(DatabaseSync, cachePath) }; }
+  catch (error) { try { analytics.close(); } catch { /* Preserve the setup error. */ } throw error; }
+}
 export function parseArguments(argv) {
   const allowed = new Set(["--backend", "--rows", "--iterations", "--repetition", "--output"]);
   const values = new Map();
@@ -136,9 +148,9 @@ export async function runBenchmark(options) {
   const { writeStatisticsResponse } = await import("../lib/average-publication.ts");
   assert.ok(await getAnalyticsStore(), "analytics initialization failed");
   await writeStatisticsResponse("benchmark-initialize", {}, Date.now());
-  const analyticsDb = new DatabaseSync(process.env.ADMIN_ANALYTICS_SQLITE_PATH, { readOnly: true });
-  const cacheDb = new DatabaseSync(process.env.AVERAGE_PUBLICATION_SQLITE_PATH, { readOnly: true });
-  assert.equal(cacheDb.prepare("SELECT COUNT(*) AS n FROM statistics_response_cache").get().n, 1);
+  const { analytics: analyticsDb, cache: cacheDb } = openBenchmarkObservers(DatabaseSync, process.env.ADMIN_ANALYTICS_SQLITE_PATH, process.env.AVERAGE_PUBLICATION_SQLITE_PATH);
+  try { assert.equal(cacheDb.prepare("SELECT COUNT(*) AS n FROM statistics_response_cache").get().n, 1); }
+  catch (error) { for (const db of [analyticsDb, cacheDb]) { try { db.close(); } catch { /* Preserve the setup error. */ } } throw error; }
   const upstream = backend === "rust" ? "web:3001" : "web:3000";
   const workerBackend = backend === "typescript" ? "typescript" : "rust";
   const env = { ...process.env, PORT: "3000", HOSTNAME: "127.0.0.1", RUST_API_BIND: "127.0.0.1:3001",
@@ -315,7 +327,7 @@ export async function runBenchmark(options) {
       misses: "unique owner IDs for cold, each warmup, every timed miss and each hit prewarm; no cache clears, revision changes or repeated miss IDs",
       hits: "four independently prewarmed owners per scenario; fresh generation unchanged; zero actual worker jobs",
       cold: "first cohort request after fresh production processes become healthy; includes worker spawn, computation and awaited best-effort durable cache write; identical cache/analytics schemas initialized before servers; startup/readiness and fixture outside HTTP timer",
-      timings: "full client loopback HTTP through JSON parse; sequential or batches of four distinct owners; queue/worker logs rounded by production implementation",
+      timings: "full client loopback HTTP through JSON parse; sequential or batches of four distinct owners; queue/worker logs rounded by production implementation; observer SQLite reads use a 1000ms busy timeout outside HTTP timers and may shift subsequent request scheduling",
       resources: "whole cgroup lifetime after supervisor/children stop, through this sample after report construction and before JSON encoding/output and client exit: fixture creation, benchmark client, supervisor, Next frontend, Rust API where enabled, all workers, analytics flush validation, tmpfs and charged page cache; not RSS or only timed requests; analytics remains production asynchronous",
       limitations: "synthetic initialized private SQLite; small p95 sample; OS page cache not flushed across containers; reversed order mitigates but does not eliminate order effects; excludes proxy/TLS/CDN, user network, browser rendering and upstream Tarkov API; no production-latency or speed-threshold claim" },
     startup, cold, results, analytics, diagnostics: { requests: requestEvents(events).length, workerJobs: jobEvents(events).length,

@@ -1,11 +1,48 @@
 use serde::{Deserialize, Serialize};
-use std::{collections::HashMap, sync::LazyLock};
+use std::collections::HashMap;
 
+#[cfg(not(target_arch = "wasm32"))]
 type Messages = HashMap<String, HashMap<String, String>>;
-static MESSAGES: LazyLock<Messages> = LazyLock::new(|| {
+#[cfg(not(target_arch = "wasm32"))]
+static MESSAGES: std::sync::LazyLock<Messages> = std::sync::LazyLock::new(|| {
     serde_json::from_str(include_str!("../../../lib/i18n/messages.json"))
         .expect("checked shared UI dictionary")
 });
+
+#[cfg(target_arch = "wasm32")]
+static BROWSER_MESSAGES: std::sync::OnceLock<HashMap<String, String>> = std::sync::OnceLock::new();
+
+#[cfg(all(target_arch = "wasm32", feature = "hydrate"))]
+pub(crate) fn install_messages(source: &str) -> bool {
+    match serde_json::from_str(source) {
+        Ok(messages) => BROWSER_MESSAGES.set(messages).is_ok(),
+        Err(_) => false,
+    }
+}
+
+#[cfg(feature = "ssr")]
+pub(crate) fn document_messages(lang: Lang) -> &'static str {
+    use std::{collections::BTreeMap, sync::LazyLock};
+
+    fn encode(lang: Lang) -> String {
+        let entries: BTreeMap<_, _> = MESSAGES["en"]
+            .iter()
+            .chain(&MESSAGES[lang.as_str()])
+            .collect();
+        // Keep JSON text inside the script element even if a translation contains HTML.
+        serde_json::to_string(&entries)
+            .expect("string dictionary is serializable")
+            .replace('<', "\\u003c")
+    }
+
+    static EN: LazyLock<String> = LazyLock::new(|| encode(Lang::En));
+    static RU: LazyLock<String> = LazyLock::new(|| encode(Lang::Ru));
+    match lang {
+        Lang::En => &EN,
+        Lang::Ru => &RU,
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Lang {
@@ -20,12 +57,14 @@ impl Lang {
         }
     }
     pub fn t(self, key: &str) -> String {
-        MESSAGES
+        #[cfg(not(target_arch = "wasm32"))]
+        let message = MESSAGES
             .get(self.as_str())
             .and_then(|entries| entries.get(key))
-            .or_else(|| MESSAGES.get("en").and_then(|entries| entries.get(key)))
-            .cloned()
-            .unwrap_or_else(|| key.into())
+            .or_else(|| MESSAGES.get("en").and_then(|entries| entries.get(key)));
+        #[cfg(target_arch = "wasm32")]
+        let message = BROWSER_MESSAGES.get().and_then(|entries| entries.get(key));
+        message.cloned().unwrap_or_else(|| key.into())
     }
     pub fn text(self, key: &str, vars: &[(&str, String)]) -> String {
         let text = self.t(key);

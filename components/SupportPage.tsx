@@ -13,7 +13,7 @@ import {
 } from "@/lib/support";
 
 export default function SupportPage() {
-  const { t } = useI18n();
+  const { t, lang } = useI18n();
 
   return (
     <main className="page-frame project-page">
@@ -23,7 +23,7 @@ export default function SupportPage() {
         <p className="project-page__lead">{t("support.intro")}</p>
       </header>
 
-      <SupportContent />
+      <SupportContent key={lang} />
 
       <section aria-labelledby="support-fast">
         <p className="section-kicker">{t("support.quickKicker")}</p>

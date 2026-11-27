@@ -6,6 +6,8 @@ rust-version = "1.89"
 publish = false
 
 [dependencies]
+reqwest = { version = "=0.13.5", default-features = false, features = ["rustls-no-provider"] }
+rustls = { version = "=0.23.46", default-features = false, features = ["ring", "std", "tls12"] }
 tarkov-ui = { path = "../ui", features = ["ssr"] }
 leptos = { version = "=0.8.22", default-features = false, features = ["ssr", "islands"] }
 leptos_axum = { version = "=0.8.10", default-features = false }

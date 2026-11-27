@@ -579,7 +579,7 @@ impl ArenaService {
         self.storage.event(event);
     }
 }
-fn normalized_host(raw: &str) -> Option<String> {
+pub(crate) fn normalized_host(raw: &str) -> Option<String> {
     let raw = config::trim(raw.split(',').next()?).to_lowercase();
     let host = raw
         .rsplit_once(':')
@@ -590,7 +590,7 @@ fn normalized_host(raw: &str) -> Option<String> {
         .contains(&host)
         .then(|| host.into())
 }
-fn sampled() -> bool {
+pub(crate) fn sampled() -> bool {
     let fallback = if std::env::var("NODE_ENV").as_deref() == Ok("production") {
         0.05
     } else {
@@ -617,7 +617,7 @@ fn sampled() -> bool {
     n = (n ^ (n >> 27)).wrapping_mul(0x94d049bb133111eb);
     ((n ^ (n >> 31)) as f64 / u64::MAX as f64) < rate
 }
-fn normalize_zero(value: &mut Value) {
+pub(crate) fn normalize_zero(value: &mut Value) {
     match value {
         Value::Number(n) if n.as_f64() == Some(0.0) => *value = json!(0),
         Value::Array(values) => values.iter_mut().for_each(normalize_zero),

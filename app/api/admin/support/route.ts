@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { ADMIN_NO_STORE_HEADERS } from "@/lib/admin/types";
 import { rejectInvalidAdminMutation } from "@/lib/admin/mutation";
 import { requireAdmin } from "@/lib/admin-auth";
-import { getSupportStore, type NotificationLevel } from "@/lib/admin/support-db";
+import { getSupportStore, type NotificationLanguage, type NotificationLevel } from "@/lib/admin/support-db";
 
 export const runtime = "nodejs";
 
@@ -50,11 +50,13 @@ export async function POST(request: Request) {
         if (typeof body.title !== "string" || typeof body.body !== "string") return bad();
         if (body.href != null && typeof body.href !== "string") return bad();
         if (body.level != null && typeof body.level !== "string") return bad();
+        if (body.language !== undefined && typeof body.language !== "string") return bad();
         const notification = store.createNotification({
           title: body.title,
           body: body.body,
           href: (body.href as string | null | undefined) ?? null,
           level: body.level as NotificationLevel | undefined,
+          language: body.language as NotificationLanguage | undefined,
         });
         return ok({ notification, notifications: store.listNotifications() });
       }
@@ -64,11 +66,13 @@ export async function POST(request: Request) {
         if (body.body !== undefined && typeof body.body !== "string") return bad();
         if (body.href !== undefined && body.href !== null && typeof body.href !== "string") return bad();
         if (body.level !== undefined && typeof body.level !== "string") return bad();
-        const patch: { title?: string; body?: string; href?: string | null; level?: NotificationLevel } = {};
+        if (body.language !== undefined && typeof body.language !== "string") return bad();
+        const patch: { title?: string; body?: string; href?: string | null; level?: NotificationLevel; language?: NotificationLanguage } = {};
         if (body.title !== undefined) patch.title = body.title as string;
         if (body.body !== undefined) patch.body = body.body as string;
         if (body.href !== undefined) patch.href = body.href as string | null;
         if (body.level !== undefined) patch.level = body.level as NotificationLevel;
+        if (body.language !== undefined) patch.language = body.language as NotificationLanguage;
         const notification = store.updateNotification(Number(body.id), patch);
         return ok({ notification, notifications: store.listNotifications() });
       }

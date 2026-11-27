@@ -1,4 +1,5 @@
 mod arena;
+mod population;
 mod seasonal;
 
 use rusqlite::{Connection, OpenFlags};
@@ -517,6 +518,7 @@ fn open_path(path: String) -> Result<Connection, String> {
 #[derive(Default)]
 struct Databases {
     arena_ready: bool,
+    population_ready: [bool; 2],
     players: Option<Connection>,
     progression: Option<Connection>,
 }
@@ -537,9 +539,27 @@ impl Databases {
         if !self.arena_ready {
             if !arena::ready(self.players()?) {
                 self.players = None;
+                self.population_ready = [false; 2];
                 return Err("Arena storage schema is unavailable".into());
             }
             self.arena_ready = true;
+        }
+        self.players()
+    }
+    fn population(&mut self, mode: &str) -> Result<&mut Connection, String> {
+        let index = match mode {
+            "regular" => 0,
+            "pve" => 1,
+            _ => return Err("Unsupported population mode".into()),
+        };
+        if !self.population_ready[index] {
+            if !population::ready(self.players()?, mode) {
+                self.players = None;
+                self.arena_ready = false;
+                self.population_ready = [false; 2];
+                return Err("Population storage schema is unavailable".into());
+            }
+            self.population_ready[index] = true;
         }
         self.players()
     }
@@ -594,6 +614,28 @@ fn handle(frame: &[u8], databases: &mut Databases) -> Value {
                     return Ok(Value::Null);
                 };
                 arena::average(db, &input)
+            }
+            "persistent_average" => {
+                let input = population::parse_average(&job.mode, &job.args)?;
+                let Ok(db) = databases.population(&job.mode) else {
+                    return Ok(population::unavailable_average(&input));
+                };
+                let now = SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .map_err(|error| error.to_string())?
+                    .as_millis() as f64;
+                population::compute_average(db, &input, now)
+            }
+            "persistent_metrics" => {
+                let input = population::parse_metrics(&job.mode, &job.args)?;
+                let Ok(db) = databases.population(&job.mode) else {
+                    return Ok(Value::Null);
+                };
+                let now = SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .map_err(|error| error.to_string())?
+                    .as_millis() as f64;
+                population::compute_metrics(db, &input, now)
             }
             "seasonal" => {
                 let input = seasonal::parse(&job.args)?;

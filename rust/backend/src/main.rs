@@ -1,9 +1,13 @@
+pub mod achievements;
 pub mod arena;
 mod axis_stats;
 mod cache;
 mod compute;
 mod config;
 mod http;
+mod persistent;
+mod progression;
+pub mod reference;
 mod showcase;
 mod storage;
 mod ui;
@@ -38,17 +42,19 @@ async fn main() {
     }
 }
 async fn serve() -> Result<(), Box<dyn std::error::Error>> {
-    let ui_enabled = match env::var("ARENA_UI_UPSTREAM").as_deref() {
-        Err(_) | Ok("") | Ok("web:3000") => false,
-        Ok("web:3001") => true,
-        _ => return Err("ARENA_UI_UPSTREAM must be web:3000 or web:3001".into()),
-    };
+    let ui_enabled = ui_selector("ARENA_UI_UPSTREAM")?;
     let worker = compute::Worker::start().map_err(std::io::Error::other)?;
     let storage = storage::Storage::start();
     let config = config::Config::from_env();
     let showcase = showcase::Showcase::start(config.clone());
+    let progression = progression::ProgressionService::new(storage.clone(), config.clone());
     let cache = cache::Cache::new(storage.clone(), worker.clone());
+    let reference = reference::Reference::new(storage.clone()).map_err(std::io::Error::other)?;
+    let achievements =
+        achievements::AchievementsService::new(cache.clone(), storage.clone(), reference);
     let arena = arena::ArenaService::new(cache.clone(), storage.clone());
+    let persistent =
+        persistent::PersistentService::new(cache.clone(), storage.clone(), arena.clone());
     let arena_ui = if ui_enabled {
         Some(ui::Ui::start(arena.clone(), &config).map_err(std::io::Error::other)?)
     } else {
@@ -83,12 +89,19 @@ async fn serve() -> Result<(), Box<dyn std::error::Error>> {
             Router::new()
                 .route(
                     "/api/average",
-                    get(arena::get)
+                    get(persistent::average_get)
                         .options(http::options)
                         .fallback(http::method_not_allowed),
                 )
                 .route("/api/average/", any(http::trailing))
-                .with_state(arena),
+                .route(
+                    "/api/average/metrics",
+                    get(persistent::metrics_get)
+                        .options(http::options)
+                        .fallback(http::method_not_allowed),
+                )
+                .route("/api/average/metrics/", any(http::trailing))
+                .with_state(persistent),
         )
         .merge(
             Router::new()
@@ -100,7 +113,29 @@ async fn serve() -> Result<(), Box<dyn std::error::Error>> {
                 )
                 .route("/api/home/showcase/", any(http::trailing))
                 .with_state(showcase),
+        )
+        .merge(
+            Router::new()
+                .route(
+                    "/api/progression/average",
+                    get(progression::get)
+                        .options(http::options)
+                        .fallback(http::method_not_allowed),
+                )
+                .route("/api/progression/average/", any(http::trailing))
+                .with_state(progression),
         );
+    let app = app.merge(
+        Router::new()
+            .route(
+                "/api/average/achievements",
+                get(achievements::get)
+                    .options(http::options)
+                    .fallback(http::method_not_allowed),
+            )
+            .route("/api/average/achievements/", any(http::trailing))
+            .with_state(achievements),
+    );
     let app = if let Some(state) = arena_ui {
         app.merge(
             Router::new()
@@ -137,6 +172,13 @@ async fn serve() -> Result<(), Box<dyn std::error::Error>> {
         .await?;
     worker.stop().await;
     Ok(())
+}
+fn ui_selector(name: &str) -> Result<bool, Box<dyn std::error::Error>> {
+    match env::var(name).as_deref() {
+        Err(_) | Ok("") | Ok("web:3000") => Ok(false),
+        Ok("web:3001") => Ok(true),
+        _ => Err(format!("{name} must be web:3000 or web:3001").into()),
+    }
 }
 async fn shutdown_signal() {
     #[cfg(unix)]
